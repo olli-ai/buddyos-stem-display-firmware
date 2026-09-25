@@ -1,0 +1,16 @@
+# PROVISIONAL. Sizes assume an 8 MB flash and will change once the panel and the
+# board are chosen — see README.
+#
+# Two app slots because an OTA that cannot roll back is not an OTA.
+# `faces` is the catalogue partition of ADR 0009: artwork delivered and replaced
+# without a firmware release, so a new hat does not become an OTA for every device.
+# There is deliberately no `model` partition — this device type does not carry the
+# offline image model, which is what makes the screen affordable.
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+phy_init,   data, phy,      0xf000,   0x1000
+ota_0,      app,  ota_0,    0x10000,  0x200000
+ota_1,      app,  ota_1,    ,         0x200000
+otadata,    data, ota,      ,         0x2000
+faces,      data, spiffs,   ,         0x180000
