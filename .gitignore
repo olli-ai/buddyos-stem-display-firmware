@@ -7,3 +7,7 @@ dependencies.lock
 *.pyc
 __pycache__/
 .DS_Store
+
+# Review artefacts from tools/bake_face.ts — regenerate, do not commit.
+# (docs/baked-states.png is the small joined version, and is committed.)
+main/generated/preview-*.png

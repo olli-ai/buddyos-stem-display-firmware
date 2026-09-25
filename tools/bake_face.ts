@@ -1,0 +1,277 @@
+/*
+ * Bake a stem-fe design into C the display firmware can draw.
+ *
+ * This is the format translation, and the point of the whole exercise. The website
+ * holds a face as *choices* over a parts catalogue and motion as keyframes over
+ * layers; neither is something a microcontroller can draw. The device draws sprites.
+ * So the catalogue's `draw(ctx) => Shape[]` functions — which are TypeScript, and can
+ * therefore never be shipped to a device — are run here, once, at build time, and what
+ * comes out is rasterised per layer into LVGL images.
+ *
+ * That is the answer to the question ADR 0009 left open: a generator cannot emit C from
+ * a function, so it bakes the function's *output* instead.
+ *
+ * Needs: rsvg-convert and ImageMagick (`convert`), both on PATH.
+ *   npx esbuild tools/bake_face.ts --bundle --platform=node --format=cjs \
+ *     --outfile=/tmp/bake.cjs && node /tmp/bake.cjs <out-dir>
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { LOOKS } from '../../buddyos-stem-fe/src/data/looks';
+import { browPart, eyePart, mouthPart, type FaceComposition, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
+import {
+    EASINGS, EASING_LUT, LUT_SIZE, LAYERS, MOTION_PRESETS, NUMERIC_PROPS, RANGE,
+    scaleStateMotion, periodOf, isSpriteTrack, sampleMotion,
+    type LayerId, type StateMotion, type Track, type NumericTrack, type SpriteTrack,
+} from '../../buddyos-stem-fe/src/data/motion';
+
+const SIZE = 240;                       // the GC9A01 is 240x240
+const BASE_ID = 'sprout' as const;
+
+/* The four states the firmware cycles. Deliberately drawn parts only: an 'artwork'
+ * part is a reference to the artist's own bitmap, and resolving those through Vite's
+ * asset pipeline would prove nothing about translating *shapes*. */
+const STATES = ['idle', 'listening', 'thinking', 'speaking'] as const;
+type TestState = typeof STATES[number];
+
+const DESIGN: Record<TestState, FaceComposition> = {
+    idle:      { eyes: 'round',  mouth: 'flatsmile', brows: 'flat' },
+    listening: { eyes: 'wide',   mouth: 'tinyu',     brows: 'raised' },
+    thinking:  { eyes: 'lookup', mouth: 'flatsmile', brows: 'furrow' },
+    speaking:  { eyes: 'round',  mouth: 'open',      brows: 'flat' },
+};
+const MOTION_FOR: Record<TestState, string[]> = {
+    idle: ['breathe', 'blink'],
+    listening: ['browRaise'],
+    thinking: ['nod'],
+    speaking: ['talk', 'blink'],
+};
+
+// ---------------------------------------------------------------- palette
+const base = LOOKS[BASE_ID];
+const paint = base.paint!;
+const INK = '#2F401E', PINK = '#FFD1D1', TONGUE = '#FF7A8A', WATER = '#BFE4FF';
+const patchFill = paint.fill || base.swatch;
+const paintOf = (tok?: Paint): string => ({
+    ink: paint.ink || INK, white: '#FFFFFF', pink: PINK, tongue: TONGUE,
+    water: WATER, accent: '#7CB342', body: patchFill,
+}[tok as string] ?? 'none');
+
+// ------------------------------------------------------------ shapes → svg
+function shapeToSvg(sh: Shape): string {
+    const st = (s: any) => `fill="${paintOf(s.fill)}" stroke="${paintOf(s.stroke)}" stroke-width="${s.w || 0}" opacity="${s.op ?? 1}" stroke-linecap="round" stroke-linejoin="round"`;
+    if (sh.t === 'path') return `<path d="${sh.d}" ${st(sh)}/>`;
+    if (sh.t === 'ellipse') return `<ellipse cx="${sh.cx}" cy="${sh.cy}" rx="${sh.rx}" ry="${sh.ry}" ${st(sh)}${sh.rot ? ` transform="rotate(${sh.rot} ${sh.cx} ${sh.cy})"` : ''}/>`;
+    if (sh.t === 'polygon') return `<polygon points="${sh.pts}" ${st(sh)}/>`;
+    return ''; // 'image' shapes are artwork parts, excluded from this design on purpose
+}
+const svgDoc = (body: string) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 100 100">${body}</svg>`;
+
+// ----------------------------------------------------------- rasterising
+const tmp = mkdtempSync(join(tmpdir(), 'bake-'));
+let n = 0;
+/** Render an SVG, trim it to what it actually covers, and return ARGB8888 + placement. */
+function raster(svg: string): { w: number; h: number; x: number; y: number; px: Buffer; png: string } {
+    const id = `s${n++}`;
+    const sv = join(tmp, id + '.svg'), pn = join(tmp, id + '.png'), tr = join(tmp, id + '-t.png');
+    writeFileSync(sv, svg);
+    execFileSync('rsvg-convert', ['-w', String(SIZE), '-h', String(SIZE), '-o', pn, sv]);
+    // Where the ink actually is, so a 30x30 eye is not stored as a 240x240 sheet.
+    const box = execFileSync('magick', [pn, '-trim', '-format', '%w %h %X %Y', 'info:']).toString().trim();
+    const m = box.match(/^(\d+) (\d+) \+?(-?\d+) \+?(-?\d+)$/);
+    if (!m) return { w: 0, h: 0, x: 0, y: 0, px: Buffer.alloc(0), png: '' };
+    const [w, h, x, y] = m.slice(1).map(Number);
+    execFileSync('magick', [pn, '-trim', '+repage', '-depth', '8', tr]);
+    // BGRA is the byte order LVGL's ARGB8888 expects on a little-endian target.
+    const rgba = execFileSync('magick', [tr, '-depth', '8', 'RGBA:-'], { maxBuffer: 1 << 28 });
+    const px = Buffer.alloc(rgba.length);
+    for (let i = 0; i < rgba.length; i += 4) {
+        px[i] = rgba[i + 2]; px[i + 1] = rgba[i + 1]; px[i + 2] = rgba[i]; px[i + 3] = rgba[i + 3];
+    }
+    return { w, h, x, y, px, png: tr };
+}
+
+/** The background: the mascot's own render with its painted eyes and mouth patched
+ *  out, flattened to one opaque RGB565 image. The patch never changes, so baking it
+ *  in costs the device nothing to redraw. */
+function bakeBackground(): { px: Buffer } {
+    const src = '/Users/leminhson/olli_projects/buddyos-stem-fe/src/assets/mascots/sprout.webp';
+    const k = 1.6; // PATCH_SCALE, as BuddyFace uses it
+    const grad = `<defs><radialGradient id="g" cx="0.5" cy="0.5" r="0.5">
+        <stop offset="0" stop-color="${patchFill}" stop-opacity="1"/>
+        <stop offset="0.88" stop-color="${patchFill}" stop-opacity="1"/>
+        <stop offset="1" stop-color="${patchFill}" stop-opacity="0"/></radialGradient></defs>`;
+    const ells = [
+        ...paint.eyes.map(([cx, cy]: number[]) => ({ cx, cy, rx: paint.eyeR[0] * k, ry: paint.eyeR[1] * k })),
+        { cx: paint.mouth[0], cy: paint.mouth[1], rx: paint.mouthR[0] * k, ry: paint.mouthR[1] * k },
+    ].map((e) => `<ellipse cx="${e.cx}" cy="${e.cy}" rx="${e.rx}" ry="${e.ry}" fill="url(#g)"/>`).join('');
+    const pf = join(tmp, 'patch.png'), bg = join(tmp, 'bg.png');
+    writeFileSync(join(tmp, 'patch.svg'), svgDoc(grad + ells));
+    execFileSync('rsvg-convert', ['-w', String(SIZE), '-h', String(SIZE), '-o', pf, join(tmp, 'patch.svg')]);
+    execFileSync('magick', ['-size', `${SIZE}x${SIZE}`, 'xc:white', '(', src, '-resize', `${SIZE}x${SIZE}`, ')',
+        '-gravity', 'center', '-composite', pf, '-gravity', 'center', '-composite', '-flatten', bg]);
+    const rgb = execFileSync('magick', [bg, '-depth', '8', 'RGB:-'], { maxBuffer: 1 << 28 });
+    const px = Buffer.alloc(SIZE * SIZE * 2);
+    for (let i = 0, o = 0; i < rgb.length; i += 3, o += 2) {
+        const v = ((rgb[i] & 0xf8) << 8) | ((rgb[i + 1] & 0xfc) << 3) | (rgb[i + 2] >> 3);
+        px[o] = v & 0xff; px[o + 1] = v >> 8;   // little-endian RGB565
+    }
+    return { px };
+}
+
+// --------------------------------------------------- which sprites are needed
+const eyeCtx = (side: -1 | 1) => {
+    const r = paint.eyeDraw || 7;
+    const [cx, cy] = side < 0 ? paint.eyes[0] : paint.eyes[1];
+    return { cx, cy, r, side };
+};
+const mouthCtx = () => paint.mouthDraw || { cx: 50, cy: 66, rx: 8, ry: 4.5 };
+
+function shapesFor(layer: LayerId, partId: string): Shape[] {
+    if (layer === 'mouth') return mouthPart(partId).draw(mouthCtx() as any);
+    const side = layer.endsWith('R') ? 1 : -1;
+    const ctx = eyeCtx(side as -1 | 1);
+    return (layer.startsWith('brow') ? browPart(partId) : eyePart(partId)).draw(ctx as any);
+}
+
+const motions: Record<TestState, StateMotion | undefined> = {} as any;
+for (const st of STATES) {
+    let acc: StateMotion | undefined;
+    for (const id of MOTION_FOR[st]) {
+        const p = MOTION_PRESETS.find((x) => x.id === id)!;
+        const made = scaleStateMotion(p.build(DESIGN[st]), 1, 1);
+        if (!acc) acc = { duration: made.period, loop: true, tracks: made.tracks };
+        else acc = { duration: Math.max(acc.duration, made.period), loop: true,
+                     tracks: [...acc.tracks.map((t) => ({ ...t, every: periodOf(t, acc!.duration) })), ...made.tracks] };
+    }
+    motions[st] = acc;
+}
+
+/** Every (layer, part) the four states can show, including mid-animation swaps. */
+const needed = new Map<string, { layer: LayerId; part: string }>();
+for (const st of STATES) {
+    const d = DESIGN[st];
+    const put = (layer: LayerId, part: string) => needed.set(`${layer}:${part}`, { layer, part });
+    put('browL', d.brows); put('browR', d.brows);
+    put('eyeL', d.eyes); put('eyeR', d.eyes); put('mouth', d.mouth);
+    for (const t of motions[st]?.tracks || []) {
+        if (isSpriteTrack(t)) for (const k of t.keys) put(t.layer, k.id);
+    }
+}
+
+// --------------------------------------------------------------- emit C
+const out = process.argv[2] || '.';
+mkdirSync(out, { recursive: true });
+const carr = (b: Buffer) => {
+    const parts: string[] = [];
+    for (let i = 0; i < b.length; i += 16) parts.push('    ' + [...b.subarray(i, i + 16)].map((v) => '0x' + v.toString(16).padStart(2, '0')).join(', '));
+    return parts.join(',\n');
+};
+
+const sprites: { sym: string; layer: LayerId; part: string; w: number; h: number; x: number; y: number; png?: string }[] = [];
+let cs = `/* GENERATED by tools/bake_face.ts — do not edit. */\n#include "face_assets.h"\n\n`;
+
+for (const [key, { layer, part }] of needed) {
+    const shapes = shapesFor(layer, part).filter((s) => s.t !== 'image');
+    const sym = 'spr_' + key.replace(/[^a-zA-Z0-9]/g, '_');
+    if (!shapes.length) { sprites.push({ sym, layer, part, w: 0, h: 0, x: 0, y: 0 }); continue; }
+    const r = raster(svgDoc(shapes.map(shapeToSvg).join('')));
+    if (!r.w) { sprites.push({ sym, layer, part, w: 0, h: 0, x: 0, y: 0 }); continue; }
+    cs += `static const uint8_t ${sym}_map[] = {\n${carr(r.px)}\n};\n`;
+    cs += `const lv_image_dsc_t ${sym} = { .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888, .w = ${r.w}, .h = ${r.h}, .stride = ${r.w * 4} }, .data_size = sizeof(${sym}_map), .data = ${sym}_map };\n\n`;
+    sprites.push({ sym, layer, part, w: r.w, h: r.h, x: r.x, y: r.y, png: r.png });
+}
+
+const bgd = bakeBackground();
+const BG_PNG = join(tmp, 'bg.png');
+cs += `static const uint8_t face_bg_map[] = {\n${carr(bgd.px)}\n};\n`;
+cs += `const lv_image_dsc_t face_bg = { .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565, .w = ${SIZE}, .h = ${SIZE}, .stride = ${SIZE * 2} }, .data_size = sizeof(face_bg_map), .data = face_bg_map };\n\n`;
+
+cs += `const face_sprite_t face_sprites[] = {\n`;
+for (const s of sprites) cs += `    { "${s.layer}", "${s.part}", ${s.w ? '&' + s.sym : 'NULL'}, ${s.x}, ${s.y} },\n`;
+cs += `};\nconst int face_sprite_count = ${sprites.length};\n\n`;
+
+const spriteIndex = (layer: LayerId, part: string) => sprites.findIndex((s) => s.layer === layer && s.part === part);
+const layerIdx = (l: LayerId) => LAYERS.indexOf(l);
+const propIdx = (p: string) => (p === 'sprite' ? 255 : NUMERIC_PROPS.indexOf(p as any));
+const FP = { x: 16, y: 16, scale: 1024, scaleY: 1024, rotation: 64, opacity: 255 } as Record<string, number>;
+
+cs += `static const face_key_t keys_all[] = {\n`;
+const trackRows: string[] = [];
+const stateRows: string[] = [];
+let ki = 0;
+for (const st of STATES) {
+    const m = motions[st];
+    const t0 = trackRows.length;
+    for (const tr of (m?.tracks || [])) {
+        const start = ki;
+        for (const k of tr.keys as any[]) {
+            const v = isSpriteTrack(tr) ? spriteIndex(tr.layer, k.id) : Math.round(k.v * FP[(tr as NumericTrack).prop]);
+            const e = isSpriteTrack(tr) ? 0 : EASINGS.indexOf((k as any).e);
+            cs += `    { ${k.t}, ${v}, ${e} },\n`; ki++;
+        }
+        trackRows.push(`    { ${layerIdx(tr.layer)}, ${propIdx(tr.prop)}, ${start}, ${ki - start}, ${periodOf(tr, m!.duration)} },`);
+    }
+    stateRows.push(`    { "${st}", ${m?.duration ?? 0}, ${t0}, ${trackRows.length - t0} },`);
+}
+cs += `};\nconst face_key_t *face_keys = keys_all;\n\n`;
+cs += `const face_track_t face_tracks[] = {\n${trackRows.join('\n')}\n};\n\n`;
+cs += `const face_state_t face_states[] = {\n${stateRows.join('\n')}\n};\nconst int face_state_count = ${STATES.length};\n\n`;
+
+cs += `const face_layer_part_t face_design[][5] = {\n`;
+for (const st of STATES) {
+    const d = DESIGN[st];
+    const row = (['browL', 'eyeL', 'browR', 'eyeR', 'mouth'] as LayerId[])
+        .map((l) => spriteIndex(l, l === 'mouth' ? d.mouth : l.startsWith('brow') ? d.brows : d.eyes));
+    cs += `    { ${row.map((i) => `{ ${i} }`).join(', ')} },\n`;
+}
+cs += `};\n\n`;
+
+cs += `const uint16_t face_easing_lut[${EASINGS.length}][${LUT_SIZE}] = {\n`;
+for (const e of EASINGS) cs += `    { ${[...EASING_LUT[e]].join(', ')} },\n`;
+cs += `};\n`;
+
+writeFileSync(join(out, 'face_assets.c'), cs);
+
+/* The same motions sampled here, in the same order, as the golden answer the C
+ * interpreter must reproduce. Emitted from the generator rather than written by hand,
+ * so the expectation cannot drift from the thing it is generated beside. */
+{
+    const TIMES = [0, 60, 120, 190, 240, 360, 400, 480, 700, 1000, 1500, 2000, 3000, 3700, 3900];
+    const rows: string[] = [];
+    for (const st of STATES) {
+        const m = motions[st];
+        for (const t of TIMES) {
+            const v = sampleMotion(m, t);
+            for (const l of LAYERS) {
+                const lv = v[l];
+                const sprite = lv.sprite === undefined ? -1 : spriteIndex(l, lv.sprite);
+                rows.push(`${st} ${t} ${LAYERS.indexOf(l)} ${lv.x.toFixed(4)} ${lv.y.toFixed(4)} ${lv.scale.toFixed(4)} ${lv.scaleY.toFixed(4)} ${lv.rotation.toFixed(4)} ${lv.opacity.toFixed(4)} ${sprite}`);
+            }
+        }
+    }
+    writeFileSync(join(out, 'xcheck.txt'), rows.join('\n') + '\n');
+    console.log(`xcheck.txt: ${rows.length} golden rows`);
+}
+
+/* A picture of what the device will draw, so the translation can be checked with
+ * eyes before anyone owns the panel. Not shipped; a build artefact for review. */
+for (const st of STATES) {
+    const d = DESIGN[st];
+    const args: string[] = [BG_PNG];
+    for (const layer of ['browL', 'eyeL', 'browR', 'eyeR', 'mouth'] as LayerId[]) {
+        const part = layer === 'mouth' ? d.mouth : layer.startsWith('brow') ? d.brows : d.eyes;
+        const s = sprites.find((x) => x.layer === layer && x.part === part);
+        if (s?.png) args.push(s.png, '-geometry', `+${s.x}+${s.y}`, '-composite');
+    }
+    args.push(join(out, `preview-${st}.png`));
+    execFileSync('magick', args);
+}
+console.log('previews: ' + STATES.map((s) => `preview-${s}.png`).join(', '));
+console.log(`sprites: ${sprites.length}  tracks: ${trackRows.length}  keys: ${ki}`);
+console.log(`face_assets.c: ${(cs.length / 1024).toFixed(0)} KB of C`);
+for (const s of sprites) console.log(`  ${s.layer.padEnd(6)} ${s.part.padEnd(10)} ${s.w}x${s.h} at ${s.x},${s.y}`);
