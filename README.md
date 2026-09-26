@@ -36,10 +36,60 @@ Read that repo for two things only, and do not change it:
 - its **model loader**, the precedent for download-and-verify (presigned URL → streamed to
   flash → CRC checked before commit).
 
+## Building
+
+Dependencies are **vendored in `components/`** and the component manager is switched off.
+idf 5.2.2's resolver cannot parse a `&&` in a dependency manifest and fails while merely
+*listing* registry versions, so pinning cannot avoid it — but nothing here needs the
+registry:
+
+    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw \
+        espressif/idf:v5.2.2 idf.py -DIDF_TARGET=esp32s3 build
+
+`components/lvgl` is a shallow clone of LVGL 9.2 (cloned by `sim/build.sh` on first run,
+shared by both builds). `components/esp_lcd_gc9a01` is copied from esp-bsp with its two
+esp-bsp cmake-helper lines commented out and the version triple supplied directly.
+
+The panel driver glue is written here rather than pulled from `esp_lvgl_port`: a display,
+two DMA-capable partial buffers, a flush that waits on the panel's completion callback,
+and a tick from `esp_timer`. About sixty lines, and one fewer dependency.
+
+## Watching it without hardware
+
+`sim/` builds the same `face_view.c` / `face_motion.c` / `face_assets.c` for the host and
+renders them into a memory buffer. See **Simulator** below.
+
 ## Status
 
-**Empty skeleton.** Nothing here drives hardware yet, and the most important input is still
-missing — see below.
+**It builds, and it has never run on a panel.** As of 2026-09-26, for ESP32-S3:
+
+| | |
+| --- | --- |
+| Static IRAM | 68,582 B (18.9% used) |
+| Static D/IRAM | 79,576 B — `.data` 11,216 + `.bss` 68,360 (23.0% used, ~266 KB free) |
+| Flash | 589,875 B — `.text` 340,211 + `.rodata` 249,408 |
+| App image | 669,673 B, 68% of the partition free |
+
+`.bss` already contains LVGL's 62 KB heap, and the two DMA draw buffers (23,040 B) are
+allocated at boot on top — so roughly **103 KB of internal RAM**, leaving ~240 KB for the
+radio stack this firmware does not yet bring up. That last clause is the whole caveat: the
+planning docs' gate is free internal SRAM **with Wi-Fi and MQTT running**, and that number
+does not exist yet.
+
+## Simulator
+
+    docker run --rm -p 8080:8080 -v "$PWD":/fw -w /fw espressif/idf:v5.2.2 \
+        bash sim/build.sh --serve
+
+Then open <http://localhost:8080/>. It uses the container's *host* gcc, not the Xtensa
+toolchain, so none of the IDF-version trouble applies. LVGL is cached as a static library
+after the first build. Without `--serve` it writes one PPM per sampled moment instead —
+`docs/sim-states.png` is made that way.
+
+It runs the same two partial draw buffers `main.c` gives the device, and reports what a
+face costs: draw buffers, LVGL heap used and peak, fragmentation, and the sprite bytes
+that live in flash rather than RAM. What it cannot see: the internal-versus-PSRAM split,
+DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cycles.
 
 ## Open questions blocking real work
 

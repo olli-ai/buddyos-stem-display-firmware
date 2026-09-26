@@ -12,14 +12,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE=${1:-sim/frames}
 
-if [ ! -d sim/lvgl ]; then
-  git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git sim/lvgl
+# LVGL lives in components/ because the firmware build needs it there too (it is
+# vendored rather than fetched: idf 5.2.2's component manager cannot parse a `&&`
+# in a dependency manifest, and fails while merely listing registry versions).
+# One checkout, both builds.
+if [ ! -d components/lvgl ]; then
+  git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 fi
 
 # lv_conf.h from LVGL's own template, so the simulator tracks whatever the version
 # in sim/lvgl expects rather than a copy that rots. Colour depth matches the panel.
 if [ ! -f sim/lv_conf.h ]; then
-  sed -e '0,/#if 0/s//#if 1/' sim/lvgl/lv_conf_template.h > sim/lv_conf.h
+  sed -e '0,/#if 0/s//#if 1/' components/lvgl/lv_conf_template.h > sim/lv_conf.h
   sed -i 's/^#define LV_COLOR_DEPTH .*/#define LV_COLOR_DEPTH 16/' sim/lv_conf.h
   sed -i 's/^#define LV_USE_LOG .*/#define LV_USE_LOG 1/' sim/lv_conf.h
   # LVGL's default 64 KB heap is left alone ON PURPOSE. An earlier renderer put a
@@ -37,15 +41,15 @@ fi
 if [ ! -f sim/liblvgl.a ] || [ sim/lv_conf.h -nt sim/liblvgl.a ]; then
   echo "building liblvgl.a (once)..."
   rm -rf sim/objs && mkdir -p sim/objs
-  mapfile -t SRC < <(find sim/lvgl/src -name '*.c')
+  mapfile -t SRC < <(find components/lvgl/src -name '*.c')
   printf '%s\n' "${SRC[@]}" | xargs -P "$(nproc)" -I{} sh -c \
-    'gcc -std=gnu11 -O1 -w -DLV_CONF_INCLUDE_SIMPLE -I sim -I sim/lvgl -c "$1" -o "sim/objs/$(echo "$1" | tr / _).o"' _ {}
+    'gcc -std=gnu11 -O1 -w -DLV_CONF_INCLUDE_SIMPLE -I sim -I components/lvgl -c "$1" -o "sim/objs/$(echo "$1" | tr / _).o"' _ {}
   ar rcs sim/liblvgl.a sim/objs/*.o
 fi
 
 gcc -std=gnu11 -O1 -w \
     -DLV_CONF_INCLUDE_SIMPLE \
-    -I sim -I sim/lvgl -I main -I main/generated \
+    -I sim -I components/lvgl -I main -I main/generated \
     sim/sim_main.c sim/sim_server.c main/face_view.c main/face_motion.c main/generated/face_assets.c \
     sim/liblvgl.a -lm -o sim/facesim
 exec ./sim/facesim "$MODE" "${2:-}"

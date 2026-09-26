@@ -8,9 +8,13 @@ ESP-IDF (C) firmware for the **screen-equipped BuddyOS STEM device** — the kit
 the Buddy a child designed on the website. Panel driver, LVGL, a face renderer that
 composites catalogue sprites, and an interpreter for the `.buddy` motion format.
 
-Right now it is an **empty skeleton**. Read `README.md` before proposing work; the panel is
-not chosen, and that decision gates the draw buffers, the sprite sizes and the partition
-budget.
+It builds for ESP32-S3 and has **never run on a panel**. `sim/` renders the same renderer
+and interpreter on the host — use it, it is where the layer-allocation bug was found.
+Read `README.md` for the build command and the current size figures.
+
+**Do not add a managed dependency.** idf 5.2.2's component manager cannot parse a `&&` in
+a dependency manifest and fails while listing registry versions, so everything is vendored
+in `components/` and the manager is switched off with `IDF_COMPONENT_MANAGER=0`.
 
 ## The rule that matters most
 
@@ -63,6 +67,9 @@ Two rules follow from the byte layout and are easy to get wrong:
   network. For a layer that is hygiene; when actuators arrive it is a safety requirement.
 - **A design naming an unknown part degrades to a fallback**, never to a blank screen
   (ADR 0009). Test it with a deliberately stale catalogue.
-- IDF **v5.2.2**, matching the org's Docker workflow. (The v5.5 breakage in the vision repo
-  was an I²C `driver_ng` conflict from the *camera* driver, which this firmware does not
-  have — so this pin is convention, not necessity.)
+- IDF **v5.2.2**, which is the image on the team's machines. (The v5.5 breakage in the
+  vision repo was an I²C `driver_ng` conflict from the *camera* driver, which this firmware
+  does not have — so this pin is convention, not necessity.)
+- **Never put a transform on a container that has children.** LVGL draws it through an
+  intermediate layer, and a 240x240 layer is 115 KB — more than the whole LVGL heap. The
+  face composes the head per sprite instead; `main/face_view.c` explains it.

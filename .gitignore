@@ -13,9 +13,10 @@ __pycache__/
 main/generated/preview-*.png
 
 # Simulator: LVGL checkout, its generated config, the binary and rendered frames.
-sim/lvgl/
+components/lvgl/
 sim/lv_conf.h
 sim/facesim
 sim/liblvgl.a
 sim/objs/
 sim/frames/
+sdkconfig
