@@ -66,13 +66,15 @@ renders them into a memory buffer. See **Simulator** below.
 | | |
 | --- | --- |
 | Static IRAM | 68,582 B (18.9% used) |
-| Static D/IRAM | 79,576 B — `.data` 11,216 + `.bss` 68,360 (23.0% used, ~266 KB free) |
+| Static D/IRAM | 46,808 B — `.bss` 35,592 (13.5% used, ~299 KB free) |
 | Flash | 589,875 B — `.text` 340,211 + `.rodata` 249,408 |
 | App image | 669,673 B, 68% of the partition free |
 
-`.bss` already contains LVGL's 62 KB heap, and the two DMA draw buffers (23,040 B) are
-allocated at boot on top — so roughly **103 KB of internal RAM**, leaving ~240 KB for the
-radio stack this firmware does not yet bring up. That last clause is the whole caveat: the
+`.bss` contains LVGL's static pool, cut from 64 KB to **32 KB** because the simulator
+measures the peak at 13,320 B for a four-state face — 50 KB was being held against nothing.
+With the two DMA draw buffers (23,040 B) allocated at boot, the face costs roughly **70 KB
+of internal RAM**, leaving **~276 KB** for the radio stack this firmware does not yet bring
+up. That last clause is the whole caveat: the
 planning docs' gate is free internal SRAM **with Wi-Fi and MQTT running**, and that number
 does not exist yet.
 

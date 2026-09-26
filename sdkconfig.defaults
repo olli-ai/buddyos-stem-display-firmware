@@ -10,6 +10,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
 # LVGL. RGB565 to match the panel; ARGB8888 sprites are decoded to it on the fly.
 CONFIG_LV_COLOR_DEPTH_16=y
+# LVGL reserves this as a static pool in .bss whether it uses it or not. The
+# simulator measures the peak at 13,320 B for a four-state face, so 64 KB was
+# 50 KB of internal SRAM held against nothing. 32 KB keeps ~2.4x headroom for a
+# richer design and hands the rest back to the radio stack, which is what the
+# memory question is actually about.
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
 CONFIG_LV_USE_PERF_MONITOR=n
 # Rotation and non-uniform scaling of images are what the motion format asks for.
 CONFIG_LV_DRAW_TRANSFORM_USE_MATRIX=y
