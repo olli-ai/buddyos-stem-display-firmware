@@ -52,4 +52,7 @@ gcc -std=gnu11 -O1 -w \
     -I sim -I components/lvgl -I main -I main/generated \
     sim/sim_main.c sim/sim_server.c main/face_view.c main/face_motion.c main/face_lipsync.c main/generated/face_assets.c \
     sim/liblvgl.a -lm -o sim/facesim
-exec ./sim/facesim "$MODE" "${2:-}"
+# The second argument must not be passed through empty: the simulator sees an argv[2]
+# of "", takes atoi("") = 0 for a port, and binds an ephemeral one — so the README's
+# own "open localhost:8080" was wrong for anyone who ran it without a port.
+exec ./sim/facesim "$MODE" "${2:-8080}"

@@ -5,6 +5,8 @@
 /** Build the face on `parent` and show `state`. */
 void face_view_create(lv_obj_t *parent);
 void face_view_set_state(int state);
+/** Which state is showing. For callers that did not set it themselves. */
+int face_view_state(void);
 /** Advance the animation. Call from an LVGL timer. */
 void face_view_tick(uint32_t elapsed_ms);
 

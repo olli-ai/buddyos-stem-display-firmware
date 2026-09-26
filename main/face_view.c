@@ -68,6 +68,8 @@ void face_view_create(lv_obj_t *parent)
     face_view_set_state(0);
 }
 
+int face_view_state(void) { return s_state; }
+
 void face_view_set_live_mouth(int16_t sprite)
 {
     s_live_mouth = sprite;

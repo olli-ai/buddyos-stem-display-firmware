@@ -85,7 +85,6 @@ static lv_display_t *s_disp;
  */
 static int16_t *s_pcm;
 static size_t s_pcm_n, s_pcm_at;
-static int s_speaking;
 
 static void load_fixture(const char *path)
 {
@@ -102,10 +101,24 @@ static void load_fixture(const char *path)
 
 static void lipsync_at(uint32_t ms)
 {
-    if (!s_pcm || !s_speaking) { face_view_set_live_mouth(-1); return; }
-    size_t want = (size_t)((uint64_t)ms * (uint64_t)face_viseme_rate / 1000u);
+    /* Which state is showing is asked of the renderer rather than tracked here: in
+     * serve mode the *server* cycles the states, and a flag set by the frame-dump
+     * loop would leave the browser — the thing anyone actually watches — showing a
+     * speaking Buddy with a silent mouth. */
+    static int last = -1;
+    static uint32_t entered;
+    int state = face_view_state();
+    if (state != last) { last = state; entered = ms; face_lipsync_start(); s_pcm_at = 0; }
+
+    if (!s_pcm || strcmp(face_states[state].name, "speaking") != 0) {
+        face_view_set_live_mouth(-1);
+        return;
+    }
+
+    /* Time since this state began, so the clip restarts with each turn at speaking. */
+    size_t want = (size_t)((uint64_t)(ms - entered) * (uint64_t)face_viseme_rate / 1000u);
     if (want > s_pcm_n) want = s_pcm_n;
-    if (want < s_pcm_at) { face_lipsync_start(); s_pcm_at = 0; }   /* the loop wrapped */
+    if (want < s_pcm_at) { face_lipsync_start(); s_pcm_at = 0; }
     int16_t sprite = -1;
     while (s_pcm_at < want) {
         size_t take = want - s_pcm_at < 256 ? want - s_pcm_at : 256;
@@ -134,6 +147,7 @@ int main(int argc, char **argv)
      *  facesim <dir>            dump one PPM per sampled moment            */
     int serve = argc > 1 && strcmp(argv[1], "--serve") == 0;
     int port = (serve && argc > 2) ? atoi(argv[2]) : 8080;
+    if (port <= 0) port = 8080;         /* an empty or junk argument is not "any port" */
     const char *out = (!serve && argc > 1) ? argv[1] : ".";
 
     lv_init();
@@ -177,8 +191,6 @@ int main(int argc, char **argv)
 
     for (int s = 0; s < face_state_count; s++) {
         face_view_set_state(s);
-        s_speaking = !strcmp(face_states[s].name, "speaking");
-        if (s_speaking) { face_lipsync_start(); s_pcm_at = 0; }
         for (unsigned i = 0; i < sizeof(TS) / sizeof(TS[0]); i++) {
             render_at(TS[i]);
             char name[128];
@@ -193,9 +205,6 @@ int main(int argc, char **argv)
     if (s_pcm) {
         for (int i = 0; i < face_state_count; i++)
             if (!strcmp(face_states[i].name, "speaking")) face_view_set_state(i);
-        s_speaking = 1;
-        face_lipsync_start();
-        s_pcm_at = 0;
         for (unsigned ms = 0; ms < 2400; ms += 48) {
             render_at(ms);
             char name[128];
