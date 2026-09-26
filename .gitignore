@@ -11,3 +11,11 @@ __pycache__/
 # Review artefacts from tools/bake_face.ts — regenerate, do not commit.
 # (docs/baked-states.png is the small joined version, and is committed.)
 main/generated/preview-*.png
+
+# Simulator: LVGL checkout, its generated config, the binary and rendered frames.
+sim/lvgl/
+sim/lv_conf.h
+sim/facesim
+sim/liblvgl.a
+sim/objs/
+sim/frames/
