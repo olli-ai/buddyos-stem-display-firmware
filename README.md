@@ -61,22 +61,43 @@ renders them into a memory buffer. See **Simulator** below.
 
 ## Status
 
-**It builds, and it has never run on a panel.** As of 2026-09-26, for ESP32-S3:
+**It builds, and it has never run on a panel.** As of 2026-09-26, ESP32-S3 with Wi-Fi and
+MQTT linked in, PSRAM enabled:
 
-| | |
-| --- | --- |
-| Static IRAM | 68,582 B (18.9% used) |
-| Static D/IRAM | 46,808 B — `.bss` 35,592 (13.5% used, ~299 KB free) |
-| Flash | 589,875 B — `.text` 340,211 + `.rodata` 249,408 |
-| App image | 669,673 B, 68% of the partition free |
+| | face only | with Wi-Fi + MQTT |
+| --- | --- | --- |
+| Static IRAM | 68,582 B | 94,566 B (26.1%) |
+| Static D/IRAM | 46,808 B | 68,512 B (19.8%, **277,344 B free**) |
+| App image | 669,673 B | 1,332,841 B (of a 2 MB partition) |
 
-`.bss` contains LVGL's static pool, cut from 64 KB to **32 KB** because the simulator
-measures the peak at 13,320 B for a four-state face — 50 KB was being held against nothing.
-With the two DMA draw buffers (23,040 B) allocated at boot, the face costs roughly **70 KB
-of internal RAM**, leaving **~276 KB** for the radio stack this firmware does not yet bring
-up. That last clause is the whole caveat: the
-planning docs' gate is free internal SRAM **with Wi-Fi and MQTT running**, and that number
-does not exist yet.
+RAM cost of the radio, by archive: `libpp` 13,942 B, `libnet80211` 11,997 B, `liblwip`
+3,721 B, `libesp_wifi` 862 B, `libmbedtls` 266 B, `libmqtt` 0 B (all flash).
+
+Take the two DMA draw buffers (23,040 B) off the 277,344 B and roughly **254 KB of internal
+SRAM is free at boot**. That is *before* Wi-Fi's dynamic allocations, which are the large
+ones and which `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` sends to PSRAM. **The number the
+planning docs ask for is the runtime one, and it only exists on hardware.**
+
+## Taking the measurement
+
+    idf.py menuconfig          # BuddyOS display firmware -> SSID, password, broker
+    idf.py -p /dev/ttyUSB0 flash monitor
+
+Every milestone logs one `mem` line — `boot`, `face up`, `wifi init`, `wifi started`,
+`wifi connected`, `mqtt started`, `mqtt connected`, then `running` periodically:
+
+    I (mem) [mqtt connected] internal: free N, min-ever N, largest N | dma: free N, largest N
+    I (mem) [mqtt connected] psram:    free N, min-ever N
+    I (mem) [mqtt connected] lvgl:     used N of N, peak N, frag N%
+
+**`min-ever` is the figure that matters** — the low-water mark, not whatever happens to be
+free when you look. And `largest` next to a healthy `free` is how fragmentation announces
+itself before an allocation fails. With no SSID configured the Wi-Fi stack still comes up
+and reports; it simply does not associate, which is itself a useful baseline.
+
+Worth running twice, with `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` on and off: on is the
+answer for this board, off is the pessimistic case and tells you how much of the margin is
+really PSRAM's doing.
 
 ## Simulator
 

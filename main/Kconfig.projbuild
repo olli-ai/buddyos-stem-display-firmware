@@ -1,0 +1,29 @@
+menu "BuddyOS display firmware"
+
+config BUDDY_NET
+    bool "Bring up Wi-Fi and MQTT"
+    default y
+    help
+        Off gives the face alone, which is the baseline the memory figures are
+        measured against. On is the number the planning docs actually ask for.
+
+config BUDDY_WIFI_SSID
+    string "Wi-Fi SSID"
+    depends on BUDDY_NET
+    default ""
+
+config BUDDY_WIFI_PASS
+    string "Wi-Fi password"
+    depends on BUDDY_NET
+    default ""
+
+config BUDDY_MQTT_URI
+    string "MQTT broker URI"
+    depends on BUDDY_NET
+    default "mqtt://test.mosquitto.org:1883"
+    help
+        mqtt:// is plaintext. mqtts:// pulls in mbedTLS, whose handshake is the
+        expensive moment — and on this product line a starved handshake has already
+        been seen to misreport itself as NOT_TRUSTED rather than as out of memory.
+
+endmenu

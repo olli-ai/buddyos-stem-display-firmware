@@ -19,3 +19,16 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=32
 CONFIG_LV_USE_PERF_MONITOR=n
 # Rotation and non-uniform scaling of images are what the motion format asks for.
 CONFIG_LV_DRAW_TRANSFORM_USE_MATRIX=y
+
+# ESP32-S3-WROOM-1-N8R2: 8 MB quad flash, 2 MB **quad** PSRAM. (The R8 variant is
+# octal and takes GPIO 35-37; R2 does not, so the panel pins are clear either way.)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# The knob that decides the answer: Wi-Fi and LWIP buffers go to PSRAM, leaving
+# internal SRAM for the things that cannot live anywhere else — DMA descriptors,
+# the panel buffers, and the parts of the TLS path that must be internal. Worth
+# measuring with this off as well, since that is the pessimistic case.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

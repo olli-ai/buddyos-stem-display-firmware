@@ -28,6 +28,8 @@
 #include "esp_lcd_gc9a01.h"
 #include "lvgl.h"
 #include "face_view.h"
+#include "mem_report.h"
+#include "net.h"
 
 static const char *TAG = "buddy-display";
 
@@ -83,6 +85,7 @@ static void face_timer(lv_timer_t *t)
 void app_main(void)
 {
     ESP_LOGI(TAG, "BuddyOS STEM display — GC9A01 %dx%d", LCD_W, LCD_H);
+    mem_report("boot");
 
     spi_bus_config_t bus = {
         .sclk_io_num = PIN_SCLK,
@@ -137,9 +140,15 @@ void app_main(void)
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     face_view_create(scr);
     lv_timer_create(face_timer, 16, NULL);          /* ~60 fps */
+    ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA", (unsigned)buf_bytes);
+    mem_report("face up");
 
-    ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA; free internal now: %u B",
-             (unsigned)buf_bytes, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+#if CONFIG_BUDDY_NET
+    /* Deliberately after the face. The panel buffers are DMA-capable internal memory
+     * and must be got before the radio fragments the heap — the opposite order is
+     * how the robokit ended up with BLE unable to start. */
+    net_start();
+#endif
 
     uint32_t report = 0;
     while (1) {
@@ -147,15 +156,6 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(wait > 20 ? 20 : (wait < 2 ? 2 : wait)));
         /* The measurement the planning docs have been arguing about instead of
          * taking. It means little until the radio is up, which is the next step. */
-        if (++report > 400) {
-            report = 0;
-            lv_mem_monitor_t m;
-            lv_mem_monitor(&m);
-            ESP_LOGI(TAG, "internal free %u B (largest %u B); lvgl used %u B peak %u B frag %u%%",
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-                     (unsigned)(m.total_size - m.free_size), (unsigned)m.max_used,
-                     (unsigned)m.frag_pct);
-        }
+        if (++report > 1500) { report = 0; mem_report("running"); }
     }
 }
