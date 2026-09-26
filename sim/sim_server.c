@@ -10,6 +10,7 @@
 #include "sim_server.h"
 #include "face_view.h"
 #include "face_motion.h"
+#include "lvgl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,8 +28,15 @@ static const char PAGE[] =
 "font:13px/1.5 ui-sans-serif,system-ui,sans-serif;color:#cfd8c0}"
 "canvas{width:480px;height:480px;image-rendering:pixelated;border-radius:50%;"
 "box-shadow:0 0 0 10px #22261b,0 14px 40px #000a}"
-"p{opacity:.65;margin:14px 0 0}</style>"
-"<canvas id=c width=240 height=240></canvas><p id=s>connecting...</p><script>"
+"p{opacity:.65;margin:14px 0 0}"
+"table{margin:16px 0 0;border-collapse:collapse;font-size:12px}"
+"td{padding:2px 10px 2px 0}td.k{opacity:.55}td.v{font-variant-numeric:tabular-nums}"
+"em{font-style:normal;opacity:.45;font-size:11px}</style>"
+"<canvas id=c width=240 height=240></canvas><p id=s>connecting...</p>"
+"<table><tbody id=t></tbody></table>"
+"<p><em>RAM figures are what the device would pay. Sprites are const and live in "
+"flash, so they cost it nothing in RAM. Host frame time is not the device's.</em></p>"
+"<script>"
 "const c=document.getElementById('c'),x=c.getContext('2d'),img=x.createImageData(240,240);"
 "async function f(){try{const r=await fetch('/frame',{cache:'no-store'});"
 "const st=r.headers.get('X-State')||'';const b=new Uint8Array(await r.arrayBuffer());"
@@ -36,7 +44,11 @@ static const char PAGE[] =
 "img.data[j]=((v>>11)&31)<<3;img.data[j+1]=((v>>5)&63)<<2;img.data[j+2]=(v&31)<<3;img.data[j+3]=255;}"
 "x.putImageData(img,0,0);document.getElementById('s').textContent=st;}"
 "catch(e){document.getElementById('s').textContent='disconnected';}"
-"requestAnimationFrame(f);}f();</script>";
+"requestAnimationFrame(f);}f();"
+"async function st(){try{const r=await fetch('/stats',{cache:'no-store'});const j=await r.json();"
+"document.getElementById('t').innerHTML=Object.entries(j).map(([k,v])=>"
+"'<tr><td class=k>'+k+'</td><td class=v>'+v+'</td></tr>').join('');}catch(e){}"
+"setTimeout(st,1000);}st();</script>";
 
 static uint32_t now_ms(void)
 {
@@ -55,7 +67,10 @@ static void send_all(int fd, const void *buf, size_t n)
     }
 }
 
-int sim_serve(int port, const uint16_t *fb, size_t fb_bytes, sim_render_cb render)
+static float last_render_ms;
+
+int sim_serve(int port, const uint16_t *fb, size_t fb_bytes, sim_render_cb render,
+              const sim_stats_t *stats)
 {
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) { perror("socket"); return 1; }
@@ -80,11 +95,44 @@ int sim_serve(int port, const uint16_t *fb, size_t fb_bytes, sim_render_cb rende
         ssize_t n = read(fd, req, sizeof(req) - 1);
         if (n <= 0) { close(fd); continue; }
 
+        if (strncmp(req, "GET /stats", 10) == 0) {
+            lv_mem_monitor_t m;
+            lv_mem_monitor(&m);
+            char body[768];
+            int bn = snprintf(body, sizeof(body),
+                "{\"state\":\"%s\","
+                "\"draw buffers (RAM)\":\"2 x %d px RGB565 = %zu B\","
+                "\"LVGL heap (RAM)\":\"%u B used of %u B\","
+                "\"LVGL heap peak\":\"%u B\","
+                "\"LVGL fragmentation\":\"%u%%\","
+                "\"sprites (flash)\":\"%zu B\","
+                "\"panel buffer\":\"%zu B (the simulated GC9A01)\","
+                "\"host frame time\":\"%.2f ms\"}",
+                face_states[shown < 0 ? 0 : shown].name,
+                stats->buf_px, stats->draw_buffer_bytes,
+                (unsigned)(m.total_size - m.free_size), (unsigned)m.total_size,
+                (unsigned)m.max_used, (unsigned)m.frag_pct,
+                stats->sprite_bytes, fb_bytes, last_render_ms);
+            char head[256];
+            int hn = snprintf(head, sizeof(head),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Content-Length: %d\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", bn);
+            send_all(fd, head, (size_t)hn);
+            send_all(fd, body, (size_t)bn);
+            close(fd);
+            continue;
+        }
+
         if (strncmp(req, "GET /frame", 10) == 0) {
             uint32_t ms = now_ms() - origin;
             int state = (int)((ms / STATE_MS) % (uint32_t)face_state_count);
             if (state != shown) { shown = state; face_view_set_state(state); }
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
             render(ms);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            last_render_ms = (float)((t1.tv_sec - t0.tv_sec) * 1000.0
+                                     + (t1.tv_nsec - t0.tv_nsec) / 1e6);
 
             char head[256];
             int hn = snprintf(head, sizeof(head),

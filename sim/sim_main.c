@@ -120,7 +120,11 @@ int main(int argc, char **argv)
     printf("sprites      : %zu B (flash/.rodata, not RAM)\n", sprite_bytes);
     fflush(stdout);
 
-    if (serve) return sim_serve(port, fb, sizeof(fb), render_at);
+    if (serve) {
+        sim_stats_t st = { .draw_buffer_bytes = sizeof(buf1) + sizeof(buf2),
+                           .sprite_bytes = sprite_bytes, .buf_px = BUF_PX };
+        return sim_serve(port, fb, sizeof(fb), render_at, &st);
+    }
 
     /* Moments chosen to land on the interesting part of each loop: mid-blink, the
      * peak of a breath, a brow at the top of its overshoot, the mouth mid-syllable. */
