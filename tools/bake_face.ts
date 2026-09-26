@@ -11,9 +11,14 @@
  * That is the answer to the question ADR 0009 left open: a generator cannot emit C from
  * a function, so it bakes the function's *output* instead.
  *
- * Needs: rsvg-convert and ImageMagick (`convert`), both on PATH.
- *   npx esbuild tools/bake_face.ts --bundle --platform=node --format=cjs \
- *     --outfile=/tmp/bake.cjs && node /tmp/bake.cjs <out-dir>
+ * Needs: rsvg-convert and ImageMagick (`magick`), both on PATH. Run it from the front
+ * end, whose tsconfig resolves the `~` imports; the picture loaders are there because
+ * looks.ts imports artwork this generator never rasterises.
+ *
+ *   cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_face.ts \
+ *     --bundle --platform=node --format=cjs --outfile=/tmp/bake.cjs \
+ *     --loader:.webp=text --loader:.png=text \
+ *   && node /tmp/bake.cjs ../buddyos-stem-display-firmware/main/generated
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -27,6 +32,11 @@ import {
     scaleStateMotion, periodOf, isSpriteTrack, sampleMotion,
     type LayerId, type StateMotion, type Track, type NumericTrack, type SpriteTrack,
 } from '../../buddyos-stem-fe/src/data/motion';
+import {
+    BANDS, FRAME, HOP, SAMPLE_RATE, VISEMES, VISEME_TABLE,
+    Loudness, VisemeSmoother, classify, features,
+    partsForStyle, type Viseme,
+} from '../../buddyos-stem-fe/src/data/visemes';
 
 const SIZE = 240;                       // the GC9A01 is 240x240
 const BASE_ID = 'sprout' as const;
@@ -43,6 +53,9 @@ const DESIGN: Record<TestState, FaceComposition> = {
     thinking:  { eyes: 'lookup', mouth: 'flatsmile', brows: 'furrow' },
     speaking:  { eyes: 'round',  mouth: 'open',      brows: 'flat' },
 };
+/** Which mouth each sound draws. A build-time choice until a design carries it. */
+const MOUTH_STYLE = 'natural';
+
 const MOTION_FOR: Record<TestState, string[]> = {
     idle: ['breathe', 'blink'],
     listening: ['browRaise'],
@@ -151,11 +164,18 @@ for (const st of STATES) {
     motions[st] = acc;
 }
 
-/** Every (layer, part) the four states can show, including mid-animation swaps. */
+/** Every (layer, part) the four states can show, including mid-animation swaps —
+ *  and every mouth the chosen talk style can ask for, which the states alone would
+ *  not cover. */
 const needed = new Map<string, { layer: LayerId; part: string }>();
+const putNeeded = (layer: LayerId, part: string) => needed.set(`${layer}:${part}`, { layer, part });
+for (const v of VISEMES) {
+    const part = partsForStyle(MOUTH_STYLE)[v];
+    if (part) putNeeded('mouth', part);
+}
 for (const st of STATES) {
     const d = DESIGN[st];
-    const put = (layer: LayerId, part: string) => needed.set(`${layer}:${part}`, { layer, part });
+    const put = putNeeded;
     put('browL', d.brows); put('browR', d.brows);
     put('eyeL', d.eyes); put('eyeR', d.eyes); put('mouth', d.mouth);
     for (const t of motions[st]?.tracks || []) {
@@ -235,6 +255,26 @@ cs += `const uint16_t face_easing_lut[${EASINGS.length}][${LUT_SIZE}] = {\n`;
 for (const e of EASINGS) cs += `    { ${[...EASING_LUT[e]].join(', ')} },\n`;
 cs += `};\n`;
 
+/* The lip-sync classifier's vocabulary, so the firmware reads the same numbers the
+ * browser does rather than a second copy someone kept in step by hand. */
+const vis = (v: Viseme) => {
+    const part = partsForStyle(MOUTH_STYLE)[v];
+    return part ? sprites.findIndex((s) => s.layer === 'mouth' && s.part === part) : -1;
+};
+cs += `/* lip-sync: style "${MOUTH_STYLE}" */\n`;
+cs += `const int16_t face_viseme_sprite[${VISEMES.length}] = { ${VISEMES.map(vis).join(', ')} };\n`;
+cs += `const face_viseme_bands_t face_viseme_bands = { ${BANDS.f1lo[0]}, ${BANDS.f1lo[1]}, ${BANDS.f1hi[0]}, ${BANDS.f1hi[1]}, ${BANDS.f2[0]}, ${BANDS.f2[1]}, ${BANDS.sib[0]}, ${BANDS.sib[1]} };\n`;
+cs += `const face_viseme_table_t face_viseme_table = {\n`
+    + `    .silence_rms = ${VISEME_TABLE.silence_rms}f, .wide_rms = ${VISEME_TABLE.wide_rms}f,\n`
+    + `    .mbp_rms = ${VISEME_TABLE.mbp_rms}f, .teeth_zcr = ${VISEME_TABLE.teeth_zcr}f,\n`
+    + `    .teeth_flat = ${VISEME_TABLE.teeth_flat}f, .narrow_front = ${VISEME_TABLE.narrow_front}f,\n`
+    + `    .wide_open = ${VISEME_TABLE.wide_open}f, .mid_open = ${VISEME_TABLE.mid_open}f,\n`
+    + `    .mbp_low = ${VISEME_TABLE.mbp_low}f, .pucker_low = ${VISEME_TABLE.pucker_low}f,\n`
+    + `    .switch_frames = ${VISEME_TABLE.switch_frames}, .min_hold_ms = ${VISEME_TABLE.min_hold_ms},\n`
+    + `};\n`;
+cs += `const int face_viseme_frame = ${FRAME};\nconst int face_viseme_hop = ${HOP};\n`;
+cs += `const int face_viseme_rate = ${SAMPLE_RATE};\n`;
+
 writeFileSync(join(out, 'face_assets.c'), cs);
 
 /* The same motions sampled here, in the same order, as the golden answer the C
@@ -256,6 +296,44 @@ writeFileSync(join(out, 'face_assets.c'), cs);
     }
     writeFileSync(join(out, 'xcheck.txt'), rows.join('\n') + '\n');
     console.log(`xcheck.txt: ${rows.length} golden rows`);
+}
+
+/* The same thing for lip-sync: the front end's own classifier run over a real clip,
+ * frame by frame, as the answer main/face_lipsync.c has to reproduce.
+ *
+ * The fixture is 1.2 s of Vietnamese followed by 1.2 s of English from the Omnivoice
+ * voices this product actually ships, spliced together — because code-switching
+ * inside one utterance is the case the whole audio-driven design exists for, and a
+ * classifier that only holds up on one language would pass a monolingual fixture.
+ *
+ * If the two sides ever disagree, the same face lip-syncs differently in the studio
+ * and on the kit, and a child would be the one to find it. */
+{
+    /* Relative to the output directory, not to this file: esbuild bundles this
+     * script to a temporary path, so __dirname is not the repo. */
+    const pcm = readFileSync(process.argv[3] || join(out, '..', '..', 'tools', 'lipsync-fixture.pcm'));
+    const n = Math.floor(pcm.length / 2);
+    const samples = new Float32Array(n);
+    for (let i = 0; i < n; i++) samples[i] = pcm.readInt16LE(i * 2) / 32768;
+
+    const loud = new Loudness();
+    const smoother = new VisemeSmoother();
+    const rows: string[] = [];
+    const seen = new Map<Viseme, number>();
+    for (let off = 0, k = 0; off + FRAME <= n; off += HOP, k++) {
+        const f = features(samples.subarray(off, off + FRAME), SAMPLE_RATE);
+        const raw = classify({ ...f, rms: loud.push(f.rms) });
+        /* The frame's own clock, counted in samples: the firmware has no wall clock
+         * it could agree with, and a shape's minimum hold is about how long it is
+         * *heard*. */
+        const t = Math.floor(((off + FRAME) * 1000) / SAMPLE_RATE);
+        const v = smoother.push(raw, t);
+        seen.set(v, (seen.get(v) || 0) + 1);
+        rows.push(`${k} ${t} ${VISEMES.indexOf(raw)} ${VISEMES.indexOf(v)}`);
+    }
+    writeFileSync(join(out, 'lipsync-xcheck.txt'), rows.join('\n') + '\n');
+    console.log(`lipsync-xcheck.txt: ${rows.length} frames  ` +
+        VISEMES.map((v) => `${v}:${seen.get(v) || 0}`).join(' '));
 }
 
 /* A picture of what the device will draw, so the translation can be checked with

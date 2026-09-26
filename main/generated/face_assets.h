@@ -40,6 +40,36 @@ typedef struct { int16_t sprite; } face_layer_part_t;
  * 1.0 and a plain 0..65535 row would clip the overshoot flat. Undo with FACE_LUT_VAL. */
 #define FACE_LUT_VAL(raw) (((float)(raw) / 65535.0f) * 3.0f - 1.0f)
 
+/* ---- lip-sync ------------------------------------------------------------
+ * The mouth shapes are chosen from the audio the Buddy is speaking, never from
+ * its text: the product speaks Vietnamese and English and code-switches inside a
+ * sentence, and a vowel's formants are the same in either. The thresholds below
+ * are generated from the front end's own table so both sides reach the same
+ * answer — see ../buddyos-stem-fe/src/data/visemes.ts.
+ */
+typedef struct {
+    int f1lo_a, f1lo_b;   /* Hz. Openness is where the energy sits *inside* F1's */
+    int f1hi_a, f1hi_b;   /* range, so it is split rather than measured whole.   */
+    int f2_a, f2_b;       /* the second formant: spread and front, or rounded    */
+    int sib_a, sib_b;     /* the fricative shelf                                 */
+} face_viseme_bands_t;
+
+typedef struct {
+    float silence_rms, wide_rms, mbp_rms;   /* fractions of this voice's own peak */
+    float teeth_zcr, teeth_flat;            /* a fricative is noise, not brightness */
+    float narrow_front, wide_open, mid_open;
+    float mbp_low, pucker_low;
+    int switch_frames;                      /* frames a new shape must win */
+    int min_hold_ms;                        /* ...and the shortest it may show */
+} face_viseme_table_t;
+
+/** Viseme order: rest, mbp, small, mid, wide, round, pucker, teeth.
+ *  A sprite index, or -1 for `rest`, which means "the mouth the child designed". */
+extern const int16_t face_viseme_sprite[8];
+extern const face_viseme_bands_t face_viseme_bands;
+extern const face_viseme_table_t face_viseme_table;
+extern const int face_viseme_frame, face_viseme_hop, face_viseme_rate;
+
 extern const lv_image_dsc_t face_bg;
 extern const face_sprite_t  face_sprites[];
 extern const int            face_sprite_count;

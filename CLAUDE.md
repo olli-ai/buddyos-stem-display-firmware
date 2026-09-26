@@ -52,6 +52,15 @@ The format is defined once, in TypeScript, and this firmware follows it:
   that reimplements a curve as a formula instead of reading the shipped table fails there,
   before a single sample is compared.
 - `../buddyos-stem-fe/src/data/motion.spec.ts` — the same behaviour as runnable assertions.
+- `../buddyos-stem-fe/src/data/visemes.ts` — the lip-sync bands, thresholds and smoothing.
+  `main/face_lipsync.c` is a transcription of it and nothing more; the numbers are
+  **generated** into `main/generated/face_assets.c`, never retyped. Change a threshold
+  there, re-bake, and the device follows. Change one here and the studio and the kit
+  lip-sync differently.
+
+`tools/xcheck.sh` is what keeps both honest — the motion vectors and the classifier against
+goldens the baker emits from that same TypeScript. Run it after touching either, and after
+re-baking. A change that makes it fail is a change to the contract, not to this repo.
 
 Two rules follow from the byte layout and are easy to get wrong:
 
@@ -59,6 +68,13 @@ Two rules follow from the byte layout and are easy to get wrong:
   unaligned 16-bit loads on Xtensa fault or trap.
 - A `sprite` track is **stepped, never interpolated**. Halfway between part 1 and part 8 is
   part 4, which is some other eye entirely.
+
+And one that follows from what lip-sync is for:
+
+- The mouth is chosen from **audio, never text**. The product code-switches inside a
+  sentence, so text would mean per-language phoneme rules. Feed the classifier the PCM on
+  its way to the speaker — a microphone tap makes the Buddy mouth what the *child* is
+  saying, which looks almost right, and is why it would survive review.
 
 ## Conventions
 

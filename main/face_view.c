@@ -31,6 +31,9 @@ static lv_obj_t *s_bg;
 static lv_obj_t *s_layer[FACE_LAYER_COUNT];   /* 1..5; [0] is the whole head */
 static int s_state;
 static int16_t s_shown[FACE_LAYER_COUNT];
+static int16_t s_live_mouth = -1;             /* lip-sync, or -1 for the authored mouth */
+
+#define MOUTH_LAYER 5
 
 /* face_design rows are browL, eyeL, browR, eyeR, mouth — the LAYERS order minus
  * the head itself. */
@@ -63,6 +66,11 @@ void face_view_create(lv_obj_t *parent)
         lv_obj_add_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN);
     }
     face_view_set_state(0);
+}
+
+void face_view_set_live_mouth(int16_t sprite)
+{
+    s_live_mouth = sprite;
 }
 
 void face_view_set_state(int state)
@@ -111,7 +119,16 @@ void face_view_tick(uint32_t elapsed_ms)
     place(s_bg, &v[0], &REST, 0, 0, face_bg.header.w, face_bg.header.h);
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
-        if (v[i].sprite >= 0) show_sprite(i, v[i].sprite);
+        if (i == MOUTH_LAYER && s_live_mouth >= 0) {
+            /* Live speech wins over whatever the mouth track was doing. */
+            show_sprite(i, s_live_mouth);
+        } else if (i == MOUTH_LAYER && v[i].sprite < 0) {
+            /* Released, and this state has no mouth track to fall back to: put the
+             * designed mouth back rather than leaving the last spoken shape on. */
+            show_sprite(i, face_design[s_state][4].sprite);
+        } else if (v[i].sprite >= 0) {
+            show_sprite(i, v[i].sprite);
+        }
         if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
         const face_sprite_t *sp = &face_sprites[s_shown[i]];
         place(s_layer[i], &v[0], &v[i], sp->x, sp->y, sp->img->header.w, sp->img->header.h);

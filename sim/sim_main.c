@@ -13,6 +13,7 @@
 #include "lvgl.h"
 #include "face_view.h"
 #include "face_motion.h"
+#include "face_lipsync.h"
 #include "sim_server.h"
 #include <stdio.h>
 #include <string.h>
@@ -75,11 +76,54 @@ static void dump(const char *dir, const char *name)
 
 static lv_display_t *s_disp;
 
+/* ---- lip-sync --------------------------------------------------------------
+ * The speaking state is the one worth watching, and until this device has audio
+ * hardware the only way to watch it is to play the same clip the conformance check
+ * uses through the same classifier the firmware runs. The audio clock is the sim
+ * clock: a frame at t ms sees exactly t ms of the clip, so a paused simulator shows
+ * a real mouth shape for a real instant of speech rather than a plausible one.
+ */
+static int16_t *s_pcm;
+static size_t s_pcm_n, s_pcm_at;
+static int s_speaking;
+
+static void load_fixture(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return;                     /* no clip, no lip-sync; everything else runs */
+    fseek(f, 0, SEEK_END);
+    long bytes = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    s_pcm = malloc((size_t)bytes);
+    s_pcm_n = fread(s_pcm, sizeof(int16_t), (size_t)bytes / 2, f);
+    fclose(f);
+    printf("lip-sync     : %s, %.1f s at %d Hz\n", path, (double)s_pcm_n / face_viseme_rate, face_viseme_rate);
+}
+
+static void lipsync_at(uint32_t ms)
+{
+    if (!s_pcm || !s_speaking) { face_view_set_live_mouth(-1); return; }
+    size_t want = (size_t)((uint64_t)ms * (uint64_t)face_viseme_rate / 1000u);
+    if (want > s_pcm_n) want = s_pcm_n;
+    if (want < s_pcm_at) { face_lipsync_start(); s_pcm_at = 0; }   /* the loop wrapped */
+    int16_t sprite = -1;
+    while (s_pcm_at < want) {
+        size_t take = want - s_pcm_at < 256 ? want - s_pcm_at : 256;
+        sprite = face_lipsync_feed(&s_pcm[s_pcm_at], take);
+        s_pcm_at += take;
+    }
+    /* Past the end of the clip the Buddy has stopped talking, and a mouth left on
+     * its last syllable is exactly the artefact the stop path exists to avoid. */
+    if (s_pcm_at >= s_pcm_n) { face_lipsync_stop(); sprite = -1; }
+    face_view_set_live_mouth(sprite);
+}
+
 /* One frame at a given moment, straight into fb. Shared by both modes so what you
  * watch in a browser is what the frame dumps show. */
 static void render_at(uint32_t ms)
 {
     sim_ms = ms;
+    lipsync_at(ms);
     face_view_tick(ms);
     lv_refr_now(s_disp);
 }
@@ -103,6 +147,7 @@ int main(int argc, char **argv)
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     face_view_create(scr);
+    load_fixture(getenv("FACE_PCM") ? getenv("FACE_PCM") : "tools/lipsync-fixture.pcm");
 
     /* What this would cost the device. Container limits cannot model an MCU — a
      * Linux process is megabytes before it does anything — so the budget worth
@@ -132,6 +177,8 @@ int main(int argc, char **argv)
 
     for (int s = 0; s < face_state_count; s++) {
         face_view_set_state(s);
+        s_speaking = !strcmp(face_states[s].name, "speaking");
+        if (s_speaking) { face_lipsync_start(); s_pcm_at = 0; }
         for (unsigned i = 0; i < sizeof(TS) / sizeof(TS[0]); i++) {
             render_at(TS[i]);
             char name[128];
@@ -139,6 +186,23 @@ int main(int argc, char **argv)
             dump(out, name);
         }
         printf("rendered %s (%u ms loop)\n", face_states[s].name, face_states[s].duration);
+    }
+    /* A strip through the clip: what a child would see while the Buddy says one
+     * bilingual sentence. Spaced at the hop, so consecutive frames are consecutive
+     * decisions and a shape that never changes — or changes every frame — shows up. */
+    if (s_pcm) {
+        for (int i = 0; i < face_state_count; i++)
+            if (!strcmp(face_states[i].name, "speaking")) face_view_set_state(i);
+        s_speaking = 1;
+        face_lipsync_start();
+        s_pcm_at = 0;
+        for (unsigned ms = 0; ms < 2400; ms += 48) {
+            render_at(ms);
+            char name[128];
+            snprintf(name, sizeof(name), "talk-%04u", ms);
+            dump(out, name);
+        }
+        printf("rendered 50 lip-sync frames over 2.4 s of real speech\n");
     }
     printf("done\n");
     return 0;

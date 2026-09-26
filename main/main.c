@@ -22,12 +22,14 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include <string.h>
 #include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_gc9a01.h"
 #include "lvgl.h"
 #include "face_view.h"
+#include "face_lipsync.h"
 #include "mem_report.h"
 #include "net.h"
 
@@ -69,6 +71,60 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 
 static uint32_t tick_cb(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+#if CONFIG_BUDDY_LIPSYNC_DEMO
+/* 2.4 s of the product's own TTS — Vietnamese then English in one utterance, which
+ * is the case the audio-driven design exists for. The same clip tools/xcheck.c holds
+ * the classifier to, so what the panel shows is what the website shows. */
+extern const uint8_t clip_start[] asm("_binary_lipsync_fixture_pcm_start");
+extern const uint8_t clip_end[]   asm("_binary_lipsync_fixture_pcm_end");
+
+/** Play the clip in step with the animation clock while the face is speaking. */
+static void lipsync_demo(int state, uint32_t ms)
+{
+    const int16_t *pcm = (const int16_t *)clip_start;
+    const size_t n = (size_t)(clip_end - clip_start) / sizeof(int16_t);
+    static size_t at;
+    static int was;
+
+    if (strcmp(face_states[state].name, "speaking") != 0) {
+        if (was) { face_lipsync_stop(); face_view_set_live_mouth(-1); was = 0; }
+        return;
+    }
+    if (!was) { face_lipsync_start(); at = 0; was = 1; }
+
+    /* State time, not boot time: the clip restarts with each turn at speaking. */
+    uint32_t in_state = ms % STATE_MS;
+    size_t want = (size_t)((uint64_t)in_state * face_viseme_rate / 1000u);
+    if (want > n) want = n;
+    if (want < at) { face_lipsync_start(); at = 0; }
+    int16_t sprite = -1;
+    int before = face_lipsync_frames();
+    int64_t t0 = esp_timer_get_time();
+    while (at < want) {
+        size_t take = want - at < 256 ? want - at : 256;
+        sprite = face_lipsync_feed(&pcm[at], take);
+        at += take;
+    }
+    /* What the classifier costs, measured rather than argued about: a 512-point FFT
+     * plus a spectral flatness every 16 ms of audio is the one part of this that
+     * could plausibly not fit, and nobody has run it on silicon yet. */
+    if (face_lipsync_frames() > before) {
+        static int64_t total_us;
+        static int frames;
+        total_us += esp_timer_get_time() - t0;
+        if ((frames += face_lipsync_frames() - before) >= 100) {
+            ESP_LOGI(TAG, "lip-sync: %lld us per frame (%d ms of audio each)",
+                     total_us / frames, face_viseme_hop * 1000 / face_viseme_rate);
+            total_us = 0; frames = 0;
+        }
+    }
+    /* Past the end of the clip the Buddy has stopped talking; a mouth left open on
+     * its last syllable is the artefact the stop path exists to avoid. */
+    if (at >= n) { face_lipsync_stop(); sprite = -1; }
+    face_view_set_live_mouth(sprite);
+}
+#endif
+
 static void face_timer(lv_timer_t *t)
 {
     (void)t;
@@ -79,6 +135,9 @@ static void face_timer(lv_timer_t *t)
 
     int want = (int)((ms / STATE_MS) % (uint32_t)face_state_count);
     if (want != state) { state = want; face_view_set_state(state); }
+#if CONFIG_BUDDY_LIPSYNC_DEMO
+    lipsync_demo(state, ms);
+#endif
     face_view_tick(ms);
 }
 

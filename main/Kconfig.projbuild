@@ -26,4 +26,17 @@ config BUDDY_MQTT_URI
         expensive moment — and on this product line a starved handshake has already
         been seen to misreport itself as NOT_TRUSTED rather than as out of memory.
 
+config BUDDY_LIPSYNC_DEMO
+    bool "Lip-sync the face to an embedded speech clip"
+    default y
+    help
+        This device has no audio hardware yet, so the only way to see the mouth
+        follow real speech is to play a recording through the same classifier the
+        product will feed from the decoder. Costs ~75 KB of flash for 2.4 s of
+        Vietnamese and English from the shipped Omnivoice voices.
+
+        Off strips the classifier from the image entirely — which is the honest
+        baseline, and also the trap: an earlier measurement here looked wonderful
+        because the linker had quietly dropped the whole networking stack.
+
 endmenu

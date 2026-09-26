@@ -50,6 +50,6 @@ fi
 gcc -std=gnu11 -O1 -w \
     -DLV_CONF_INCLUDE_SIMPLE \
     -I sim -I components/lvgl -I main -I main/generated \
-    sim/sim_main.c sim/sim_server.c main/face_view.c main/face_motion.c main/generated/face_assets.c \
+    sim/sim_main.c sim/sim_server.c main/face_view.c main/face_motion.c main/face_lipsync.c main/generated/face_assets.c \
     sim/liblvgl.a -lm -o sim/facesim
 exec ./sim/facesim "$MODE" "${2:-}"
