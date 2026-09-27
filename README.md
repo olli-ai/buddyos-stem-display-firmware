@@ -235,6 +235,37 @@ A zero-length retained publish to the same topic is how MQTT forgets one:
     python3 tools/send_face.py --clear --no-retain   # stop sending it
     # and to delete what is already retained there, publish an empty retained payload
 
+### The characters live in their own partition
+
+There are six mascots and the app image can afford one, so the artwork lives in the
+`faces` partition ADR 0009 reserves — **1,138 KB of 1,536 KB** — and is **memory-mapped
+rather than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
+six characters cost **no RAM at all**. That is the only reason they are affordable, and
+it is also why a new character is a catalogue image rather than an OTA for every device.
+
+    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_catalogue.ts \
+      --bundle --platform=node --format=cjs --outfile=/tmp/cat.cjs \
+      --loader:.webp=dataurl --loader:.png=dataurl \
+    && node /tmp/cat.cjs ../buddyos-stem-display-firmware/build/face_catalogue.bin
+
+    esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash 0x412000 build/face_catalogue.bin
+
+Each character carries its body (RGB565A8, so it can be tinted) and the face its artist
+drew — the `artwork` part ids, which are bitmaps rather than shapes anything can compute.
+The drawn catalogue stays in the app: those are the same curves on every character. With
+no catalogue written, the partition reads as blank flash, the mount says so, and the kit
+shows the character baked into the firmware.
+
+**Three of the six are the wrong shape for this panel, and it is not a bug.** Sprout, Pip
+and Leaf are heads that fill the frame, with their features where `paint` says — so the
+baker erases the original face and a child's chosen eyes land in its place. Robot wears
+its face as a *screen* and Board as a printed *sticker*, sized nothing like those
+ellipses, so the patch misses, the original features stay visible, and drawn parts land
+beside them. Framing each character on its head was tried, and it improved the ones that
+were already heads while making Robot show two faces — see the note in
+`tools/bake_catalogue.ts`. Those characters need head-first artwork, which is an art
+decision and not a generator one.
+
 ### It reaches the product broker
 
 `mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted
