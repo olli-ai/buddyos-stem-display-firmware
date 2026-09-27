@@ -237,9 +237,9 @@ A zero-length retained publish to the same topic is how MQTT forgets one:
 
 ### The characters live in their own partition
 
-There are six mascots and the app image can afford one, so the artwork lives in the
-`faces` partition ADR 0009 reserves — **1,138 KB of 1,536 KB** — and is **memory-mapped
-rather than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
+**Three characters ship on this panel — Sprout, Pip and Leaf** — and the artwork lives in
+the `faces` partition ADR 0009 reserves (**589 KB of 1,536 KB**), **memory-mapped rather
+than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
 six characters cost **no RAM at all**. That is the only reason they are affordable, and
 it is also why a new character is a catalogue image rather than an OTA for every device.
 
@@ -256,15 +256,20 @@ The drawn catalogue stays in the app: those are the same curves on every charact
 no catalogue written, the partition reads as blank flash, the mount says so, and the kit
 shows the character baked into the firmware.
 
-**Three of the six are the wrong shape for this panel, and it is not a bug.** Sprout, Pip
-and Leaf are heads that fill the frame, with their features where `paint` says — so the
-baker erases the original face and a child's chosen eyes land in its place. Robot wears
-its face as a *screen* and Board as a printed *sticker*, sized nothing like those
-ellipses, so the patch misses, the original features stay visible, and drawn parts land
-beside them. Framing each character on its head was tried, and it improved the ones that
-were already heads while making Robot show two faces — see the note in
-`tools/bake_catalogue.ts`. Those characters need head-first artwork, which is an art
-decision and not a generator one.
+**The other three are deliberately not here.** Sprout, Pip and Leaf are *heads*: they
+fill the frame and their features sit where `paint` says, so the baker erases the
+original face and a child's chosen eyes land where the old ones were. Cardboard, Robot
+and Board are objects that happen to have a face — a box on wheels, a robot with arms, a
+dev board — worn as a printed sticker or a lit screen, nothing like those ellipses. On a
+240 px round panel their bodies win the circle, their eyes come out a few pixels across,
+and the patch misses their real features so drawn parts land beside them rather than over
+them. Framing each on its head was tried and made Robot show *two* faces (the note is
+kept in `tools/bake_catalogue.ts`).
+
+They stay on the website, where a kit card is the right place for a picture of the kit. A
+kit whose design names one shows the built-in character and says so in the log. Give them
+head-first artwork and they belong here too — `ON_DEVICE` in the generator is the only
+thing that would change.
 
 ### It reaches the product broker
 

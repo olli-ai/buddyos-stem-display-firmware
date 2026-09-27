@@ -121,7 +121,23 @@ function artPart(box: any, n: string): { px: Buffer; w: number; h: number; x: nu
 }
 
 const outPath = process.argv[2] || 'face_catalogue.bin';
-const bases = Object.values(LOOKS).filter((b: any) => b.paint && b.faces?.happy) as any[];
+
+/* The characters this panel carries, decided 2026-09-27 after seeing all six on it.
+ *
+ * These three are *heads*: they fill the frame, and their features sit where `paint`
+ * says, so the baker can erase the original face and a child's chosen eyes land where
+ * the old ones were. Cardboard, Robot and Board are objects that happen to have a
+ * face — a box on wheels, a robot with arms, a dev board — worn as a printed sticker
+ * or a lit screen, nothing like those ellipses. On a 240 px round panel their bodies
+ * win the circle and their eyes come out a few pixels across, and the patch misses
+ * their real features so drawn parts land beside them rather than over them.
+ *
+ * They stay on the website, where a kit card is the right place for a picture of the
+ * kit. A kit whose design names one shows the built-in character and says so. Give
+ * them head-first artwork and they belong here too — nothing else needs to change. */
+const ON_DEVICE = ['sprout', 'pip', 'leaf'];
+const bases = Object.values(LOOKS).filter((b: any) =>
+    b.paint && b.faces?.happy && ON_DEVICE.includes(b.id)) as any[];
 
 /* Layout: header, then one fixed-size record per base, then everything's pixels.
  * Offsets are from the start of the file so the device can mmap the whole partition
