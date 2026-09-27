@@ -12,6 +12,8 @@
 
 static const char *TAG = "design";
 
+static void forget(void);
+
 #define NVS_NS   "buddy"
 #define NVS_KEY  "design"
 /* One design is a few hundred bytes of choices; a generous ceiling still costs
@@ -74,16 +76,46 @@ static void apply_talk(const cJSON *talk)
     face_lipsync_set_mouths(mouths);
 }
 
+/** Set when the design just applied was an empty one. Read once by `receive`. */
+static bool s_cleared;
+
 bool face_directive_apply(const char *json, size_t len)
 {
+    s_cleared = false;
     cJSON *root = cJSON_ParseWithLength(json, len);
     if (!root) { ESP_LOGE(TAG, "not JSON, ignoring %u B", (unsigned)len); return false; }
+
+    /* The directive topic carries more than faces — programs, and whatever comes
+     * next — so anything that does not say `face.*` is somebody else's message and
+     * is left alone. This is not fussiness: without it the device's own hello event
+     * read as an empty design and erased the child's face, which is exactly the
+     * shape of bug that would reach a classroom before it reached a test. */
+    const cJSON *type = cJSON_GetObjectItem(root, "type");
+    if (cJSON_IsString(type) && strncmp(type->valuestring, "face.", 5) != 0) {
+        cJSON_Delete(root);
+        return false;
+    }
 
     /* Accept either the directive's `data` or the design's `extra` straight from
      * the gateway — they are the same object, and which one arrives depends on who
      * is publishing. Being strict here would only make a bench test harder. */
     const cJSON *extra = cJSON_GetObjectItem(root, "data");
     if (!cJSON_IsObject(extra)) extra = root;
+
+    /* An empty design is not a malformed one: it is what the gateway sends when a
+     * child deletes their design, and it means "back to the face you were born
+     * with". Treating it as nothing to do would leave the deleted face on screen
+     * forever, since the retained message is now this. */
+    if (!cJSON_GetObjectItem(extra, "faces") && !cJSON_GetObjectItem(extra, "talk")
+        && !cJSON_GetObjectItem(extra, "motion")) {
+        ESP_LOGI(TAG, "design cleared — back to the built-in face");
+        s_cleared = true;
+        face_view_reset_parts();
+        face_lipsync_set_mouths(face_viseme_sprite);
+        cJSON_Delete(root);
+        forget();
+        return true;
+    }
 
     const cJSON *faces = cJSON_GetObjectItem(extra, "faces");
     const cJSON *states = faces ? cJSON_GetObjectItem(faces, "states") : NULL;
@@ -128,6 +160,16 @@ bool face_directive_apply(const char *json, size_t len)
     return changed;
 }
 
+/** Drop what was kept, so a cleared design stays cleared across a reboot. */
+static void forget(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, NVS_KEY);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 /** Keep it, so the face survives a power cut. Stored raw: the thing that arrived is
  *  the thing that gets replayed, and no second format can drift from the first. */
 static void remember(const char *json, size_t len)
@@ -148,7 +190,9 @@ static void remember(const char *json, size_t len)
 bool face_directive_receive(const char *json, size_t len)
 {
     bool ok = face_directive_apply(json, len);
-    if (ok) remember(json, len);
+    /* `apply` erases the stored design when it is told to clear; storing this
+     * payload would only put it straight back. */
+    if (ok && !s_cleared) remember(json, len);
     return ok;
 }
 

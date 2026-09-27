@@ -90,6 +90,13 @@ void face_view_create(lv_obj_t *parent)
 
 int face_view_state(void) { return s_state; }
 
+void face_view_reset_parts(void)
+{
+    for (int st = 0; st < face_state_count && st < 8; st++)
+        for (int i = 0; i < 5; i++) s_parts[st][i] = face_design[st][i].sprite;
+    s_parts_dirty = true;
+}
+
 void face_view_set_state_parts(int state, const int16_t parts[5])
 {
     if (state < 0 || state >= face_state_count || state >= 8) return;

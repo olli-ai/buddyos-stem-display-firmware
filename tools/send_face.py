@@ -71,9 +71,9 @@ class Mqtt:
             raise SystemExit("CONNECT refused: %s" % {4: "bad username/password",
                                                       5: "not authorized"}.get(r[3] if len(r) > 3 else -1, r))
 
-    def publish(self, topic, payload, qos=1):
+    def publish(self, topic, payload, qos=1, retain=False):
         body = _s(topic) + (struct.pack(">H", 1) if qos else b"") + payload.encode()
-        self.s.sendall(bytes([0x30 | (qos << 1)]) + _rl(len(body)) + body)
+        self.s.sendall(bytes([0x30 | (qos << 1) | (1 if retain else 0)]) + _rl(len(body)) + body)
 
     def close(self):
         try:
@@ -83,6 +83,8 @@ class Mqtt:
 
 
 def design_from(args):
+    if args.clear:
+        return {}
     if args.file:
         extra = json.load(open(args.file))
         # Accept a whole design row, the `extra` column, or a directive.
@@ -97,8 +99,10 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--preset", choices=sorted(PRESETS), help="a face built here")
     g.add_argument("--file", help="a design saved by the studio (JSON)")
+    g.add_argument("--clear", action="store_true", help="back to the built-in face")
     ap.add_argument("--style", default="natural", help="how it talks: natural, gentle, big, cheeky")
     ap.add_argument("--serial", default=os.environ.get("STEM_MQTT_USER", ""), help="device serial")
+    ap.add_argument("--no-retain", action="store_true", help="do not leave it waiting for an offline kit")
     args = ap.parse_args()
 
     user = os.environ.get("STEM_MQTT_ADMIN_USER") or os.environ.get("STEM_MQTT_USER")
@@ -116,11 +120,14 @@ def main():
     payload = json.dumps(directive, separators=(",", ":"))
 
     m = Mqtt(HOST, PORT, f"send-face-{uuid.uuid4().hex[:8]}", user, pw)
-    m.publish(topic, payload)
+    # Retained, as the gateway sends it: a kit is usually switched off while a child
+    # is designing for it, and a clean-session device would simply miss the message.
+    m.publish(topic, payload, retain=not args.no_retain)
     time.sleep(0.5)
     m.close()
     print(f"sent {len(payload)} B to {topic}")
-    print("  " + json.dumps(directive["data"].get("faces", {}).get("states", {}).get("idle", {})))
+    idle = directive["data"].get("faces", {}).get("states", {}).get("idle")
+    print("  " + (json.dumps(idle) if idle else "cleared — back to the built-in face"))
     if not admin:
         print("  (bench path: the device must be built with CONFIG_BUDDY_DESIGN_VIA_EVENT)")
 
