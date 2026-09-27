@@ -18,6 +18,7 @@ typedef struct { lv_image_header_t header; uint32_t data_size; const uint8_t *da
 #define LV_IMAGE_HEADER_MAGIC 0x19
 #define LV_COLOR_FORMAT_RGB565 0x12
 #define LV_COLOR_FORMAT_ARGB8888 0x10
+#define LV_COLOR_FORMAT_RGB565A8 0x14
 STUB
 gcc -std=gnu11 -O1 -Wall -I /tmp/xcheck -I main -I main/generated \
     tools/xcheck.c main/face_motion.c main/face_lipsync.c main/generated/face_assets.c \
