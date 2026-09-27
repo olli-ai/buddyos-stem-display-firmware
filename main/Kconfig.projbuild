@@ -26,6 +26,37 @@ config BUDDY_MQTT_URI
         expensive moment — and on this product line a starved handshake has already
         been seen to misreport itself as NOT_TRUSTED rather than as out of memory.
 
+config BUDDY_MQTT_USER
+    string "MQTT username (the device serial)"
+    depends on BUDDY_NET
+    default ""
+
+config BUDDY_MQTT_PASS
+    string "MQTT password (the device JWT)"
+    depends on BUDDY_NET
+    default ""
+    help
+        The token ../user-service-viettel mints at POST /v1/mqtt/generate-token. It
+        carries the EMQX ACL, so which topics this device may touch is decided by
+        the token rather than by anything here.
+
+config BUDDY_MQTT_ENV
+    string "Topic namespace (the stem-gateway environment)"
+    depends on BUDDY_NET
+    default "staging"
+    help
+        Topics are {env}/stem/device/{username}/{directive,event,log}. It must match
+        the `environment` claim in the token or every publish is denied.
+
+config BUDDY_MQTT_AWS_ROOT
+    bool "Verify the broker with the embedded Amazon Root CA 1"
+    depends on BUDDY_NET
+    default y
+    help
+        The product broker sits behind an AWS certificate, and one root is 1.2 KB
+        against the full bundle's 65 KB. Turn this off to reach a broker with some
+        other publicly-trusted certificate, which costs the whole bundle.
+
 config BUDDY_LIPSYNC_DEMO
     bool "Lip-sync the face to an embedded speech clip"
     default y

@@ -137,13 +137,17 @@ The figure the planning docs kept asking for, measured 2026-09-27:
 | mqtt started | 166,667 | 166,667 | 69,632 | 2,029,964 |
 | mqtt connected | 171,711 | 166,135 | 69,632 | 2,029,764 |
 
-…and the same run over **TLS** (`mqtts://`, verified against IDF's bundled public roots):
+…the same run over **TLS** to a public test broker, and then to **the product's own EMQX**
+with a device JWT:
 
-| Stage | Internal free | min-ever | largest block | PSRAM free |
-| --- | --- | --- | --- | --- |
-| wifi connected | 175,523 | 174,107 | 77,824 | 2,030,596 |
-| mqtt started | 166,251 | 166,251 | 69,632 | 2,029,964 |
-| **mqtt connected (TLS)** | **137,863** | **130,175** | **36,864** | 2,029,764 (min-ever 2,006,056) |
+| Stage | Internal free | min-ever | largest block |
+| --- | --- | --- | --- |
+| mqtt connected, TLS (mosquitto) | 137,863 | 130,175 | 36,864 |
+| **mqtt connected, TLS + JWT (EMQX)** | **129,895** | **126,459** | **32,768** |
+
+The real broker costs ~8 KB more than the test one — a 4 KB client buffer for the token, the
+token itself, and a longer client id — and that is the configuration the product will ship,
+so **32,768 B is the largest contiguous internal block a feature can actually ask for.**
 
 LVGL's own heap: **6,744 B used of 31,112, peak 6,744, 1% fragmented** with the face up —
 against the 13,320 B the simulator predicted, so the 32 KB pool has room to spare.
@@ -152,6 +156,38 @@ against the 13,320 B the simulator predicted, so the 32 KB pool has room to spar
 draw buffers. Bringing the radio up costs another ~82,700 B and, more importantly, **halves
 the largest contiguous block** from 163,840 to 81,920 B — which is the number to watch,
 because it is contiguity rather than total free that kills a DMA allocation.
+
+### It reaches the product broker
+
+`mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted
+this firmware on 2026-09-27, and the token's ACL allowed both topics it needs:
+
+    net: TLS: verifying against the embedded Amazon Root CA 1
+    net: connecting as buddyos-stem-staging-ESP32-sim-b17712ac (token 1267 B)
+    net: mqtt connected
+    net: subscribed: staging/stem/device/ESP32-sim-b17712ac/directive
+    net: published  staging/stem/device/ESP32-sim-b17712ac/event
+
+Connecting only proves the token was accepted; the subscribe and the publish prove the ACL
+*inside* it allows what the device actually needs, which is a separate question and the one
+that bites later. Both are done on connect, so a bad token is visible in the log rather than
+at the first directive.
+
+The client follows `../buddyos-stem-c-firmware/components/stem_mqtt` rather than inventing a
+second way to reach the same broker. Three details are carried over because each is a silent
+failure otherwise:
+
+- **`buffer.size = 4096`.** The device JWT is ~1.3 KB, so the default 1 KB buffer cannot
+  hold the CONNECT this client sends. The symptom is a broker that appears to hang up.
+- **One root, not the bundle.** The broker sits behind an AWS certificate, so
+  `certs/AmazonRootCA1.pem` is embedded: **6 KB of flash against the bundle's 66 KB**, and it
+  verifies rather than skipping. `CONFIG_BUDDY_MQTT_AWS_ROOT=n` switches back to the bundle
+  for a broker with some other publicly-trusted certificate.
+- **Topic namespace must match the token's `environment` claim.** Topics are
+  `{env}/stem/device/{username}/…` and the ACL names them literally; a mismatch is denied,
+  not misrouted.
+
+Credentials live in `sdkconfig`, which is gitignored. Nothing in this repo carries a token.
 
 ### What TLS costs, which is the number to carry forward
 
@@ -167,6 +203,7 @@ block a second time**:
     radio up         81,920
     mqtt (plain)     69,632
     mqtt (TLS)       36,864
+    EMQX + JWT       32,768   <- what the product actually runs
 
 Total free is not the thing that will break. Contiguity is: this product line has twice been
 bitten by it, and once it lied about the cause — *a starved handshake reported itself as

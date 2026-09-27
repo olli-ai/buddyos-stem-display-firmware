@@ -23,6 +23,16 @@ static const char *TAG = "net";
 static EventGroupHandle_t s_events;
 #define GOT_IP BIT0
 
+/* The product broker (EMQX, behind an AWS certificate). One root rather than the
+ * whole bundle, following ../buddyos-stem-c-firmware/components/stem_mqtt — the
+ * in-house client that already talks to this broker. */
+extern const char amazon_root_ca1_pem_start[] asm("_binary_AmazonRootCA1_pem_start");
+
+/* Topics are the token's business: the JWT carries an EMQX ACL naming exactly these,
+ * so a mismatch between this and the token's `environment` claim is denied rather
+ * than misrouted. */
+static char s_topic_dir[160], s_topic_evt[160];
+
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)data;
@@ -41,7 +51,8 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 
 static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    (void)arg; (void)base; (void)data;
+    (void)arg; (void)base;
+    esp_mqtt_event_handle_t e = (esp_mqtt_event_handle_t)data;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "mqtt connected");
@@ -49,9 +60,38 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
          * already been seen to misreport itself as NOT_TRUSTED, so if this line
          * never appears, read the numbers above it before believing the error. */
         mem_report("mqtt connected");
+        if (s_topic_dir[0]) {
+            /* Connecting proves the token was accepted; these prove the ACL in it
+             * actually allows what this device needs, which is a separate question
+             * and the one that bites later. */
+            esp_mqtt_client_subscribe(e->client, s_topic_dir, 1);
+            esp_mqtt_client_publish(e->client, s_topic_evt,
+                                    "{\"type\":\"hello\",\"from\":\"display-firmware\"}", 0, 1, 0);
+        }
         break;
+    case MQTT_EVENT_SUBSCRIBED:   ESP_LOGI(TAG, "subscribed: %s", s_topic_dir); break;
+    case MQTT_EVENT_PUBLISHED:    ESP_LOGI(TAG, "published to %s", s_topic_evt); break;
+    case MQTT_EVENT_DATA:         ESP_LOGI(TAG, "directive: %.*s", e->data_len, e->data); break;
     case MQTT_EVENT_DISCONNECTED: ESP_LOGW(TAG, "mqtt disconnected"); break;
-    case MQTT_EVENT_ERROR:        ESP_LOGE(TAG, "mqtt error"); break;
+    case MQTT_EVENT_ERROR:
+        ESP_LOGE(TAG, "mqtt error");
+        if (e->error_handle) {
+            /* Which kind of failure this is decides where to look, and the two look
+             * alike from the outside. `cert verify flags` non-zero is genuinely the
+             * certificate; zero with a transport error, next to a small heap, is
+             * memory wearing a certificate's clothes. */
+            ESP_LOGE(TAG, "  type=%d  connect return=%d  tls=0x%x  cert verify flags=0x%08x  errno=%d",
+                     e->error_handle->error_type,
+                     e->error_handle->connect_return_code,
+                     e->error_handle->esp_tls_last_esp_err,
+                     (unsigned)e->error_handle->esp_tls_cert_verify_flags,
+                     e->error_handle->esp_transport_sock_errno);
+            if (e->error_handle->connect_return_code == MQTT_CONNECTION_REFUSE_BAD_USERNAME)
+                ESP_LOGE(TAG, "  broker refused the username or token");
+            if (e->error_handle->connect_return_code == MQTT_CONNECTION_REFUSE_NOT_AUTHORIZED)
+                ESP_LOGE(TAG, "  broker refused authorisation (check the token's env and acl)");
+        }
+        break;
     default: break;
     }
 }
@@ -99,15 +139,45 @@ static void net_task(void *arg)
 
     xEventGroupWaitBits(s_events, GOT_IP, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    esp_mqtt_client_config_t mc = { .broker.address.uri = CONFIG_BUDDY_MQTT_URI };
-    /* mqtts:// verifies against IDF's bundled public roots. That is the measurement
-     * worth having: the handshake is the expensive moment, and on this product line a
-     * TLS handshake starved of memory has already been seen to report itself as
-     * NOT_TRUSTED — sending the reader after certificates rather than after RAM. */
+    static char client_id[128];
+    if (CONFIG_BUDDY_MQTT_USER[0]) {
+        snprintf(s_topic_dir, sizeof(s_topic_dir), "%s/stem/device/%s/directive",
+                 CONFIG_BUDDY_MQTT_ENV, CONFIG_BUDDY_MQTT_USER);
+        snprintf(s_topic_evt, sizeof(s_topic_evt), "%s/stem/device/%s/event",
+                 CONFIG_BUDDY_MQTT_ENV, CONFIG_BUDDY_MQTT_USER);
+        snprintf(client_id, sizeof(client_id), "buddyos-stem-%s-%s",
+                 CONFIG_BUDDY_MQTT_ENV, CONFIG_BUDDY_MQTT_USER);
+    }
+
+    esp_mqtt_client_config_t mc = {
+        .broker.address.uri = CONFIG_BUDDY_MQTT_URI,
+        .credentials.username = CONFIG_BUDDY_MQTT_USER[0] ? CONFIG_BUDDY_MQTT_USER : NULL,
+        .credentials.authentication.password = CONFIG_BUDDY_MQTT_PASS[0] ? CONFIG_BUDDY_MQTT_PASS : NULL,
+        .credentials.client_id = CONFIG_BUDDY_MQTT_USER[0] ? client_id : NULL,
+        .session.keepalive = 30,
+        /* The device JWT alone is ~1.1 KB, so the default 1 KB buffer cannot hold
+         * the CONNECT this client sends — the failure looks like a broker that hangs
+         * up rather than like a buffer that is too small. */
+        .buffer.size = 4096,
+        .network.reconnect_timeout_ms = 5000,
+    };
+
+    /* mqtts:// is the measurement worth having: the handshake is the expensive
+     * moment, and on this product line a TLS handshake starved of memory has already
+     * been seen to report itself as NOT_TRUSTED — sending the reader after
+     * certificates rather than after RAM. */
     if (strncmp(CONFIG_BUDDY_MQTT_URI, "mqtts://", 8) == 0) {
+#if CONFIG_BUDDY_MQTT_AWS_ROOT
+        mc.broker.verification.certificate = amazon_root_ca1_pem_start;
+        ESP_LOGI(TAG, "TLS: verifying against the embedded Amazon Root CA 1");
+#else
         mc.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
         ESP_LOGI(TAG, "TLS: verifying against the bundled public roots");
+#endif
     }
+    if (CONFIG_BUDDY_MQTT_USER[0])
+        ESP_LOGI(TAG, "connecting as %s (token %u B)", client_id,
+                 (unsigned)strlen(CONFIG_BUDDY_MQTT_PASS));
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mc);
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, on_mqtt, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(client));

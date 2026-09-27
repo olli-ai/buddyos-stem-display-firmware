@@ -4,4 +4,5 @@ idf_component_register(
     INCLUDE_DIRS "." "generated"
     REQUIRES lvgl esp_lcd esp_lcd_gc9a01 driver esp_timer
              esp_wifi esp_netif esp_event nvs_flash mqtt esp-tls
-    EMBED_FILES "../tools/lipsync-fixture.pcm")
+    EMBED_FILES "../tools/lipsync-fixture.pcm"
+    EMBED_TXTFILES "certs/AmazonRootCA1.pem")
