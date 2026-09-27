@@ -17,6 +17,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "mqtt_client.h"
+#include "esp_crt_bundle.h"
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_events;
@@ -99,6 +100,14 @@ static void net_task(void *arg)
     xEventGroupWaitBits(s_events, GOT_IP, pdFALSE, pdTRUE, portMAX_DELAY);
 
     esp_mqtt_client_config_t mc = { .broker.address.uri = CONFIG_BUDDY_MQTT_URI };
+    /* mqtts:// verifies against IDF's bundled public roots. That is the measurement
+     * worth having: the handshake is the expensive moment, and on this product line a
+     * TLS handshake starved of memory has already been seen to report itself as
+     * NOT_TRUSTED — sending the reader after certificates rather than after RAM. */
+    if (strncmp(CONFIG_BUDDY_MQTT_URI, "mqtts://", 8) == 0) {
+        mc.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+        ESP_LOGI(TAG, "TLS: verifying against the bundled public roots");
+    }
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mc);
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, on_mqtt, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(client));

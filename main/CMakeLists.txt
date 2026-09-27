@@ -3,5 +3,5 @@ idf_component_register(
          "generated/face_assets.c"
     INCLUDE_DIRS "." "generated"
     REQUIRES lvgl esp_lcd esp_lcd_gc9a01 driver esp_timer
-             esp_wifi esp_netif esp_event nvs_flash mqtt
+             esp_wifi esp_netif esp_event nvs_flash mqtt esp-tls
     EMBED_FILES "../tools/lipsync-fixture.pcm")

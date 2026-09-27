@@ -129,10 +129,21 @@ The figure the planning docs kept asking for, measured 2026-09-27:
 
 | Stage | Internal free | min-ever | largest block | PSRAM free |
 | --- | --- | --- | --- | --- |
-| boot | 283,927 | 283,927 | 188,416 | 2,094,528 |
-| face up | 259,175 | 259,175 | 163,840 | 2,094,244 |
-| wifi init | 176,703 | 176,703 | 81,920 | 2,033,072 |
-| wifi started | 176,467 | 174,655 | 81,920 | 2,031,500 |
+| boot | 283,919 | 283,919 | 188,416 | 2,094,528 |
+| face up | 259,167 | 259,167 | 163,840 | 2,094,244 |
+| wifi init | 176,563 | 176,563 | 81,920 | 2,033,072 |
+| wifi started | 176,327 | 174,523 | 81,920 | 2,031,500 |
+| wifi connected | 175,939 | 174,523 | 81,920 | 2,030,596 |
+| mqtt started | 166,667 | 166,667 | 69,632 | 2,029,964 |
+| mqtt connected | 171,711 | 166,135 | 69,632 | 2,029,764 |
+
+…and the same run over **TLS** (`mqtts://`, verified against IDF's bundled public roots):
+
+| Stage | Internal free | min-ever | largest block | PSRAM free |
+| --- | --- | --- | --- | --- |
+| wifi connected | 175,523 | 174,107 | 77,824 | 2,030,596 |
+| mqtt started | 166,251 | 166,251 | 69,632 | 2,029,964 |
+| **mqtt connected (TLS)** | **137,863** | **130,175** | **36,864** | 2,029,764 (min-ever 2,006,056) |
 
 LVGL's own heap: **6,744 B used of 31,112, peak 6,744, 1% fragmented** with the face up —
 against the 13,320 B the simulator predicted, so the 32 KB pool has room to spare.
@@ -142,14 +153,46 @@ draw buffers. Bringing the radio up costs another ~82,700 B and, more importantl
 the largest contiguous block** from 163,840 to 81,920 B — which is the number to watch,
 because it is contiguity rather than total free that kills a DMA allocation.
 
-Not yet measured: `wifi connected`, `mqtt started`, `mqtt connected`. The bench board has no
-SSID configured, so the radio comes up and never associates. Those three lines are the
-remaining unknowns, and they are the ones with TLS in them.
+### What TLS costs, which is the number to carry forward
+
+A connected plaintext broker leaves 171,711 B free with a 69,632 B largest block. The same
+broker over TLS leaves **137,863 B** free with a **36,864 B** largest block, and the
+low-water mark through the handshake is **130,175 B** — so a single MQTT TLS session costs
+about **36 KB at its worst moment** and, more to the point, **halves the largest contiguous
+block a second time**:
+
+    largest contiguous internal block
+    boot            188,416
+    face up         163,840
+    radio up         81,920
+    mqtt (plain)     69,632
+    mqtt (TLS)       36,864
+
+Total free is not the thing that will break. Contiguity is: this product line has twice been
+bitten by it, and once it lied about the cause — *a starved handshake reported itself as
+`NOT_TRUSTED`*, sending the reader after certificates. **esp-webrtc's DTLS-SRTP would be a
+second TLS context on top of this one**, and it would be asking for large blocks from what
+is left of a 36 KB ceiling. That is the question the voice work has to answer, and it now
+has a floor to answer it from.
+
+TLS also costs **65,813 B of flash** (1,499,397 B image against 1,433,584 B) and 424 B of
+static D/IRAM, almost all of it the certificate bundle.
+
+Measured against `test.mosquitto.org:8886` — the listener with a publicly-trusted
+certificate; 8883 is signed by mosquitto's own CA, which the bundled roots do not contain.
+That broker drops an idle connection after about a minute (`transport_read(): EOF`), which
+is the broker's policy and not a fault here.
 
 ## Taking the measurement
 
     idf.py menuconfig          # BuddyOS display firmware -> SSID, password, broker
     idf.py -p /dev/ttyUSB0 flash monitor
+
+`sdkconfig` is gitignored, so credentials set there stay on the bench. On macOS the
+container cannot see the serial port: build in Docker, then flash from the host
+(`python3 -m venv venv && venv/bin/pip install esptool`) with the command `idf.py build`
+prints. A `mqtts://` broker URI switches on certificate verification against IDF's bundled
+public roots; nothing else needs changing.
 
 Every milestone logs one `mem` line — `boot`, `face up`, `wifi init`, `wifi started`,
 `wifi connected`, `mqtt started`, `mqtt connected`, then `running` periodically:
