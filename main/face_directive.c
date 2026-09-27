@@ -187,9 +187,21 @@ bool face_directive_apply(const char *json, size_t len)
         if (base && strcmp(base, face_look_base))
             ESP_LOGW(TAG, "this Buddy is a '%s'; the artwork here is '%s' — showing '%s'",
                      base, face_look_base, face_look_base);
-        if (color && strcmp(color, face_look_color))
-            ESP_LOGW(TAG, "body colour '%s' cannot be drawn; the artwork is baked '%s'",
-                     color, face_look_color);
+        if (color) {
+            /* Applied, not merely reported: the body colour is the one part of the
+             * look this firmware can honour, because tinting is an operation on the
+             * pixels it already has rather than artwork it does not. */
+            bool found = false;
+            for (int i = 0; i < face_body_color_count; i++)
+                if (!strcmp(face_body_colors[i].id, color)) {
+                    bool original = !strcmp(color, "original");
+                    face_view_set_body_color(face_body_colors[i].rgb, original);
+                    ESP_LOGI(TAG, "body colour '%s'%s", color, original ? " (its own)" : "");
+                    found = true;
+                    break;
+                }
+            if (!found) ESP_LOGW(TAG, "no body colour '%s' in this catalogue", color);
+        }
         static const char *EXTRAS[] = { "hair", "ears", "accessory", "cheeks" };
         for (unsigned i = 0; i < sizeof(EXTRAS) / sizeof(EXTRAS[0]); i++) {
             const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(look, EXTRAS[i]));

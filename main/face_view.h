@@ -8,6 +8,10 @@ void face_view_set_state(int state);
 /** Which state is showing. For callers that did not set it themselves. */
 int face_view_state(void);
 
+/** Paint the body. `original` keeps the mascot's own shading; any other colour
+ *  fills its silhouette flat, as the website does. */
+void face_view_set_body_color(uint32_t rgb, bool original);
+
 /** Show a state, asked for from another task — a directive during a conversation,
  *  and later the voice pipeline itself. Applied on the next render tick. */
 void face_view_request_state(int state);

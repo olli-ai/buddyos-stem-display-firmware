@@ -163,6 +163,17 @@ int main(int argc, char **argv)
     face_view_create(scr);
     load_fixture(getenv("FACE_PCM") ? getenv("FACE_PCM") : "tools/lipsync-fixture.pcm");
 
+    /* FACE_BODY=sky renders the Buddy in a chosen body colour, the way a design
+     * asking for one would. Here because the tint is a rendering question and this
+     * is where rendering questions get looked at rather than reasoned about. */
+    const char *body = getenv("FACE_BODY");
+    if (body)
+        for (int i = 0; i < face_body_color_count; i++)
+            if (!strcmp(face_body_colors[i].id, body)) {
+                face_view_set_body_color(face_body_colors[i].rgb, !strcmp(body, "original"));
+                printf("body colour  : %s\n", body);
+            }
+
     /* What this would cost the device. Container limits cannot model an MCU — a
      * Linux process is megabytes before it does anything — so the budget worth
      * watching is LVGL's own, which is capped at the same LV_MEM_SIZE the firmware

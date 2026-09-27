@@ -79,6 +79,12 @@ extern const int face_viseme_frame, face_viseme_hop, face_viseme_rate;
 /** The look this artwork was baked for: one base, one body colour. A design asking
  *  for another cannot be drawn until the catalogue partition of ADR 0009 carries the
  *  alternatives. */
+/** A body colour the website offers. `original` means the mascot's own shading —
+ *  drawn rather than tinted — and carries no useful rgb. */
+typedef struct { const char *id; uint32_t rgb; } face_body_color_t;
+extern const face_body_color_t face_body_colors[];
+extern const int face_body_color_count;
+
 extern const char face_look_base[];
 extern const char face_look_color[];
 

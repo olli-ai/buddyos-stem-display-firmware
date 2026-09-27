@@ -95,6 +95,17 @@ void face_view_create(lv_obj_t *parent)
 
 int face_view_state(void) { return s_state; }
 
+void face_view_set_body_color(uint32_t rgb, bool original)
+{
+    if (!s_bg) return;
+    /* `original` is the mascot as its artist shaded it. Any other colour is the
+     * silhouette filled flat, which is exactly what the website does — it masks the
+     * artwork and paints one colour through it — so the two agree by construction
+     * rather than by anyone matching them by eye. */
+    lv_obj_set_style_image_recolor(s_bg, lv_color_hex(rgb), 0);
+    lv_obj_set_style_image_recolor_opa(s_bg, original ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+}
+
 void face_view_request_state(int state)
 {
     if (state < 0 || state >= face_state_count) return;

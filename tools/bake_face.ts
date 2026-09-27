@@ -25,7 +25,7 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { LOOKS } from '../../buddyos-stem-fe/src/data/looks';
+import { BODY_COLORS, LOOKS } from '../../buddyos-stem-fe/src/data/looks';
 import { BROWS, EYES, ALL_MOUTHS, FACE_STATES, defaultFaceStates, browPart, eyePart, mouthPart, type FaceComposition, type FaceState, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
 import {
     EASINGS, EASING_LUT, LUT_SIZE, LAYERS, MOTION_PRESETS, NUMERIC_PROPS, RANGE,
@@ -116,8 +116,14 @@ function raster(svg: string): { w: number; h: number; x: number; y: number; px: 
 }
 
 /** The background: the mascot's own render with its painted eyes and mouth patched
- *  out, flattened to one opaque RGB565 image. The patch never changes, so baking it
- *  in costs the device nothing to redraw. */
+ *  out. Kept **transparent outside the silhouette**, as RGB565A8, because that alpha
+ *  is what lets the device recolour the body.
+ *
+ *  The website tints a Buddy by filling the artwork's own mask with a flat colour —
+ *  `backgroundColor` under a `maskImage` — so a tinted Buddy is a silhouette, not a
+ *  shaded render. LVGL's image recolour at full opacity is the same operation on the
+ *  same pixels, which is why the two agree without anyone matching them by eye.
+ *  Costs 57,600 B more than the flattened version and buys every body colour. */
 function bakeBackground(): { px: Buffer } {
     const src = '/Users/leminhson/olli_projects/buddyos-stem-fe/src/assets/mascots/sprout.webp';
     const k = 1.6; // PATCH_SCALE, as BuddyFace uses it
@@ -132,13 +138,17 @@ function bakeBackground(): { px: Buffer } {
     const pf = join(tmp, 'patch.png'), bg = join(tmp, 'bg.png');
     writeFileSync(join(tmp, 'patch.svg'), svgDoc(grad + ells));
     execFileSync('rsvg-convert', ['-w', String(SIZE), '-h', String(SIZE), '-o', pf, join(tmp, 'patch.svg')]);
-    execFileSync('magick', ['-size', `${SIZE}x${SIZE}`, 'xc:white', '(', src, '-resize', `${SIZE}x${SIZE}`, ')',
-        '-gravity', 'center', '-composite', pf, '-gravity', 'center', '-composite', '-flatten', bg]);
-    const rgb = execFileSync('magick', [bg, '-depth', '8', 'RGB:-'], { maxBuffer: 1 << 28 });
-    const px = Buffer.alloc(SIZE * SIZE * 2);
-    for (let i = 0, o = 0; i < rgb.length; i += 3, o += 2) {
-        const v = ((rgb[i] & 0xf8) << 8) | ((rgb[i + 1] & 0xfc) << 3) | (rgb[i + 2] >> 3);
-        px[o] = v & 0xff; px[o + 1] = v >> 8;   // little-endian RGB565
+    execFileSync('magick', ['-size', `${SIZE}x${SIZE}`, 'xc:none', '(', src, '-resize', `${SIZE}x${SIZE}`, ')',
+        '-gravity', 'center', '-composite', pf, '-gravity', 'center', '-composite', bg]);
+    const rgba = execFileSync('magick', [bg, '-depth', '8', 'RGBA:-'], { maxBuffer: 1 << 28 });
+    /* RGB565A8 as LVGL stores it: the whole colour plane, then the whole alpha
+     * plane. Not interleaved — a per-pixel 3-byte layout renders as noise. */
+    const px = Buffer.alloc(SIZE * SIZE * 3);
+    const alpha = SIZE * SIZE * 2;
+    for (let i = 0, p = 0; i < rgba.length; i += 4, p++) {
+        const v = ((rgba[i] & 0xf8) << 8) | ((rgba[i + 1] & 0xfc) << 3) | (rgba[i + 2] >> 3);
+        px[p * 2] = v & 0xff; px[p * 2 + 1] = v >> 8;
+        px[alpha + p] = rgba[i + 3];
     }
     return { px };
 }
@@ -230,7 +240,15 @@ for (const [key, { layer, part }] of needed) {
 const bgd = bakeBackground();
 const BG_PNG = join(tmp, 'bg.png');
 cs += `static const uint8_t face_bg_map[] = {\n${carr(bgd.px)}\n};\n`;
-cs += `const lv_image_dsc_t face_bg = { .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565, .w = ${SIZE}, .h = ${SIZE}, .stride = ${SIZE * 2} }, .data_size = sizeof(face_bg_map), .data = face_bg_map };\n\n`;
+cs += `const lv_image_dsc_t face_bg = { .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8, .w = ${SIZE}, .h = ${SIZE}, .stride = ${SIZE * 2} }, .data_size = sizeof(face_bg_map), .data = face_bg_map };\n\n`;
+
+/* The body colours the website offers, so a design naming one can be honoured
+ * without the firmware keeping its own copy of the palette. `original` is the
+ * mascot's own shading and is drawn, not tinted. */
+cs += `const face_body_color_t face_body_colors[] = {\n`;
+for (const c of BODY_COLORS)
+    cs += `    { "${c.id}", 0x${(c.hex || '#000000').slice(1).toUpperCase()} },\n`;
+cs += `};\nconst int face_body_color_count = ${BODY_COLORS.length};\n\n`;
 
 cs += `const face_sprite_t face_sprites[] = {\n`;
 for (const s of sprites) cs += `    { "${s.layer}", "${s.part}", ${s.w ? '&' + s.sym : 'NULL'}, ${s.x}, ${s.y} },\n`;
