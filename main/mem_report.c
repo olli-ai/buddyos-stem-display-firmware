@@ -30,6 +30,14 @@ void mem_report(const char *stage)
     ESP_LOGW(TAG, "[%s] psram:    not enabled", stage);
 #endif
 
+    /* Only once LVGL has a heap to report on. Asked before lv_init() it walks an
+     * empty pool list, leaves total_size at 0 and divides by it — which is how the
+     * very first boot on real hardware ended, in a reset loop at the `boot` stage.
+     * The simulator could not have caught it: it only ever reports after init. */
+    if (!lv_is_initialized()) {
+        ESP_LOGI(TAG, "[%s] lvgl:     not up yet", stage);
+        return;
+    }
     lv_mem_monitor_t m;
     lv_mem_monitor(&m);
     ESP_LOGI(TAG, "[%s] lvgl:     used %u of %u, peak %u, frag %u%%", stage,

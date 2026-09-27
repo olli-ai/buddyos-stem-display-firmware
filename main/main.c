@@ -9,9 +9,10 @@
  * LVGL its buffers. sim/ renders the identical face_view.c / face_motion.c on a
  * laptop, which is where this was developed, there being no panel to hand.
  *
- * Panel wiring, from the newbiely ESP32-S3 round TFT tutorial:
- *   SCL/SCK GPIO11   SDA/MOSI GPIO12   DC GPIO1   CS GPIO13   RST GPIO14
- * That module has no separate backlight pin.
+ * Panel wiring, as wired on the bench board 2026-09-27:
+ *   SCL/SCK GPIO14   SDA/MOSI GPIO10   DC GPIO11   CS GPIO12   RST GPIO13
+ * That module has no separate backlight pin. (The newbiely tutorial this started
+ * from uses 11/12/1/13/14; these are the pins the board in hand actually has.)
  *
  * Dependencies are vendored in components/ and the component manager is switched
  * off (see README): idf 5.2.2's resolver cannot parse a `&&` in a dependency
@@ -35,11 +36,11 @@
 
 static const char *TAG = "buddy-display";
 
-#define PIN_SCLK   11
-#define PIN_MOSI   12
-#define PIN_DC      1
-#define PIN_CS     13
-#define PIN_RST    14
+#define PIN_SCLK   14
+#define PIN_MOSI   10
+#define PIN_DC     11
+#define PIN_CS     12
+#define PIN_RST    13
 #define LCD_W     240
 #define LCD_H     240
 #define LCD_HZ  (40 * 1000 * 1000)
@@ -65,6 +66,16 @@ static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_d
 
 static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
+    /* LVGL stores an RGB565 pixel in host order — low byte first — and the panel
+     * clocks the high byte first. Without this the face draws in exactly the right
+     * shape and entirely the wrong colours: a cyan-green body, purple contour bands
+     * across every gradient, an orange rim at the chin. That is what the first photo
+     * of real hardware showed, and it is a swap rather than a wiring fault because
+     * the same swap applied to a simulator frame reproduces the photograph.
+     *
+     * The simulator cannot catch this. It renders into host memory and displays from
+     * host memory, so the two endiannesses cancel and it has always looked right. */
+    lv_draw_sw_rgb565_swap(px, lv_area_get_size(a));
     esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
     (void)d;
 }

@@ -63,8 +63,49 @@ renders them into a memory buffer. See **Simulator** below.
 
 ## Status
 
-**It builds, and it has never run on a panel.** As of 2026-09-26, ESP32-S3 with Wi-Fi and
-MQTT linked in, PSRAM enabled:
+**It runs on a panel.** First hardware bring-up 2026-09-27: an ESP32-S3-WROOM-1-N8R2
+(8 MB flash, 2 MB embedded PSRAM, chip rev v0.2) driving a GC9A01 240×240 round module over
+SPI at 40 MHz. The Buddy appears, in the child's colours, and cycles idle → listening →
+thinking → speaking with the mouth following the embedded speech clip.
+
+Pins as wired on that bench board: **SCK 14, MOSI 10, DC 11, CS 12, RST 13**, no backlight
+line. (The newbiely tutorial this started from uses 11/12/1/13/14; the board in hand wins.)
+
+### What only hardware found
+
+Three things, none of which the simulator could have caught — worth stating, because the
+simulator is otherwise so good that it is tempting to trust it further than it goes:
+
+- **A reset loop on the very first boot.** `mem_report("boot")` asks LVGL for a heap
+  monitor *before* `lv_init()`, and LVGL 9.2 walks an empty pool list, leaves `total_size`
+  at 0 and divides by it. The simulator only ever reports after init, so it never asked the
+  question at a moment when the answer was fatal.
+- **Every colour wrong.** LVGL stores RGB565 low byte first; the panel clocks the high byte
+  first. The face was pixel-perfect in shape and cyan-green with purple contour bands. The
+  simulator renders into host memory and displays from host memory, so the two endiannesses
+  cancel and it has always looked right. Confirmed *before* touching the board by applying
+  the same swap to a simulator frame and matching it against the photograph.
+- **The lip-sync classifier cost 134% of a core.** See below.
+
+### Lip-sync on silicon
+
+| | µs of CPU per frame | per 16 ms of audio |
+| --- | --- | --- |
+| First measurement | 21,433 | **134%** of a core |
+| After the ring buffer | 1,777–1,865 | **~11%** of a core |
+
+The first version slid its analysis window with a 511-sample `memmove` for **every arriving
+sample** — 16 MB/s of copying to advance an audio pointer. A ring buffer walked once per hop
+does the same arithmetic in the same order, so the conformance golden did not move: still
+149 of 149 frames.
+
+Both figures are at **160 MHz with `-Og`**, which is the pessimistic case twice over: the
+part runs at 240 MHz and this is a debug build. Nothing here needed either knob, which is
+the point of quoting them.
+
+### Static sizes
+
+As of 2026-09-26, ESP32-S3 with Wi-Fi and MQTT linked in, PSRAM enabled:
 
 | | face only | with Wi-Fi + MQTT | + lip-sync |
 | --- | --- | --- | --- |
@@ -82,10 +123,28 @@ the frequency resolution, which is what separates /i/ from /u/, so it is not fre
 RAM cost of the radio, by archive: `libpp` 13,942 B, `libnet80211` 11,997 B, `liblwip`
 3,721 B, `libesp_wifi` 862 B, `libmbedtls` 266 B, `libmqtt` 0 B (all flash).
 
-Take the two DMA draw buffers (23,040 B) off the 277,344 B and roughly **254 KB of internal
-SRAM is free at boot**. That is *before* Wi-Fi's dynamic allocations, which are the large
-ones and which `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` sends to PSRAM. **The number the
-planning docs ask for is the runtime one, and it only exists on hardware.**
+### Runtime, from the board
+
+The figure the planning docs kept asking for, measured 2026-09-27:
+
+| Stage | Internal free | min-ever | largest block | PSRAM free |
+| --- | --- | --- | --- | --- |
+| boot | 283,927 | 283,927 | 188,416 | 2,094,528 |
+| face up | 259,175 | 259,175 | 163,840 | 2,094,244 |
+| wifi init | 176,703 | 176,703 | 81,920 | 2,033,072 |
+| wifi started | 176,467 | 174,655 | 81,920 | 2,031,500 |
+
+LVGL's own heap: **6,744 B used of 31,112, peak 6,744, 1% fragmented** with the face up —
+against the 13,320 B the simulator predicted, so the 32 KB pool has room to spare.
+
+**The whole face costs 24,752 B of internal SRAM at runtime**, almost all of it the two DMA
+draw buffers. Bringing the radio up costs another ~82,700 B and, more importantly, **halves
+the largest contiguous block** from 163,840 to 81,920 B — which is the number to watch,
+because it is contiguity rather than total free that kills a DMA allocation.
+
+Not yet measured: `wifi connected`, `mqtt started`, `mqtt connected`. The bench board has no
+SSID configured, so the radio comes up and never associates. Those three lines are the
+remaining unknowns, and they are the ones with TLS in them.
 
 ## Taking the measurement
 
@@ -180,12 +239,14 @@ DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cy
 
 ## Open questions blocking real work
 
-- **Which panel?** Resolution, bus and shape gate the art, the draw buffers and the
-  catalogue budget. A round 240×240 on SPI is the natural guess for a character face and is
-  cheap on every axis, but it is **unconfirmed**, and `partitions.csv` and the LVGL buffer
-  sizing here are provisional until it is.
-- **Which SoC and how much flash?** The partition table below assumes 8 MB. It is a
-  placeholder.
+- ~~**Which panel?**~~ **Answered 2026-09-27**: GC9A01 240×240 round on SPI at 40 MHz, on
+  the bench and drawing. The draw buffers and `partitions.csv` sizing are no longer
+  provisional for this module. A *production* panel may still differ, and the one open
+  request stands: **bring the backlight out to a GPIO**, which this module does not have.
+- ~~**Which SoC and how much flash?**~~ **Answered on the bench**: ESP32-S3-WROOM-1-N8R2,
+  8 MB flash, 2 MB embedded PSRAM — the module the hardware doc already named as the current
+  choice. The 8 MB partition table is no longer a placeholder. Whether *2 MB* of PSRAM is
+  enough is a voice question, not a face one, and is still open.
 - **IDF version.** Pinned to v5.2.2 to match the org's existing Docker workflow. Note the
   v5.5 problem in `../buddyos-stem-c-firmware` was an I²C `driver_ng` conflict caused by the
   *camera* driver, which this firmware does not have — so that constraint is inherited by

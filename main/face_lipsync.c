@@ -9,8 +9,14 @@ enum { V_REST = 0, V_MBP, V_SMALL, V_MID, V_WIDE, V_ROUND, V_PUCKER, V_TEETH };
 #define MAXN 512                      /* face_viseme_frame; static, never malloc'd */
 
 static float s_re[MAXN], s_im[MAXN], s_win[MAXN];
-static int16_t s_buf[MAXN];           /* the rolling window of samples */
-static int s_fill;                    /* how much of it is valid */
+/* A ring, not a sliding array. The first version memmove'd 511 samples for every
+ * sample that arrived — 16 MB/s of copying at this rate — and the first run on real
+ * silicon measured the whole classifier at 21.4 ms of CPU per 16 ms of audio, which
+ * is more than a core. Writing one sample and walking the ring at hop boundaries is
+ * the same arithmetic in the same order, so the conformance golden does not move. */
+static int16_t s_ring[MAXN];
+static int s_w;                       /* where the next sample goes */
+static int s_fill;                    /* samples held, capped at the frame length */
 static int s_since_hop;
 static float s_peak;                  /* loudness reference for this voice */
 static int s_cur, s_cand, s_votes;
@@ -70,8 +76,9 @@ static float band(const float *re, const float *im, int n, int lo, int hi)
     return e;
 }
 
-/** One frame's shape. `rel` is loudness relative to this voice's recent peak. */
-static int classify_frame(int n, float rel)
+/** One frame's shape. `rel` is loudness relative to this voice's recent peak, `zcr`
+ *  the zero-crossing rate measured while the frame was read out of the ring. */
+static int classify_frame(int n, float rel, float zcr)
 {
     const face_viseme_table_t *t = &face_viseme_table;
     const face_viseme_bands_t *b = &face_viseme_bands;
@@ -83,11 +90,6 @@ static int classify_frame(int n, float rel)
     float f2   = band(s_re, s_im, n, b->f2_a, b->f2_b);
     float sib  = band(s_re, s_im, n, b->sib_a, b->sib_b);
     float total = f1lo + f1hi + f2 + sib + 1e-12f;
-
-    /* Zero crossings over the raw window: noise crosses often, a vowel rarely. */
-    int crossings = 0;
-    for (int i = 1; i < n; i++) if ((s_buf[i] < 0) != (s_buf[i - 1] < 0)) crossings++;
-    float zcr = (float)crossings / (n - 1);
 
     /* Flatness over the upper half only. Down where the fundamental lives
      * everything is peaky, so including it would call every frame harmonic. */
@@ -119,7 +121,7 @@ static int classify_frame(int n, float rel)
 
 void face_lipsync_start(void)
 {
-    s_fill = 0; s_since_hop = 0; s_peak = 0;
+    s_fill = 0; s_w = 0; s_since_hop = 0; s_peak = 0;
     s_cur = V_REST; s_cand = V_REST; s_votes = 0; s_since_ms = 0; s_frames = 0;
 }
 
@@ -134,23 +136,30 @@ int16_t face_lipsync_feed(const int16_t *pcm, size_t samples)
     if (!s_win_ready) make_window(n);
 
     for (size_t i = 0; i < samples; i++) {
-        /* Slide the window one sample at a time. Cheap, and it keeps the hop exact
-         * however the audio path happens to chunk its buffers — a decoder that hands
-         * over 960 samples at a time must not shift where the frames land. */
+        s_ring[s_w] = pcm[i];
+        if (++s_w == n) s_w = 0;
         if (s_fill < n) {
-            s_buf[s_fill++] = pcm[i];
-            if (s_fill < n) continue;       /* first full frame: classify it now */
-        } else {
-            memmove(s_buf, s_buf + 1, (n - 1) * sizeof(int16_t));
-            s_buf[n - 1] = pcm[i];
-            if (++s_since_hop < face_viseme_hop) continue;
+            if (++s_fill < n) continue;     /* first full frame: classify it now */
+        } else if (++s_since_hop < face_viseme_hop) {
+            continue;
         }
         s_since_hop = 0;
         s_frames++;
 
+        /* One pass over the ring, oldest sample first, doing everything the frame
+         * needs: loudness, zero crossings, and the windowed input to the FFT. The
+         * order is the order the front end reads its frame in, which is what keeps
+         * the two implementations answering the same. */
+        int idx = s_w;                      /* a full ring: the next write is the oldest */
+        int crossings = 0;
+        int16_t prev = 0;
         float sum = 0;
         for (int k = 0; k < n; k++) {
-            float v = s_buf[k] / 32768.0f;
+            int16_t raw = s_ring[idx];
+            if (++idx == n) idx = 0;
+            if (k > 0 && ((raw < 0) != (prev < 0))) crossings++;
+            prev = raw;
+            float v = raw / 32768.0f;
             sum += v * v;
             s_re[k] = v * s_win[k];
             s_im[k] = 0.0f;
@@ -163,7 +172,7 @@ int16_t face_lipsync_feed(const int16_t *pcm, size_t samples)
         s_peak = fmaxf(rms, s_peak * 0.995f);
         float rel = s_peak > 1e-5f ? fminf(1.0f, rms / s_peak) : 0.0f;
 
-        int v = classify_frame(n, rel);
+        int v = classify_frame(n, rel, (float)crossings / (n - 1));
 
         /* The clock is the audio's own, not the system's: a frame is worth
          * face_viseme_hop samples however late the decoder delivered it, and the

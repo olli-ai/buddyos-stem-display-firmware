@@ -8,9 +8,22 @@ ESP-IDF (C) firmware for the **screen-equipped BuddyOS STEM device** — the kit
 the Buddy a child designed on the website. Panel driver, LVGL, a face renderer that
 composites catalogue sprites, and an interpreter for the `.buddy` motion format.
 
-It builds for ESP32-S3 and has **never run on a panel**. `sim/` renders the same renderer
-and interpreter on the host — use it, it is where the layer-allocation bug was found.
-Read `README.md` for the build command and the current size figures.
+It runs on hardware as of 2026-09-27: an ESP32-S3-WROOM-1-N8R2 driving a GC9A01 240×240
+round panel (SCK 14, MOSI 10, DC 11, CS 12, RST 13). `sim/` renders the same renderer and
+interpreter on the host — use it, it is where the layer-allocation bug was found.
+Read `README.md` for the build command, the measured figures, and what bring-up found.
+
+**Where the simulator lies.** It is worth trusting for layout, motion and lip-sync
+decisions, and not for these three, all of which cost a bring-up session:
+
+- **Colour byte order.** It renders into host memory and displays from host memory, so an
+  RGB565 endianness bug cancels out and looks perfect. The panel clocks the high byte first;
+  `flush_cb` swaps.
+- **Initialisation order.** It only calls LVGL once LVGL is up. The device's first
+  `mem_report` runs before `lv_init()`, which on LVGL 9.2 is a divide by zero.
+- **Anything about cost.** Host CPU says nothing. The lip-sync classifier measured 21.4 ms
+  per 16 ms of audio on first run — more than a core — and the simulator was cheerful
+  throughout. Measure on the board.
 
 **Do not add a managed dependency.** idf 5.2.2's component manager cannot parse a `&&` in
 a dependency manifest and fails while listing registry versions, so everything is vendored
