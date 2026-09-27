@@ -307,6 +307,11 @@ for (const st of MOUTH_STYLES) {
 cs += `};\nconst int face_mouth_style_count = ${MOUTH_STYLES.length};\n`;
 cs += `const int face_viseme_frame = ${FRAME};\nconst int face_viseme_hop = ${HOP};\n`;
 cs += `const int face_viseme_rate = ${SAMPLE_RATE};\n`;
+/* Which look this artwork *is*. A design names a base and a colour, and the sprites
+ * here were rasterised for exactly one of each — so the device can at least know when
+ * it has been asked for something it does not have. */
+cs += `const char face_look_base[] = "${BASE_ID}";\n`;
+cs += `const char face_look_color[] = "original";\n`;
 
 writeFileSync(join(out, 'face_assets.c'), cs);
 

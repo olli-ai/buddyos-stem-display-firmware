@@ -76,6 +76,12 @@ extern const face_viseme_bands_t face_viseme_bands;
 extern const face_viseme_table_t face_viseme_table;
 extern const int face_viseme_frame, face_viseme_hop, face_viseme_rate;
 
+/** The look this artwork was baked for: one base, one body colour. A design asking
+ *  for another cannot be drawn until the catalogue partition of ADR 0009 carries the
+ *  alternatives. */
+extern const char face_look_base[];
+extern const char face_look_color[];
+
 extern const lv_image_dsc_t face_bg;
 extern const face_sprite_t  face_sprites[];
 extern const int            face_sprite_count;

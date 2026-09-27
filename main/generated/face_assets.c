@@ -26704,3 +26704,5 @@ const int face_mouth_style_count = 4;
 const int face_viseme_frame = 512;
 const int face_viseme_hop = 256;
 const int face_viseme_rate = 16000;
+const char face_look_base[] = "sprout";
+const char face_look_color[] = "original";

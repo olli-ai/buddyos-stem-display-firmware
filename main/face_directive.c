@@ -176,6 +176,28 @@ bool face_directive_apply(const char *json, size_t len)
         }
     }
 
+    /* The look is the child's other half of the design — base, body colour, hair,
+     * ears, accessories — and this firmware has artwork for exactly one of them. Say
+     * so by name. A change that cannot be drawn and is not mentioned is the same
+     * experience as a change that never arrived, which is the bug this replaces. */
+    const cJSON *look = cJSON_GetObjectItem(extra, "look");
+    if (cJSON_IsObject(look)) {
+        const char *base = cJSON_GetStringValue(cJSON_GetObjectItem(look, "base"));
+        const char *color = cJSON_GetStringValue(cJSON_GetObjectItem(look, "body_color"));
+        if (base && strcmp(base, face_look_base))
+            ESP_LOGW(TAG, "this Buddy is a '%s'; the artwork here is '%s' — showing '%s'",
+                     base, face_look_base, face_look_base);
+        if (color && strcmp(color, face_look_color))
+            ESP_LOGW(TAG, "body colour '%s' cannot be drawn; the artwork is baked '%s'",
+                     color, face_look_color);
+        static const char *EXTRAS[] = { "hair", "ears", "accessory", "cheeks" };
+        for (unsigned i = 0; i < sizeof(EXTRAS) / sizeof(EXTRAS[0]); i++) {
+            const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(look, EXTRAS[i]));
+            if (v && strcmp(v, "none") && strcmp(v, "own"))
+                ESP_LOGW(TAG, "%s '%s' is not in this firmware's artwork", EXTRAS[i], v);
+        }
+    }
+
     apply_talk(cJSON_GetObjectItem(extra, "talk"));
 
     /* Motion is not applied yet: the keyframe tracks are baked, and reading them
