@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { LOOKS } from '../../buddyos-stem-fe/src/data/looks';
-import { BROWS, EYES, ALL_MOUTHS, browPart, eyePart, mouthPart, type FaceComposition, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
+import { BROWS, EYES, ALL_MOUTHS, FACE_STATES, defaultFaceStates, browPart, eyePart, mouthPart, type FaceComposition, type FaceState, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
 import {
     EASINGS, EASING_LUT, LUT_SIZE, LAYERS, MOTION_PRESETS, NUMERIC_PROPS, RANGE,
     scaleStateMotion, periodOf, isSpriteTrack, sampleMotion,
@@ -44,15 +44,16 @@ const BASE_ID = 'sprout' as const;
 /* The four states the firmware cycles. Deliberately drawn parts only: an 'artwork'
  * part is a reference to the artist's own bitmap, and resolving those through Vite's
  * asset pipeline would prove nothing about translating *shapes*. */
-const STATES = ['idle', 'listening', 'thinking', 'speaking'] as const;
-type TestState = typeof STATES[number];
+/* All seven the website authors, not the four this started with. A conversation
+ * passes through more than four moods, and a state the device does not carry is a
+ * state a child can design and never see. */
+const STATES = FACE_STATES;
+type TestState = FaceState;
 
-const DESIGN: Record<TestState, FaceComposition> = {
-    idle:      { eyes: 'round',  mouth: 'flatsmile', brows: 'flat' },
-    listening: { eyes: 'wide',   mouth: 'tinyu',     brows: 'raised' },
-    thinking:  { eyes: 'lookup', mouth: 'flatsmile', brows: 'furrow' },
-    speaking:  { eyes: 'round',  mouth: 'open',      brows: 'flat' },
-};
+/* The built-in face is the front end's own default, imported rather than retyped.
+ * A kit nobody has designed for therefore looks exactly like a design nobody has
+ * touched, which is the only sane relationship between the two. */
+const DESIGN: Record<TestState, FaceComposition> = defaultFaceStates();
 /** Which mouth each sound draws. A build-time choice until a design carries it. */
 const MOUTH_STYLE = 'natural';
 
@@ -61,6 +62,12 @@ const MOTION_FOR: Record<TestState, string[]> = {
     listening: ['browRaise'],
     thinking: ['nod'],
     speaking: ['talk', 'blink'],
+    /* Busy is working, not waiting, so it gets the same quiet breath as idle without
+     * the blink. Error shakes its head once a cycle. Asleep only breathes — a
+     * sleeping Buddy that blinks is awake. */
+    busy: ['breathe'],
+    error: ['shake'],
+    asleep: ['breathe'],
 };
 
 // ---------------------------------------------------------------- palette

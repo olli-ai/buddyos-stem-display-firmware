@@ -164,10 +164,17 @@ The flow the whole stack was built toward, working on 2026-09-27:
     studio saves  ->  gateway stores and publishes  ->  kit redraws
                       {env}/stem/device/{serial}/directive
 
-**426 bytes** crossed the wire for a complete redesign — four states, the eyes, mouth
-and brows of each, and how the Buddy talks. Never pixels. The artwork is already here,
-baked from the same catalogue the website draws with, which is the whole premise of the
-faces spec and what makes a redesign feel instant rather than feel like a download.
+**616 bytes** crossed the wire for a complete redesign — **all seven states** the website
+authors, the eyes, mouth and brows of each, and how the Buddy talks. Never pixels. The
+artwork is already here, baked from the same catalogue the website draws with, which is the
+whole premise of the faces spec and what makes a redesign feel instant rather than feel
+like a download.
+
+The device carries all seven — `idle`, `listening`, `thinking`, `speaking`, `busy`,
+`error`, `asleep` — because a conversation passes through more than four, and a state the
+device does not carry is one a child can design and never see. The built-in face is the
+front end's own `defaultFaceStates()`, imported rather than retyped, so a kit nobody has
+designed for looks exactly like a design nobody has touched.
 
     design: idle: eyes=star mouth=grin brows=raised
     design: listening: eyes=star mouth=grin brows=raised
@@ -178,6 +185,25 @@ faces spec and what makes a redesign feel instant rather than feel like a downlo
 
 It is kept in NVS and re-applied before the radio is even up, so a Buddy that loses
 power does not come back as a stranger.
+
+### Which face, during a conversation
+
+A design says what each state looks like. A **`face.state`** directive says which one to
+wear, and a conversation moves through them far faster than anything redraws a design:
+
+    {"type": "face.state", "data": {"state": "listening"}}
+
+    python3 tools/send_face.py --state thinking
+    python3 tools/send_face.py --conversation     # listening -> thinking -> speaking -> idle
+
+These are commands, not state: **never retained**, or every reconnect would replay a mood
+from an exchange that finished long ago. They are not stored either — an early version kept
+every one of them in NVS, which quietly overwrote the design a child had made, so the next
+power cut would have lost it while the log cheerfully said it was restoring their design.
+
+The demo cycle stops the moment anything drives the face, rather than talking over whoever
+is in charge. When the voice path arrives it should drive these directly from the pipeline's
+own status, which is where they will come from anyway.
 
 **The whole catalogue is baked** — 20 eyes, 8 brows, 30 mouths, 86 sprites — because a
 design arrives at runtime and may name any part in it. Baking only what the built-in

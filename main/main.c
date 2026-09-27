@@ -144,8 +144,15 @@ static void face_timer(lv_timer_t *t)
     if (origin == 0) origin = esp_timer_get_time();
     uint32_t ms = (uint32_t)((esp_timer_get_time() - origin) / 1000);
 
-    int want = (int)((ms / STATE_MS) % (uint32_t)face_state_count);
-    if (want != state) { state = want; face_view_set_state(state); }
+    /* The demo cycle, which exists only so an unattached board shows what it can
+     * do. The moment a conversation drives the face — or a directive does — it
+     * stops, rather than talking over whoever is in charge. */
+    if (!face_view_is_driven()) {
+        int want = (int)((ms / STATE_MS) % (uint32_t)face_state_count);
+        if (want != state) { state = want; face_view_set_state(state); }
+    } else {
+        state = face_view_state();
+    }
 #if CONFIG_BUDDY_LIPSYNC_DEMO
     lipsync_demo(state, ms);
 #endif

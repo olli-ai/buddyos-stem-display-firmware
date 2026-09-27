@@ -100,6 +100,8 @@ def main():
     g.add_argument("--preset", choices=sorted(PRESETS), help="a face built here")
     g.add_argument("--file", help="a design saved by the studio (JSON)")
     g.add_argument("--clear", action="store_true", help="back to the built-in face")
+    g.add_argument("--state", help="show one state now: idle, listening, thinking, speaking, busy, error, asleep")
+    g.add_argument("--conversation", action="store_true", help="walk the states a real exchange passes through")
     ap.add_argument("--style", default="natural", help="how it talks: natural, gentle, big, cheeky")
     ap.add_argument("--serial", default=os.environ.get("STEM_MQTT_USER", ""), help="device serial")
     ap.add_argument("--no-retain", action="store_true", help="do not leave it waiting for an offline kit")
@@ -113,6 +115,21 @@ def main():
     admin = bool(os.environ.get("STEM_MQTT_ADMIN_USER"))
     kind = "directive" if admin else "event"
     topic = f"{ENV}/stem/device/{args.serial}/{kind}"
+
+    if args.state or args.conversation:
+        # A state is a command, not state-to-be-remembered: never retained, or every
+        # reconnect would replay a mood from an exchange that finished long ago.
+        m = Mqtt(HOST, PORT, f"send-face-{uuid.uuid4().hex[:8]}", user, pw)
+        steps = [(args.state, 0)] if args.state else [
+            ("listening", 1.6), ("thinking", 1.2), ("speaking", 2.5), ("idle", 0)]
+        for name, hold in steps:
+            m.publish(topic, json.dumps({"v": 1, "id": uuid.uuid4().hex, "type": "face.state",
+                                         "serial": args.serial, "data": {"state": name}},
+                                        separators=(",", ":")), retain=False)
+            print(f"  -> {name}")
+            time.sleep(hold or 0.4)
+        m.close()
+        return
 
     directive = {"v": 1, "id": uuid.uuid4().hex, "type": "face.update",
                  "serial": args.serial, "ts": int(time.time()),

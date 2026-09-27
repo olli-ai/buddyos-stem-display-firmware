@@ -78,10 +78,16 @@ static void apply_talk(const cJSON *talk)
 
 /** Set when the design just applied was an empty one. Read once by `receive`. */
 static bool s_cleared;
+/** ...and set when what arrived was a design at all. A `face.state` directive is a
+ *  passing mood, not something to keep: storing one overwrote the design a child had
+ *  made, so the next power cut would have lost it and the log would have said
+ *  "restoring the design this Buddy was last given" while restoring a mood. */
+static bool s_is_design;
 
 bool face_directive_apply(const char *json, size_t len)
 {
     s_cleared = false;
+    s_is_design = false;
     cJSON *root = cJSON_ParseWithLength(json, len);
     if (!root) { ESP_LOGE(TAG, "not JSON, ignoring %u B", (unsigned)len); return false; }
 
@@ -94,6 +100,28 @@ bool face_directive_apply(const char *json, size_t len)
     if (cJSON_IsString(type) && strncmp(type->valuestring, "face.", 5) != 0) {
         cJSON_Delete(root);
         return false;
+    }
+
+    /* Which face to wear right now. A conversation moves through these faster than
+     * anything redraws a design: listening while the child speaks, thinking while
+     * the answer is found, speaking while it is said. The design says what each one
+     * looks like; this says which one it is. */
+    if (cJSON_IsString(type) && !strcmp(type->valuestring, "face.state")) {
+        const cJSON *data = cJSON_GetObjectItem(root, "data");
+        const cJSON *name = data ? cJSON_GetObjectItem(data, "state") : NULL;
+        bool found = false;
+        if (cJSON_IsString(name))
+            for (int i = 0; i < face_state_count; i++)
+                if (!strcmp(face_states[i].name, name->valuestring)) {
+                    face_view_request_state(i);
+                    ESP_LOGI(TAG, "showing '%s'", name->valuestring);
+                    found = true;
+                    break;
+                }
+        if (!found)
+            ESP_LOGW(TAG, "no state '%s' here", cJSON_IsString(name) ? name->valuestring : "?");
+        cJSON_Delete(root);
+        return found;
     }
 
     /* Accept either the directive's `data` or the design's `extra` straight from
@@ -156,6 +184,7 @@ bool face_directive_apply(const char *json, size_t len)
     if (cJSON_GetObjectItem(extra, "motion"))
         ESP_LOGW(TAG, "this design has motion; the device still plays the built-in loops");
 
+    s_is_design = true;
     cJSON_Delete(root);
     return changed;
 }
@@ -190,9 +219,9 @@ static void remember(const char *json, size_t len)
 bool face_directive_receive(const char *json, size_t len)
 {
     bool ok = face_directive_apply(json, len);
-    /* `apply` erases the stored design when it is told to clear; storing this
-     * payload would only put it straight back. */
-    if (ok && !s_cleared) remember(json, len);
+    /* Only an actual design is kept, and not one that was just cleared — storing
+     * that would only put it straight back. */
+    if (ok && s_is_design && !s_cleared) remember(json, len);
     return ok;
 }
 

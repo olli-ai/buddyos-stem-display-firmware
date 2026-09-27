@@ -8,6 +8,13 @@ void face_view_set_state(int state);
 /** Which state is showing. For callers that did not set it themselves. */
 int face_view_state(void);
 
+/** Show a state, asked for from another task — a directive during a conversation,
+ *  and later the voice pipeline itself. Applied on the next render tick. */
+void face_view_request_state(int state);
+
+/** True once something outside has taken charge, which stops the demo cycle. */
+bool face_view_is_driven(void);
+
 /** Back to the face this firmware was built with — what a deleted design means. */
 void face_view_reset_parts(void);
 

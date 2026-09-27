@@ -44,6 +44,11 @@ static bool s_parts_set;
  * only thing that crosses tasks is this flag, and the drawing happens where all the
  * other drawing happens. */
 static volatile bool s_parts_dirty;
+/* A state asked for from somewhere that is not the render task — a directive, and
+ * later the voice pipeline. Same rule as the design: only the request crosses, the
+ * drawing happens where the drawing happens. */
+static volatile int s_want_state = -1;
+static volatile bool s_driven;
 
 #define MOUTH_LAYER 5
 
@@ -89,6 +94,16 @@ void face_view_create(lv_obj_t *parent)
 }
 
 int face_view_state(void) { return s_state; }
+
+void face_view_request_state(int state)
+{
+    if (state < 0 || state >= face_state_count) return;
+    s_want_state = state;
+    s_driven = true;
+}
+
+/** True once something outside has taken charge of which face is shown. */
+bool face_view_is_driven(void) { return s_driven; }
 
 void face_view_reset_parts(void)
 {
@@ -151,6 +166,11 @@ static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t 
 
 void face_view_tick(uint32_t elapsed_ms)
 {
+    int want = s_want_state;
+    if (want >= 0) {
+        s_want_state = -1;
+        if (want != s_state) face_view_set_state(want);
+    }
     if (s_parts_dirty) {
         s_parts_dirty = false;
         for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
