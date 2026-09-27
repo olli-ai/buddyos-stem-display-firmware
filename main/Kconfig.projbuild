@@ -57,6 +57,19 @@ config BUDDY_MQTT_AWS_ROOT
         against the full bundle's 65 KB. Turn this off to reach a broker with some
         other publicly-trusted certificate, which costs the whole bundle.
 
+config BUDDY_TLS_PROBE
+    bool "Open a second TLS session once MQTT is connected"
+    depends on BUDDY_NET
+    default n
+    help
+        A measurement, not a feature. The voice path brings DTLS-SRTP — a second TLS
+        context on top of the broker's — and the question that decides whether it
+        fits is what the *second* one costs, not the first. This opens one and
+        reports the heap on both sides of it.
+
+        Off by default: it dials an outside host, which a shipped device has no
+        business doing.
+
 config BUDDY_LIPSYNC_DEMO
     bool "Lip-sync the face to an embedded speech clip"
     default y

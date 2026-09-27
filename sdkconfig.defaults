@@ -32,3 +32,13 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # the panel buffers, and the parts of the TLS path that must be internal. Worth
 # measuring with this off as well, since that is the pessimistic case.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# mbedTLS allocates from PSRAM rather than internal SRAM. This is the single
+# largest lever measured on this board, and it decides whether the voice path fits:
+# with a TLS session up to the product broker, the largest contiguous *internal*
+# block is 32,768 B without it and 61,440 B with it. The session's ~32 KB simply
+# moves to PSRAM, which has 2 MB and nothing else asking for it.
+#
+# Total free is not what this buys — that barely moves. Contiguity is, and a large
+# contiguous internal block is what a DMA buffer or a second TLS context needs.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

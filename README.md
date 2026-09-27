@@ -189,6 +189,34 @@ failure otherwise:
 
 Credentials live in `sdkconfig`, which is gitignored. Nothing in this repo carries a token.
 
+### Can the voice path fit? The memory part, measured
+
+Three runs, each against the product broker, answering the question the planning docs have
+been holding open:
+
+| | internal free | min-ever | largest internal block | PSRAM free |
+| --- | --- | --- | --- | --- |
+| EMQX + JWT, default config | 129,895 | 126,459 | **32,768** | 1,998,152 |
+| …with `MBEDTLS_EXTERNAL_MEM_ALLOC=y` | 161,495 | 156,199 | **61,440** | 1,998,152 |
+| …plus a second, verified TLS session | 152,991 | 152,763 | **59,392** | 1,966,916 (min 1,952,616) |
+
+**One Kconfig symbol nearly doubles the contiguous internal ceiling.** mbedTLS allocating
+from PSRAM moves the session's ~32 KB out of internal SRAM, which has nothing else to offer
+it, into 2 MB that has nothing else to do. Total free barely moves; contiguity is what this
+buys, and contiguity is what a DMA buffer or a second TLS context actually needs. It is now
+in `sdkconfig.defaults`.
+
+**A second concurrent TLS context costs ~2.5 KB internal and ~28 KB of PSRAM** (≈42 KB at
+the handshake peak, all returned on close). That is the closest thing to esp-webrtc's
+DTLS-SRTP that can be measured without esp-webrtc, and it is not close to a problem.
+`CONFIG_BUDDY_TLS_PROBE` runs it; it is off by default because a shipped device has no
+business dialling an outside host.
+
+This is a proxy, and worth naming as one: DTLS is not TLS, SRTP is extra, and esp-webrtc
+also brings an ICE agent, a jitter buffer and a media pipeline. What it settles is the
+specific fear this repo's documents were written around — *a second TLS context on top of
+the broker's* — and that fear was misplaced.
+
 ### What TLS costs, which is the number to carry forward
 
 A connected plaintext broker leaves 171,711 B free with a 69,632 B largest block. The same
