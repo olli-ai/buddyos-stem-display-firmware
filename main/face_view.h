@@ -7,6 +7,10 @@ void face_view_create(lv_obj_t *parent);
 void face_view_set_state(int state);
 /** Which state is showing. For callers that did not set it themselves. */
 int face_view_state(void);
+
+/** Replace one state's five parts — browL, eyeL, browR, eyeR, mouth — with sprites
+ *  resolved from a design. Takes effect immediately if that state is on screen. */
+void face_view_set_state_parts(int state, const int16_t parts[5]);
 /** Advance the animation. Call from an LVGL timer. */
 void face_view_tick(uint32_t elapsed_ms);
 

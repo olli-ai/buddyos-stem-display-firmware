@@ -57,6 +57,18 @@ config BUDDY_MQTT_AWS_ROOT
         against the full bundle's 65 KB. Turn this off to reach a broker with some
         other publicly-trusted certificate, which costs the whole bundle.
 
+config BUDDY_DESIGN_VIA_EVENT
+    bool "Also accept designs on the device's own event topic"
+    depends on BUDDY_NET
+    default n
+    help
+        A bench path. Publishing to the directive topic is the gateway's privilege —
+        a device token may only subscribe there — so testing the web-to-device flow
+        from a laptop needs a topic the device's own token can publish to. Nothing
+        else listens on the event topic.
+
+        Off by default: a shipped device takes its designs from the gateway.
+
 config BUDDY_TLS_PROBE
     bool "Open a second TLS session once MQTT is connected"
     depends on BUDDY_NET

@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { LOOKS } from '../../buddyos-stem-fe/src/data/looks';
-import { browPart, eyePart, mouthPart, type FaceComposition, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
+import { BROWS, EYES, ALL_MOUTHS, browPart, eyePart, mouthPart, type FaceComposition, type Shape, type Paint } from '../../buddyos-stem-fe/src/data/faceParts';
 import {
     EASINGS, EASING_LUT, LUT_SIZE, LAYERS, MOTION_PRESETS, NUMERIC_PROPS, RANGE,
     scaleStateMotion, periodOf, isSpriteTrack, sampleMotion,
@@ -35,7 +35,7 @@ import {
 import {
     BANDS, FRAME, HOP, SAMPLE_RATE, VISEMES, VISEME_TABLE,
     Loudness, VisemeSmoother, classify, features,
-    partsForStyle, type Viseme,
+    MOUTH_STYLES, partsForStyle, type Viseme,
 } from '../../buddyos-stem-fe/src/data/visemes';
 
 const SIZE = 240;                       // the GC9A01 is 240x240
@@ -169,10 +169,13 @@ for (const st of STATES) {
  *  not cover. */
 const needed = new Map<string, { layer: LayerId; part: string }>();
 const putNeeded = (layer: LayerId, part: string) => needed.set(`${layer}:${part}`, { layer, part });
-for (const v of VISEMES) {
-    const part = partsForStyle(MOUTH_STYLE)[v];
-    if (part) putNeeded('mouth', part);
-}
+/* Every style's mouths, not just the default one's: which style a face talks in
+ * arrives with the design at runtime. */
+for (const st of MOUTH_STYLES)
+    for (const v of VISEMES) {
+        const part = partsForStyle(st.id)[v];
+        if (part) putNeeded('mouth', part);
+    }
 for (const st of STATES) {
     const d = DESIGN[st];
     const put = putNeeded;
@@ -182,6 +185,17 @@ for (const st of STATES) {
         if (isSpriteTrack(t)) for (const k of t.keys) put(t.layer, k.id);
     }
 }
+
+/* ...and then the whole catalogue, because a design arrives from the website at
+ * runtime and may name any part in it. Baking only what the built-in states use
+ * would mean every second face a child made fell back to a default — which is ADR
+ * 0009's rule working correctly and looking exactly like a bug.
+ *
+ * 'artwork' is skipped: it is a reference to an artist's bitmap resolved through
+ * Vite, not a drawing, and there is nothing here to rasterise. */
+for (const e of EYES) if (e.id !== 'artwork') { putNeeded('eyeL', e.id); putNeeded('eyeR', e.id); }
+for (const b of BROWS) { putNeeded('browL', b.id); putNeeded('browR', b.id); }
+for (const m of ALL_MOUTHS) if (m.id !== 'artwork') putNeeded('mouth', m.id);
 
 // --------------------------------------------------------------- emit C
 const out = process.argv[2] || '.';
@@ -272,6 +286,18 @@ cs += `const face_viseme_table_t face_viseme_table = {\n`
     + `    .mbp_low = ${VISEME_TABLE.mbp_low}f, .pucker_low = ${VISEME_TABLE.pucker_low}f,\n`
     + `    .switch_frames = ${VISEME_TABLE.switch_frames}, .min_hold_ms = ${VISEME_TABLE.min_hold_ms},\n`
     + `};\n`;
+/* The style table, so a design can say how its Buddy talks and the device can
+ * honour it without a firmware release. */
+cs += `const face_mouth_style_t face_mouth_styles[] = {\n`;
+for (const st of MOUTH_STYLES) {
+    const parts = partsForStyle(st.id);
+    const row = VISEMES.map((v) => {
+        const part = parts[v];
+        return part ? sprites.findIndex((s) => s.layer === 'mouth' && s.part === part) : -1;
+    });
+    cs += `    { "${st.id}", { ${row.join(', ')} } },\n`;
+}
+cs += `};\nconst int face_mouth_style_count = ${MOUTH_STYLES.length};\n`;
 cs += `const int face_viseme_frame = ${FRAME};\nconst int face_viseme_hop = ${HOP};\n`;
 cs += `const int face_viseme_rate = ${SAMPLE_RATE};\n`;
 

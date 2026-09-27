@@ -33,11 +33,29 @@ static int s_state;
 static int16_t s_shown[FACE_LAYER_COUNT];
 static int16_t s_live_mouth = -1;             /* lip-sync, or -1 for the authored mouth */
 
+/* The design in force: the baked one until a directive replaces it. Kept as sprite
+ * indices rather than part ids because that is what drawing needs, and resolving
+ * names once at the door means the render path never does string work. */
+static int16_t s_parts[8][5];
+static bool s_parts_set;
+/* Set by whoever received a design, cleared by the render tick. LVGL is not thread
+ * safe, and a design arrives on the MQTT task: touching sprites from there stopped
+ * the apply loop dead after its first state, without a crash to explain why. So the
+ * only thing that crosses tasks is this flag, and the drawing happens where all the
+ * other drawing happens. */
+static volatile bool s_parts_dirty;
+
 #define MOUTH_LAYER 5
 
 /* face_design rows are browL, eyeL, browR, eyeR, mouth — the LAYERS order minus
  * the head itself. */
 static const int DESIGN_TO_LAYER[5] = { 1, 2, 3, 4, 5 };
+
+/** What state `st` draws now — the design received, or the one baked in. */
+static int16_t part_of(int st, int i)
+{
+    return s_parts_set ? s_parts[st][i] : face_design[st][i].sprite;
+}
 
 static void show_sprite(int layer, int16_t idx)
 {
@@ -65,10 +83,22 @@ void face_view_create(lv_obj_t *parent)
         s_shown[i] = -1;
         lv_obj_add_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN);
     }
+    for (int st = 0; st < face_state_count && st < 8; st++)
+        for (int i = 0; i < 5; i++) s_parts[st][i] = face_design[st][i].sprite;
     face_view_set_state(0);
 }
 
 int face_view_state(void) { return s_state; }
+
+void face_view_set_state_parts(int state, const int16_t parts[5])
+{
+    if (state < 0 || state >= face_state_count || state >= 8) return;
+    for (int i = 0; i < 5; i++) s_parts[state][i] = parts[i];
+    s_parts_set = true;
+    /* Redrawn on the next tick rather than here. A child watching should still see
+     * it happen — the next tick is 16 ms away. */
+    if (state == s_state) s_parts_dirty = true;
+}
 
 void face_view_set_live_mouth(int16_t sprite)
 {
@@ -79,7 +109,7 @@ void face_view_set_state(int state)
 {
     if (state < 0 || state >= face_state_count) return;
     s_state = state;
-    for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], face_design[state][i].sprite);
+    for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(state, i));
     ESP_LOGI(TAG, "state -> %s (%u ms loop)", face_states[state].name, face_states[state].duration);
 }
 
@@ -114,6 +144,11 @@ static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t 
 
 void face_view_tick(uint32_t elapsed_ms)
 {
+    if (s_parts_dirty) {
+        s_parts_dirty = false;
+        for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
+    }
+
     face_values_t v[FACE_LAYER_COUNT];
     face_motion_sample(s_state, elapsed_ms, v);
 
@@ -127,7 +162,7 @@ void face_view_tick(uint32_t elapsed_ms)
         } else if (i == MOUTH_LAYER && v[i].sprite < 0) {
             /* Released, and this state has no mouth track to fall back to: put the
              * designed mouth back rather than leaving the last spoken shape on. */
-            show_sprite(i, face_design[s_state][4].sprite);
+            show_sprite(i, part_of(s_state, 4));
         } else if (v[i].sprite >= 0) {
             show_sprite(i, v[i].sprite);
         }

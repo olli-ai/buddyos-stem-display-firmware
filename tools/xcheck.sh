@@ -12,6 +12,7 @@ cat > /tmp/xcheck/lvgl.h <<'STUB'
 /* Just enough LVGL for the generated image descriptors to compile on the host. */
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 typedef struct { uint32_t magic: 8, cf: 8, flags: 16; uint32_t w: 16, h: 16; uint32_t stride: 16, reserved_2: 16; } lv_image_header_t;
 typedef struct { lv_image_header_t header; uint32_t data_size; const uint8_t *data; const void *reserved; } lv_image_dsc_t;
 #define LV_IMAGE_HEADER_MAGIC 0x19

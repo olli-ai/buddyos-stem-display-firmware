@@ -1,4 +1,5 @@
 #include "face_lipsync.h"
+#include <stdbool.h>
 #include "generated/face_assets.h"
 #include <math.h>
 #include <string.h>
@@ -20,6 +21,10 @@ static int s_fill;                    /* samples held, capped at the frame lengt
 static int s_since_hop;
 static float s_peak;                  /* loudness reference for this voice */
 static int s_cur, s_cand, s_votes;
+/* Which mouth each class draws. Baked as a default; a design may replace it, which
+ * is what the "How it talks" picker on the website actually does. */
+static int16_t s_mouths[8];
+static bool s_mouths_set;
 static uint32_t s_since_ms;
 static int s_frames;
 static int s_win_ready;
@@ -194,7 +199,13 @@ int16_t face_lipsync_feed(const int16_t *pcm, size_t samples)
             }
         }
     }
-    return face_viseme_sprite[s_cur];
+    return s_mouths_set ? s_mouths[s_cur] : face_viseme_sprite[s_cur];
+}
+
+void face_lipsync_set_mouths(const int16_t sprite[8])
+{
+    memcpy(s_mouths, sprite, sizeof(s_mouths));
+    s_mouths_set = true;
 }
 
 /** The class currently shown, 0..7. For the conformance check and for logs. */

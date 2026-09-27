@@ -38,6 +38,10 @@ void face_lipsync_start(void);
  */
 int16_t face_lipsync_feed(const int16_t *pcm, size_t samples);
 
+/** Which mouth each of the eight classes draws, replacing the baked default. This
+ *  is the child's "How it talks" choice arriving from the website. */
+void face_lipsync_set_mouths(const int16_t sprite[8]);
+
 /** The class currently shown, 0..7 in VISEMES order. For the conformance check. */
 int face_lipsync_viseme(void);
 /** Frames classified since the last start(). */

@@ -157,6 +157,48 @@ draw buffers. Bringing the radio up costs another ~82,700 B and, more importantl
 the largest contiguous block** from 163,840 to 81,920 B — which is the number to watch,
 because it is contiguity rather than total free that kills a DMA allocation.
 
+### A face designed on the website, on the device
+
+The flow the whole stack was built toward, working on 2026-09-27:
+
+    studio saves  ->  gateway stores and publishes  ->  kit redraws
+                      {env}/stem/device/{serial}/directive
+
+**426 bytes** crossed the wire for a complete redesign — four states, the eyes, mouth
+and brows of each, and how the Buddy talks. Never pixels. The artwork is already here,
+baked from the same catalogue the website draws with, which is the whole premise of the
+faces spec and what makes a redesign feel instant rather than feel like a download.
+
+    design: idle: eyes=star mouth=grin brows=raised
+    design: listening: eyes=star mouth=grin brows=raised
+    design: thinking: eyes=star mouth=grin brows=raised
+    design: speaking: eyes=star mouth=grin brows=raised
+    design: talks in the 'cheeky' style
+    design: kept this design (426 B)
+
+It is kept in NVS and re-applied before the radio is even up, so a Buddy that loses
+power does not come back as a stranger.
+
+**The whole catalogue is baked** — 20 eyes, 8 brows, 30 mouths, 86 sprites — because a
+design arrives at runtime and may name any part in it. Baking only what the built-in
+states use would mean every second face a child made fell back to a default, which is
+ADR 0009's rule working correctly and looking exactly like a bug. It costs 1,725,456 B
+of the 2 MB app partition; the long-term home is still the `faces` partition that ADR
+0009 reserves, and this is the version that fits without it.
+
+A part this firmware does not have falls back to what the state already showed, and
+says so in the log. Motion is the one piece not applied yet: the tracks are baked, and
+reading them from a design needs an interpreter that builds tracks at runtime.
+
+    # send a face without the gateway, from a device token
+    export STEM_MQTT_USER=… STEM_MQTT_PASS=…
+    python3 tools/send_face.py --preset star --style cheeky
+    python3 tools/send_face.py --file whatever-the-studio-saved.json
+
+A device token may only *subscribe* to its directive topic — publishing there is the
+gateway's privilege — so that bench path publishes to the device's own event topic and
+needs `CONFIG_BUDDY_DESIGN_VIA_EVENT`. It reaches the same handler.
+
 ### It reaches the product broker
 
 `mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted

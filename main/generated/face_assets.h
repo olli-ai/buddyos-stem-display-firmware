@@ -66,6 +66,12 @@ typedef struct {
 /** Viseme order: rest, mbp, small, mid, wide, round, pucker, teeth.
  *  A sprite index, or -1 for `rest`, which means "the mouth the child designed". */
 extern const int16_t face_viseme_sprite[8];
+
+/** One way of talking, as the Design page's "How it talks" picker offers it. The
+ *  whole table ships because the choice arrives with a design, at runtime. */
+typedef struct { const char *id; int16_t sprite[8]; } face_mouth_style_t;
+extern const face_mouth_style_t face_mouth_styles[];
+extern const int face_mouth_style_count;
 extern const face_viseme_bands_t face_viseme_bands;
 extern const face_viseme_table_t face_viseme_table;
 extern const int face_viseme_frame, face_viseme_hop, face_viseme_rate;

@@ -8,6 +8,7 @@
  */
 #include "net.h"
 #include "mem_report.h"
+#include "face_directive.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -72,13 +73,35 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
              * actually allows what this device needs, which is a separate question
              * and the one that bites later. */
             esp_mqtt_client_subscribe(e->client, s_topic_dir, 1);
+#if CONFIG_BUDDY_DESIGN_VIA_EVENT
+            /* A bench path, and an honest one. Publishing to the directive topic is
+             * the gateway's privilege — a device token may only subscribe there —
+             * so testing the whole flow from a laptop needs a topic the same token
+             * can publish to. The event topic is that, and nothing else listens on
+             * it. Off by default; a shipped device takes designs from the gateway. */
+            esp_mqtt_client_subscribe(e->client, s_topic_evt, 1);
+            ESP_LOGW(TAG, "bench: also taking designs from %s", s_topic_evt);
+#endif
             esp_mqtt_client_publish(e->client, s_topic_evt,
                                     "{\"type\":\"hello\",\"from\":\"display-firmware\"}", 0, 1, 0);
         }
         break;
     case MQTT_EVENT_SUBSCRIBED:   ESP_LOGI(TAG, "subscribed: %s", s_topic_dir); break;
     case MQTT_EVENT_PUBLISHED:    ESP_LOGI(TAG, "published to %s", s_topic_evt); break;
-    case MQTT_EVENT_DATA:         ESP_LOGI(TAG, "directive: %.*s", e->data_len, e->data); break;
+    case MQTT_EVENT_DATA:
+        /* A design from the website. The payload is the directive envelope; the
+         * handler takes either that or a bare design, because a bench test
+         * publishes one and the gateway publishes the other. */
+        ESP_LOGI(TAG, "directive on %.*s (%d B)", e->topic_len, e->topic, e->total_data_len);
+        if (e->current_data_offset != 0 || e->data_len != e->total_data_len) {
+            /* A design split across MQTT fragments would need reassembly, and a
+             * half-parsed face is worse than none. buffer.size is what prevents it. */
+            ESP_LOGW(TAG, "  split across fragments (%d of %d B) — ignored; raise buffer.size",
+                     e->data_len, e->total_data_len);
+            break;
+        }
+        face_directive_receive(e->data, e->data_len);
+        break;
     case MQTT_EVENT_DISCONNECTED: ESP_LOGW(TAG, "mqtt disconnected"); break;
     case MQTT_EVENT_ERROR:
         ESP_LOGE(TAG, "mqtt error");
@@ -140,13 +163,6 @@ static void net_task(void *arg)
     (void)arg;
     s_events = xEventGroupCreate();
 
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
-
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -196,8 +212,9 @@ static void net_task(void *arg)
         .session.keepalive = 30,
         /* The device JWT alone is ~1.1 KB, so the default 1 KB buffer cannot hold
          * the CONNECT this client sends — the failure looks like a broker that hangs
-         * up rather than like a buffer that is too small. */
-        .buffer.size = 4096,
+         * up rather than like a buffer that is too small. Doubled again for designs,
+         * which arrive on this socket and must not be split across fragments. */
+        .buffer.size = 8192,
         .network.reconnect_timeout_ms = 5000,
     };
 
@@ -233,6 +250,21 @@ static void net_task(void *arg)
 
 void net_start(void)
 {
+    /* NVS first, and here rather than inside the task: the stored design is read
+     * on the next line, and a task that initialises it later leaves the restore
+     * reading from a partition that is not mounted yet. It failed silently, which
+     * is how a Buddy forgets its face over a power cut and nobody sees why. */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
+    /* The face this Buddy was last given, before the radio is even up: a design
+     * that only reappears once the network does is a Buddy that boots as a stranger. */
+    face_directive_restore();
+
     /* Always started when CONFIG_BUDDY_NET is on, even with no credentials.
      *
      * An earlier version returned here when CONFIG_BUDDY_WIFI_SSID was empty — and
