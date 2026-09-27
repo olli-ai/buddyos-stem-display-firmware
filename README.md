@@ -225,6 +225,16 @@ A device token may only *subscribe* to its directive topic — publishing there 
 gateway's privilege — so that bench path publishes to the device's own event topic and
 needs `CONFIG_BUDDY_DESIGN_VIA_EVENT`. It reaches the same handler.
 
+**Turn the bench path off once the gateway is doing this for real, and clear anything it
+left behind.** `send_face.py` publishes retained, like the gateway, which means a test
+design keeps arriving on every reconnect — and it arrives *after* the gateway's, so it
+silently wins. That cost a confusing round of "the device is not updating" when the log
+showed the real design applying and being overwritten 80 ms later by a week-old test.
+A zero-length retained publish to the same topic is how MQTT forgets one:
+
+    python3 tools/send_face.py --clear --no-retain   # stop sending it
+    # and to delete what is already retained there, publish an empty retained payload
+
 ### It reaches the product broker
 
 `mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted
