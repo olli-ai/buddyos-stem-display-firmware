@@ -20,6 +20,7 @@
  */
 #include "face_view.h"
 #include "face_motion.h"
+#include "face_catalogue.h"
 #include <math.h>
 #include <string.h>
 #include "esp_log.h"
@@ -31,6 +32,20 @@ static lv_obj_t *s_bg;
 static lv_obj_t *s_layer[FACE_LAYER_COUNT];   /* 1..5; [0] is the whole head */
 static int s_state;
 static int16_t s_shown[FACE_LAYER_COUNT];
+/* What each layer is actually drawing, resolved once at swap time: a baked sprite or
+ * a character's own artwork, which do not live in the same array. Keeping the
+ * resolved pointer means the render path never asks again. */
+static const lv_image_dsc_t *s_img[FACE_LAYER_COUNT];
+static int16_t s_ix[FACE_LAYER_COUNT], s_iy[FACE_LAYER_COUNT];
+/* The character whose body is showing, or NULL for the one baked into the firmware. */
+static const face_character_t *s_char;
+/* Requested from the MQTT task, applied on the render tick. LVGL is not thread safe
+ * and this is the third thing to learn it the same way: the first version swapped the
+ * background image here and the apply loop died mid-design, silently. */
+static const face_character_t * volatile s_want_char;
+static volatile bool s_char_pending;
+static volatile uint32_t s_want_rgb;
+static volatile bool s_want_original = true, s_color_pending;
 static int16_t s_live_mouth = -1;             /* lip-sync, or -1 for the authored mouth */
 
 /* The design in force: the baked one until a directive replaces it. Kept as sprite
@@ -62,14 +77,55 @@ static int16_t part_of(int st, int i)
     return s_parts_set ? s_parts[st][i] : face_design[st][i].sprite;
 }
 
+/* browL, eyeL, browR, eyeR, mouth -> the character's own artwork slot, or -1.
+ * A character's artist drew eyes and a mouth, never brows. */
+static const int ART_SLOT[FACE_LAYER_COUNT] = { -1, -1, 0, -1, 1, 2 };
+
 static void show_sprite(int layer, int16_t idx)
 {
-    if (idx < 0 || idx >= face_sprite_count || s_shown[layer] == idx) return;
-    const face_sprite_t *sp = &face_sprites[idx];
+    if (s_shown[layer] == idx) return;
+    const lv_image_dsc_t *img = NULL;
+    int16_t x = 0, y = 0;
+
+    if (idx == FACE_PART_ARTWORK) {
+        /* The face this character was drawn with. Only the catalogue has it — the
+         * built-in fallback is a plain drawn eye, which is what a kit shows when the
+         * partition is empty. */
+        int slot = ART_SLOT[layer];
+        if (s_char && slot >= 0 && s_char->art[slot].header.w) {
+            img = &s_char->art[slot];
+            x = s_char->art_x[slot];
+            y = s_char->art_y[slot];
+        }
+    } else if (idx >= 0 && idx < face_sprite_count) {
+        const face_sprite_t *sp = &face_sprites[idx];
+        img = sp->img; x = sp->x; y = sp->y;
+    } else {
+        return;
+    }
+
     s_shown[layer] = idx;
-    if (!sp->img) { lv_obj_add_flag(s_layer[layer], LV_OBJ_FLAG_HIDDEN); return; }
+    s_img[layer] = img; s_ix[layer] = x; s_iy[layer] = y;
+    if (!img) { lv_obj_add_flag(s_layer[layer], LV_OBJ_FLAG_HIDDEN); return; }
     lv_obj_remove_flag(s_layer[layer], LV_OBJ_FLAG_HIDDEN);
-    lv_image_set_src(s_layer[layer], sp->img);
+    lv_image_set_src(s_layer[layer], img);
+}
+
+void face_view_set_character(const face_character_t *c)
+{
+    s_want_char = c;
+    s_char_pending = true;
+}
+
+/** On the render task: actually wear it. */
+static void wear_character(const face_character_t *c)
+{
+    s_char = c;
+    lv_image_set_src(s_bg, c ? &c->bg : &face_bg);
+    /* Every layer showing artwork is now showing somebody else's, so make them all
+     * resolve again rather than trusting what is on screen. */
+    for (int i = 1; i < FACE_LAYER_COUNT; i++) s_shown[i] = -1000;
+    s_parts_dirty = true;
 }
 
 void face_view_create(lv_obj_t *parent)
@@ -85,7 +141,7 @@ void face_view_create(lv_obj_t *parent)
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         s_layer[i] = lv_image_create(s_root);
-        s_shown[i] = -1;
+        s_shown[i] = -1000;
         lv_obj_add_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN);
     }
     for (int st = 0; st < face_state_count && st < 8; st++)
@@ -97,11 +153,18 @@ int face_view_state(void) { return s_state; }
 
 void face_view_set_body_color(uint32_t rgb, bool original)
 {
+    s_want_rgb = rgb;
+    s_want_original = original;
+    s_color_pending = true;
+}
+
+/** On the render task. `original` is the mascot as its artist shaded it; any other
+ *  colour fills the silhouette flat, which is exactly what the website does — it
+ *  masks the artwork and paints one colour through it — so the two agree by
+ *  construction rather than because anyone matched them by eye. */
+static void paint_body(uint32_t rgb, bool original)
+{
     if (!s_bg) return;
-    /* `original` is the mascot as its artist shaded it. Any other colour is the
-     * silhouette filled flat, which is exactly what the website does — it masks the
-     * artwork and paints one colour through it — so the two agree by construction
-     * rather than by anyone matching them by eye. */
     lv_obj_set_style_image_recolor(s_bg, lv_color_hex(rgb), 0);
     lv_obj_set_style_image_recolor_opa(s_bg, original ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
 }
@@ -177,6 +240,18 @@ static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t 
 
 void face_view_tick(uint32_t elapsed_ms)
 {
+    /* Everything a design asks for arrives on some other task and is applied here.
+     * Three separate bugs came from calling LVGL where the message was parsed, each
+     * of which killed the parser silently mid-design; nothing in this file may be
+     * called from anywhere but this tick. */
+    if (s_char_pending) {
+        s_char_pending = false;
+        wear_character((const face_character_t *)s_want_char);
+    }
+    if (s_color_pending) {
+        s_color_pending = false;
+        paint_body(s_want_rgb, s_want_original);
+    }
     int want = s_want_state;
     if (want >= 0) {
         s_want_state = -1;
@@ -205,7 +280,7 @@ void face_view_tick(uint32_t elapsed_ms)
             show_sprite(i, v[i].sprite);
         }
         if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
-        const face_sprite_t *sp = &face_sprites[s_shown[i]];
-        place(s_layer[i], &v[0], &v[i], sp->x, sp->y, sp->img->header.w, sp->img->header.h);
+        if (!s_img[i]) continue;
+        place(s_layer[i], &v[0], &v[i], s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
     }
 }

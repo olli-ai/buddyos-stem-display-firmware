@@ -30,6 +30,7 @@
 #include "esp_lcd_gc9a01.h"
 #include "lvgl.h"
 #include "face_view.h"
+#include "face_catalogue.h"
 #include "face_lipsync.h"
 #include "mem_report.h"
 #include "net.h"
@@ -215,6 +216,9 @@ void app_main(void)
 
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
+    /* Before the face is built, so the character a design asks for is already
+     * available when the stored design is restored a moment later. */
+    face_catalogue_mount();
     face_view_create(scr);
     lv_timer_create(face_timer, 16, NULL);          /* ~60 fps */
     ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA", (unsigned)buf_bytes);

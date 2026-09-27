@@ -1,5 +1,6 @@
 #include "face_directive.h"
 #include "face_view.h"
+#include "face_catalogue.h"
 #include "face_lipsync.h"
 #include "generated/face_assets.h"
 #include "cJSON.h"
@@ -26,6 +27,9 @@ static void forget(void);
 static int16_t sprite_of(const char *layer, const char *part)
 {
     if (!part || !*part) return -1;
+    /* "artwork" is not in the sprite array: it is whatever this character's artist
+     * drew, which the catalogue carries per character. */
+    if (!strcmp(part, "artwork")) return FACE_PART_ARTWORK;
     for (int i = 0; i < face_sprite_count; i++)
         if (!strcmp(face_sprites[i].layer, layer) && !strcmp(face_sprites[i].part, part))
             return (int16_t)i;
@@ -36,7 +40,10 @@ static int16_t sprite_of(const char *layer, const char *part)
 static int16_t resolve(const char *layer, const char *part, int16_t fallback, const char *state)
 {
     int16_t s = sprite_of(layer, part);
-    if (s >= 0) return s;
+    /* FACE_PART_ARTWORK is a real answer, not a failure: it says "whatever this
+     * character was drawn with". Treating every negative value as not-found made the
+     * catalogue's whole reason for existing look like a missing part. */
+    if (s >= 0 || s == FACE_PART_ARTWORK) return s;
     if (part && *part)
         ESP_LOGW(TAG, "%s/%s: no '%s' in this catalogue, keeping what was there",
                  state, layer, part);
@@ -184,9 +191,19 @@ bool face_directive_apply(const char *json, size_t len)
     if (cJSON_IsObject(look)) {
         const char *base = cJSON_GetStringValue(cJSON_GetObjectItem(look, "base"));
         const char *color = cJSON_GetStringValue(cJSON_GetObjectItem(look, "body_color"));
-        if (base && strcmp(base, face_look_base))
-            ESP_LOGW(TAG, "this Buddy is a '%s'; the artwork here is '%s' — showing '%s'",
-                     base, face_look_base, face_look_base);
+        if (base) {
+            const face_character_t *c = face_catalogue_find(base);
+            if (c) {
+                face_view_set_character(c);
+                ESP_LOGI(TAG, "this Buddy is a '%s'", base);
+            } else if (strcmp(base, face_look_base)) {
+                ESP_LOGW(TAG, "no '%s' in the catalogue; showing the built-in '%s'",
+                         base, face_look_base);
+                face_view_set_character(NULL);
+            } else {
+                face_view_set_character(NULL);
+            }
+        }
         if (color) {
             /* Applied, not merely reported: the body colour is the one part of the
              * look this firmware can honour, because tinting is an operation on the
