@@ -10,7 +10,12 @@ static const char *TAG = "audio";
 /* Wiring, as built on the bench 2026-09-28.
  *
  * MAX98357A  SD->5  DIN->4  BCLK->6  LRC->7
- * INMP441    SD->17 SCK->16 WS->3    LR->18
+ * INMP441    SD->17 SCK->16 WS->9    LR->18
+ *
+ * WS moved off GPIO 3 on 2026-09-28: GPIO 3 is a strapping pin, sampled at reset,
+ * and a word clock sitting on it is the kind of thing that changes how a board boots
+ * without changing a line of software. GPIO 9 is free and is not next to the panel's
+ * 40 MHz SPI on 10-14.
  *
  * The two `SD` pins are unrelated despite the name: on the amplifier it is
  * shutdown/gain-mode (driven high here to enable), on the microphone it is the data
@@ -23,7 +28,7 @@ static const char *TAG = "audio";
 
 #define MIC_SD    17
 #define MIC_SCK   16
-#define MIC_WS    3
+#define MIC_WS    9
 #define MIC_LR    18
 
 static i2s_chan_handle_t s_tx, s_rx;
@@ -89,7 +94,7 @@ size_t audio_read(int16_t *samples, size_t count)
     while (done < count) {
         size_t want = count - done < 32 ? count - done : 32;
         size_t got = 0;
-        if (i2s_channel_read(s_rx, wide, want * sizeof(int32_t), &got, 200) != ESP_OK) break;
+        if (i2s_channel_read(s_rx, wide, want * sizeof(int32_t), &got, 50) != ESP_OK) break;
         got /= sizeof(int32_t);
         if (!got) break;
         /* 24 bits left-justified in 32: >> 16 keeps the top 16 and the sign. */
@@ -111,18 +116,13 @@ void audio_selftest(void)
 {
     if (!s_tx || !s_rx) return;
 
-    /* A short, quiet A: loud enough to hear across a room, short enough not to
-     * become the sound this device is remembered for. */
-    static int16_t tone[AUDIO_SAMPLE_RATE / 5];
-    for (int i = 0; i < (int)(sizeof(tone) / sizeof(tone[0])); i++)
-        tone[i] = (int16_t)(6000.0f * sinf(2.0f * (float)M_PI * 440.0f * i / AUDIO_SAMPLE_RATE));
-    audio_speaker_enable(true);
-    audio_write(tone, sizeof(tone) / sizeof(tone[0]));
-    audio_speaker_enable(false);
-
-    /* Then listen for a fifth of a second and say what came back. Digital silence —
-     * every sample exactly zero — means the data line is not connected; a quiet room
-     * still reads around -60 dBFS because microphones have noise floors. */
+    /* Listen first. If driving the amplifier disturbs anything — and on a board
+     * already running a panel and a radio from one USB port, it might — the
+     * microphone's answer is already in the log rather than lost along with it.
+     *
+     * A fifth of a second. Digital silence, every sample exactly zero, means the data
+     * line is not connected; a quiet room still reads about -60 dBFS because
+     * microphones have noise floors. */
     static int16_t heard[AUDIO_SAMPLE_RATE / 5];
     size_t got = audio_read(heard, sizeof(heard) / sizeof(heard[0]));
     double sum = 0;
@@ -139,4 +139,15 @@ void audio_selftest(void)
              (unsigned)got, dbfs, (long)peak, got ? (int)(100 * nonzero / got) : 0);
     if (!nonzero)
         ESP_LOGE(TAG, "mic reads digital silence — check SD->%d, and that LR is tied", MIC_SD);
+
+    /* Then a short, quiet A: loud enough to hear across a room, short enough not to
+     * become the sound this device is remembered for. */
+    static int16_t tone[AUDIO_SAMPLE_RATE / 5];
+    for (int i = 0; i < (int)(sizeof(tone) / sizeof(tone[0])); i++)
+        tone[i] = (int16_t)(6000.0f * sinf(2.0f * (float)M_PI * 440.0f * i / AUDIO_SAMPLE_RATE));
+    ESP_LOGI(TAG, "playing 440 Hz for 200 ms");
+    audio_speaker_enable(true);
+    audio_write(tone, sizeof(tone) / sizeof(tone[0]));
+    audio_speaker_enable(false);
+    ESP_LOGI(TAG, "self-test done");
 }
