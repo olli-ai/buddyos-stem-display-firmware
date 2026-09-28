@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c" "face_catalogue.c"
+    SRCS "main.c" "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c" "face_catalogue.c" "audio.c"
          "mem_report.c" "net.c"
          "generated/face_assets.c"
     INCLUDE_DIRS "." "generated"

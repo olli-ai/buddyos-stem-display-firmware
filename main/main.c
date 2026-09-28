@@ -34,6 +34,7 @@
 #include "face_lipsync.h"
 #include "mem_report.h"
 #include "net.h"
+#include "audio.h"
 
 static const char *TAG = "buddy-display";
 
@@ -223,6 +224,18 @@ void app_main(void)
     lv_timer_create(face_timer, 16, NULL);          /* ~60 fps */
     ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA", (unsigned)buf_bytes);
     mem_report("face up");
+
+#if CONFIG_BUDDY_AUDIO
+    /* After the panel and before the radio, so a failure here is legible rather than
+     * tangled up in Wi-Fi's own logs. Opt-in, and off by default: the first attempt
+     * at this took a bench session to untangle from a cable fault and a branch
+     * switch, and a device that is otherwise working should not run it every boot. */
+    if (audio_start()) {
+#if CONFIG_BUDDY_AUDIO_SELFTEST
+        audio_selftest();
+#endif
+    }
+#endif
 
 #if CONFIG_BUDDY_NET
     /* Deliberately after the face. The panel buffers are DMA-capable internal memory

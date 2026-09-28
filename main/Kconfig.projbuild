@@ -69,6 +69,26 @@ config BUDDY_DESIGN_VIA_EVENT
 
         Off by default: a shipped device takes its designs from the gateway.
 
+config BUDDY_AUDIO
+    bool "Bring up the microphone and amplifier"
+    depends on !BUDDY_NET || BUDDY_NET
+    default n
+    help
+        Off by default until the audio board has been brought up once by hand.
+
+        The first attempt hung the device hard enough that the ROM bootloader stopped
+        answering — recovery needed the BOOT button — so this stays opt-in rather than
+        running on every boot of a device that is otherwise working.
+
+config BUDDY_AUDIO_SELFTEST
+    bool "Play a tone and report what the microphone hears, at boot"
+    depends on BUDDY_AUDIO
+    default n
+    help
+        Useful exactly once per board, to prove the wiring. It drives the amplifier,
+        which on USB power can sag the rail on a device already running a panel and a
+        radio — so it is not something to leave on.
+
 config BUDDY_TLS_PROBE
     bool "Open a second TLS session once MQTT is connected"
     depends on BUDDY_NET
