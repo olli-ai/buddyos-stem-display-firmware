@@ -92,16 +92,21 @@ simulator is otherwise so good that it is tempting to trust it further than it g
 | | µs of CPU per frame | per 16 ms of audio |
 | --- | --- | --- |
 | First measurement | 21,433 | **134%** of a core |
-| After the ring buffer | 1,777–1,865 | **~11%** of a core |
+| After the ring buffer | 1,777–1,865 | ~11% of a core |
+| At 240 MHz with `-O2` | 776–815 | **~4.9%** of a core |
 
 The first version slid its analysis window with a 511-sample `memmove` for **every arriving
 sample** — 16 MB/s of copying to advance an audio pointer. A ring buffer walked once per hop
 does the same arithmetic in the same order, so the conformance golden did not move: still
 149 of 149 frames.
 
-Both figures are at **160 MHz with `-Og`**, which is the pessimistic case twice over: the
-part runs at 240 MHz and this is a debug build. Nothing here needed either knob, which is
-the point of quoting them.
+The first two figures were at **160 MHz with `-Og`** — the part's own frequency and the
+compiler's optimiser were simply never turned on. Turning both on is 2.3x for no code and
+no memory; internal free went *up*, because `-O2` lays the image out differently. They are
+in `sdkconfig.defaults` now.
+
+**27x separates the first measurement from the current one**, and only the first factor of
+twelve was a bug. The rest was headroom nobody had claimed.
 
 ### Static sizes
 

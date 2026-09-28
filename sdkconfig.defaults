@@ -42,3 +42,14 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # Total free is not what this buys — that barely moves. Contiguity is, and a large
 # contiguous internal block is what a DMA buffer or a second TLS context needs.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# 240 MHz and -O2, which were simply never turned on. Measured on the board with the
+# lip-sync classifier, the workload here most like Opus: 1,777 us per 16 ms of audio
+# at 160 MHz and -Og, 776 us with these two lines. 2.3x for no code and no memory —
+# internal free actually went *up*, because -O2 lays the image out differently.
+#
+# The voice path has to fit alongside the face on this part, so headroom that costs
+# nothing should not be left on the table while anyone argues about whether a codec
+# fits.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
