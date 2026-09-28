@@ -89,6 +89,27 @@ config BUDDY_AUDIO_SELFTEST
         which on USB power can sag the rail on a device already running a panel and a
         radio — so it is not something to leave on.
 
+config BUDDY_VOICE
+    bool "Talk to the voice assistant"
+    depends on BUDDY_NET && BUDDY_AUDIO
+    default n
+    help
+        Streams the microphone to the gateway's voice route as Opus and plays the
+        Buddy's replies, with its face following the conversation. See main/voice.c.
+
+config BUDDY_VOICE_URL
+    string "Voice WebSocket URL"
+    depends on BUDDY_VOICE
+    default "wss://staging.stem-gateway.aws.iviet.com/v1/stem/voice/stream"
+
+config BUDDY_VOICE_TOKEN
+    string "User token the voice route resolves the persona with"
+    depends on BUDDY_VOICE
+    default ""
+    help
+        A user's JWT. omni resolves the kit's persona and voice from BYA with it.
+        Kept in sdkconfig, which is gitignored; provisioning will deliver it instead.
+
 config BUDDY_TLS_PROBE
     bool "Open a second TLS session once MQTT is connected"
     depends on BUDDY_NET

@@ -53,3 +53,10 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # fits.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# The WebSocket handshake is built in IDF's transport layer, in a buffer this sizes —
+# not the client's buffer_size, which is a different buffer. The voice route takes
+# the user token in the query string (a WebSocket handshake carries no Authorization
+# header the gateway reads), so the request line alone is over a kilobyte: the
+# default 1024 failed with "desired request len: 1209, buffer size: 1024".
+CONFIG_WS_BUFFER_SIZE=4096

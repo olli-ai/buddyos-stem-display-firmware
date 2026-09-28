@@ -69,6 +69,10 @@ bool audio_start(void)
     gpio_set_level(MIC_LR, 0);
 
     i2s_chan_config_t tx_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    /* Silence on underrun, not the last buffer again. Left at its default, the DMA
+     * replays whatever it last held whenever the voice stream runs dry for a moment
+     * — a Wi-Fi hiccup becomes a stuttering repeat of the Buddy's last syllable. */
+    tx_cfg.auto_clear = true;
     if (i2s_new_channel(&tx_cfg, &s_tx, NULL) != ESP_OK) { ESP_LOGE(TAG, "no tx channel"); return false; }
     i2s_std_config_t tx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),

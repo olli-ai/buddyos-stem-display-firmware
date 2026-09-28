@@ -154,7 +154,7 @@ static void face_timer(lv_timer_t *t)
     } else {
         state = face_view_state();
     }
-#if CONFIG_BUDDY_LIPSYNC_DEMO
+#if CONFIG_BUDDY_LIPSYNC_DEMO && !CONFIG_BUDDY_VOICE
     lipsync_demo(state, ms);
 #endif
     face_view_tick(ms);

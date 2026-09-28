@@ -9,6 +9,7 @@
 #include "net.h"
 #include "mem_report.h"
 #include "face_directive.h"
+#include "voice.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -283,6 +284,12 @@ static void net_task(void *arg)
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, on_mqtt, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(client));
     mem_report("mqtt started");
+
+#if CONFIG_BUDDY_VOICE
+    /* Voice needs the network and nothing from the broker, so it starts here rather
+     * than waiting for MQTT to connect. The kit's serial names it to the gateway. */
+    voice_start(CONFIG_BUDDY_MQTT_USER);
+#endif
 
 #if CONFIG_BUDDY_TLS_PROBE
     xEventGroupWaitBits(s_events, MQTT_UP, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
