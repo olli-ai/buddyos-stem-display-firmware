@@ -110,6 +110,36 @@ config BUDDY_VOICE_TOKEN
         A user's JWT. omni resolves the kit's persona and voice from BYA with it.
         Kept in sdkconfig, which is gitignored; provisioning will deliver it instead.
 
+config BUDDY_WAKE_WORD
+    bool "Start a conversation on a wake word"
+    depends on BUDDY_VOICE
+    default y
+    help
+        The microphone stays on the device, feeding ESP-SR WakeNet, until it hears
+        the wake word chosen under "ESP Speech Recognition" (Jarvis by default).
+        Only then does the kit open its voice session, and it closes it again after
+        BUDDY_VOICE_IDLE_S of quiet. Off: the session opens at boot and never
+        closes, which is how the pipeline was first brought up.
+
+config BUDDY_VOICE_IDLE_S
+    int "Seconds of quiet that end a conversation"
+    depends on BUDDY_WAKE_WORD
+    range 5 120
+    default 15
+    help
+        Counted from the last thing that happened: the child's voice at the mic,
+        or any state change from omni. A reply that is still playing is not quiet.
+
+config BUDDY_WAKE_THRESHOLD_MODE
+    int "WakeNet detection mode (0 = normal, 1 = aggressive)"
+    depends on BUDDY_WAKE_WORD
+    range 0 1
+    default 1
+    help
+        ESP-SR's DET_MODE_90 / DET_MODE_95. Aggressive wakes more readily, with
+        more false wakes; with a single, cheap, far-field INMP441 and no AFE in
+        front of it, normal mode misses too many.
+
 config BUDDY_VOICE_TAP
     bool "Copy every uplink Opus packet to the console"
     depends on BUDDY_VOICE

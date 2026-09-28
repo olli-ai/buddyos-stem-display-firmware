@@ -4,8 +4,9 @@
 # Two app slots because an OTA that cannot roll back is not an OTA.
 # `faces` is the catalogue partition of ADR 0009: artwork delivered and replaced
 # without a firmware release, so a new hat does not become an OTA for every device.
-# There is deliberately no `model` partition — this device type does not carry the
-# offline image model, which is what makes the screen affordable.
+# `model` holds the wake-word model only (ESP-SR's srmodels.bin, ~300 KB for one
+# WakeNet9 word; the name is ESP-SR's and cannot change). This device type still
+# carries no offline *image* model, which is what makes the screen affordable.
 #
 # Name,     Type, SubType,  Offset,   Size
 nvs,        data, nvs,      0x9000,   0x6000
@@ -14,3 +15,4 @@ ota_0,      app,  ota_0,    0x10000,  0x200000
 ota_1,      app,  ota_1,    ,         0x200000
 otadata,    data, ota,      ,         0x2000
 faces,      data, spiffs,   ,         0x180000
+model,      data, spiffs,   ,         0x80000

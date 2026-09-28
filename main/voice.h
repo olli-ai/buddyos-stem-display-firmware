@@ -12,8 +12,10 @@
  * conversation state arrives as JSON text frames and drives the face: listening,
  * thinking, speaking.
  *
- * Needs Wi-Fi up. Runs until the device resets; the WebSocket client reconnects on
- * its own.
+ * Needs Wi-Fi up. With CONFIG_BUDDY_WAKE_WORD (the default) nothing is sent until
+ * WakeNet hears the wake word on the device; the conversation then runs until
+ * CONFIG_BUDDY_VOICE_IDLE_S of quiet and the socket closes again. Without it, the
+ * session opens at boot and reconnects on its own.
  */
 bool voice_start(const char *serial);
 

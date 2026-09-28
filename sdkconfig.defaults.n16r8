@@ -6,8 +6,7 @@
 #
 # (A local sdkconfig wins over both, so delete it first, or set these by hand.)
 #
-# Octal PSRAM takes GPIO 35-37, which nothing here uses — the panel is on 10-14 and
-# the audio on 4-7, 9 and 16-18. It also doubles PSRAM bandwidth over the N8R2's quad
+# Octal PSRAM takes GPIO 35-37, which nothing here uses — see main/board_pins.h. It also doubles PSRAM bandwidth over the N8R2's quad
 # part, which is the budget the voice path will lean on: mbedTLS and the audio
 # buffers live in PSRAM, while LVGL reads the character art from flash on the same
 # bus. The hardware doc names this as the module to move to if bandwidth binds.
