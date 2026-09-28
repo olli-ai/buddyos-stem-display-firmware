@@ -24,6 +24,12 @@ static const char *TAG = "audio";
 #define MIC_LR    PIN_MIC_LR
 
 static i2s_chan_handle_t s_tx, s_rx;
+/* Which half of the I2S frame carries the microphone. The INMP441 drives SD only
+ * during the half its LR pin selects and leaves it floating during the other — so
+ * reading the wrong half returns a line that is not being driven, which looks like a
+ * steady noise floor that ignores every sound in the room. That is exactly what the
+ * first live test showed. Both halves are captured and this picks one. */
+static int s_mic_slot = 0;              /* 0 = left (WS low), 1 = right */
 
 void audio_speaker_enable(bool on)
 {
@@ -80,11 +86,11 @@ bool audio_start(void)
     if (i2s_new_channel(&rx_cfg, NULL, &s_rx) != ESP_OK) { ESP_LOGE(TAG, "no rx channel"); return false; }
     i2s_std_config_t rx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = MIC_SCK, .ws = MIC_WS,
                       .dout = I2S_GPIO_UNUSED, .din = MIC_SD },
     };
-    rx_std.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;      /* matches LR tied low */
+    rx_std.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx, &rx_std));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
 
@@ -96,18 +102,17 @@ bool audio_start(void)
 size_t audio_read(int16_t *samples, size_t count)
 {
     if (!s_rx) return 0;
-    /* In 32-sample bites so the scratch stays on the stack and a caller asking for a
-     * whole second does not need a kilobyte of it. */
-    int32_t wide[32];
+    /* Stereo frames in 32-frame bites, so the scratch stays on the stack. */
+    int32_t wide[64];
     size_t done = 0;
     while (done < count) {
         size_t want = count - done < 32 ? count - done : 32;
         size_t got = 0;
-        if (i2s_channel_read(s_rx, wide, want * sizeof(int32_t), &got, 50) != ESP_OK) break;
-        got /= sizeof(int32_t);
+        if (i2s_channel_read(s_rx, wide, want * 2 * sizeof(int32_t), &got, 50) != ESP_OK) break;
+        got /= 2 * sizeof(int32_t);
         if (!got) break;
         /* 24 bits left-justified in 32: >> 16 keeps the top 16 and the sign. */
-        for (size_t i = 0; i < got; i++) samples[done + i] = (int16_t)(wide[i] >> 16);
+        for (size_t i = 0; i < got; i++) samples[done + i] = (int16_t)(wide[2 * i + s_mic_slot] >> 16);
         done += got;
     }
     return done;
@@ -173,5 +178,44 @@ void audio_selftest(void)
     audio_speaker_enable(true);
     audio_write(tone, sizeof(tone) / sizeof(tone[0]));
     audio_speaker_enable(false);
+    /* Then a live meter, because one number cannot tell sound from hum. A level
+     * that moves when someone talks is a microphone hearing a room; a level that
+     * sits still whatever happens is interference, and the fix for that is a clean
+     * supply rather than code. The beep above is the cue: quiet, then talk, then
+     * clap, and the three should look nothing alike.
+     *
+     * 200 ms windows reuse the buffer above, so this costs no memory. */
+    ESP_LOGI(TAG, "LIVE LEVEL for 10 s, LEFT and RIGHT halves — quiet, then talk, then clap");
+    for (int w = 0; w < 50; w++) {
+        double db[2]; long pkv[2]; char bar[2][21];
+        for (int ch = 0; ch < 2; ch++) {
+            s_mic_slot = ch;
+            size_t n = audio_read(heard, sizeof(heard) / sizeof(heard[0]) / 2);
+            double m = 0;
+            for (size_t i = 0; i < n; i++) m += heard[i];
+            m = n ? m / n : 0;
+            double acc = 0;
+            int32_t pk = 0;
+            for (size_t i = 0; i < n; i++) {
+                double v = heard[i] - m;
+                acc += v * v;
+                int32_t a = (int32_t)(v < 0 ? -v : v);
+                if (a > pk) pk = a;
+            }
+            double r = n ? sqrt(acc / n) : 0;
+            db[ch] = r > 0 ? 20.0 * log10(r / 32768.0) : -99;
+            pkv[ch] = pk;
+            /* A bar across -70..0 dBFS, so a change is visible without reading digits. */
+            int b = (int)((db[ch] + 70.0) * 20.0 / 70.0);
+            if (b < 0) b = 0;
+            if (b > 20) b = 20;
+            memset(bar[ch], '#', b);
+            memset(bar[ch] + b, ' ', 20 - b);
+            bar[ch][20] = 0;
+        }
+        ESP_LOGI(TAG, "L %5.1f pk %5ld |%s|   R %5.1f pk %5ld |%s|",
+                 db[0], pkv[0], bar[0], db[1], pkv[1], bar[1]);
+    }
+    s_mic_slot = 0;
     ESP_LOGI(TAG, "self-test done");
 }
