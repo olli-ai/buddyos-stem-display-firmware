@@ -28,6 +28,14 @@ size_t audio_read(int16_t *samples, size_t count);
 /** Play mono 16-bit PCM. Blocks until the buffer is handed to the DMA engine. */
 size_t audio_write(const int16_t *samples, size_t count);
 
+typedef enum {
+    AUDIO_GAIN_QUIET,   /* 9 dB: GAIN floating */
+    AUDIO_GAIN_LOUD,    /* 12 dB: GAIN held low */
+} audio_gain_t;
+
+/** Amplifier gain, set through the MAX98357A's GAIN pin. */
+void audio_set_gain(audio_gain_t gain);
+
 /** Power the amplifier. Off between utterances: the MAX98357A draws current and
  *  hisses faintly with nothing to play, which on a device beside a bed is noticed. */
 void audio_speaker_enable(bool on);

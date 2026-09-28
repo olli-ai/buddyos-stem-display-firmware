@@ -9,10 +9,8 @@
  * LVGL its buffers. sim/ renders the identical face_view.c / face_motion.c on a
  * laptop, which is where this was developed, there being no panel to hand.
  *
- * Panel wiring, as wired on the bench board 2026-09-27:
- *   SCL/SCK GPIO14   SDA/MOSI GPIO10   DC GPIO11   CS GPIO12   RST GPIO13
- * That module has no separate backlight pin. (The newbiely tutorial this started
- * from uses 11/12/1/13/14; these are the pins the board in hand actually has.)
+ * Panel wiring lives in board_pins.h with everything else this firmware drives.
+ * The module has no separate backlight pin.
  *
  * Dependencies are vendored in components/ and the component manager is switched
  * off (see README): idf 5.2.2's resolver cannot parse a `&&` in a dependency
@@ -29,6 +27,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_gc9a01.h"
 #include "lvgl.h"
+#include "board_pins.h"
 #include "face_view.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
@@ -38,11 +37,11 @@
 
 static const char *TAG = "buddy-display";
 
-#define PIN_SCLK   14
-#define PIN_MOSI   10
-#define PIN_DC     11
-#define PIN_CS     12
-#define PIN_RST    13
+#define PIN_SCLK   PIN_LCD_SCLK
+#define PIN_MOSI   PIN_LCD_MOSI
+#define PIN_DC     PIN_LCD_DC
+#define PIN_CS     PIN_LCD_CS
+#define PIN_RST    PIN_LCD_RST
 #define LCD_W     240
 #define LCD_H     240
 #define LCD_HZ  (40 * 1000 * 1000)

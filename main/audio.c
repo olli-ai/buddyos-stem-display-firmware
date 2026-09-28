@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "board_pins.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -7,35 +8,42 @@
 
 static const char *TAG = "audio";
 
-/* Wiring, as built on the bench 2026-09-28.
- *
- * MAX98357A  SD->5  DIN->4  BCLK->6  LRC->7
- * INMP441    SD->17 SCK->16 WS->9    LR->18
- *
- * WS moved off GPIO 3 on 2026-09-28: GPIO 3 is a strapping pin, sampled at reset,
- * and a word clock sitting on it is the kind of thing that changes how a board boots
- * without changing a line of software. GPIO 9 is free and is not next to the panel's
- * 40 MHz SPI on 10-14.
- *
- * The two `SD` pins are unrelated despite the name: on the amplifier it is
- * shutdown/gain-mode (driven high here to enable), on the microphone it is the data
- * line (an input to us). Getting those the same way round is the wiring mistake this
- * comment exists to prevent. */
-#define SPK_SD    5
-#define SPK_DIN   4
-#define SPK_BCLK  6
-#define SPK_LRC   7
+/* Wiring lives in board_pins.h. The two `SD` pins are unrelated despite sharing a
+ * name: on the amplifier it is shutdown (driven high to enable), on the microphone
+ * it is the data line (an input to us). Getting those the same way round is the
+ * wiring mistake this comment exists to prevent. */
+#define SPK_SD    PIN_SPK_SD
+#define SPK_GAIN  PIN_SPK_GAIN
+#define SPK_DIN   PIN_SPK_DIN
+#define SPK_BCLK  PIN_SPK_BCLK
+#define SPK_LRC   PIN_SPK_LRC
 
-#define MIC_SD    17
-#define MIC_SCK   16
-#define MIC_WS    9
-#define MIC_LR    18
+#define MIC_SD    PIN_MIC_SD
+#define MIC_SCK   PIN_MIC_SCK
+#define MIC_WS    PIN_MIC_WS
+#define MIC_LR    PIN_MIC_LR
 
 static i2s_chan_handle_t s_tx, s_rx;
 
 void audio_speaker_enable(bool on)
 {
     gpio_set_level(SPK_SD, on ? 1 : 0);
+}
+
+void audio_set_gain(audio_gain_t gain)
+{
+    /* The MAX98357A reads its GAIN pin as a level, not a signal: tied to ground it
+     * is 12 dB, left floating it is 9 dB. Tying it to VDD would give 6 dB — but the
+     * amplifier runs from 5 V here and a 3.3 V GPIO is not a trustworthy "VDD", so
+     * that level is simply not offered. Floating is the default: the quietest of the
+     * two, for a device that may sit beside a bed. */
+    if (gain == AUDIO_GAIN_LOUD) {
+        gpio_set_direction(SPK_GAIN, GPIO_MODE_OUTPUT);
+        gpio_set_level(SPK_GAIN, 0);
+    } else {
+        gpio_set_direction(SPK_GAIN, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(SPK_GAIN, GPIO_FLOATING);
+    }
 }
 
 bool audio_start(void)
@@ -45,6 +53,7 @@ bool audio_start(void)
     gpio_config_t en = { .pin_bit_mask = 1ULL << SPK_SD, .mode = GPIO_MODE_OUTPUT };
     gpio_config(&en);
     audio_speaker_enable(false);
+    audio_set_gain(AUDIO_GAIN_QUIET);
 
     /* The INMP441's L/R pin picks which half of the frame it drives. Tied low here
      * and read as the left channel; left floating it is neither, and the symptom is
@@ -124,19 +133,34 @@ void audio_selftest(void)
      * line is not connected; a quiet room still reads about -60 dBFS because
      * microphones have noise floors. */
     static int16_t heard[AUDIO_SAMPLE_RATE / 5];
+
+    /* Let it wake up first. The INMP441 outputs zeros for its first 2^18 clock
+     * cycles — about 85 ms here — and then its filters settle with a transient
+     * large enough to read as near full scale. The first version of this test
+     * started listening the moment I2S was enabled and reported -3.9 dBFS for a
+     * silent room: it was measuring the microphone switching on. */
+    for (int i = 0; i < 3; i++) audio_read(heard, sizeof(heard) / sizeof(heard[0]));
+
     size_t got = audio_read(heard, sizeof(heard) / sizeof(heard[0]));
+
+    /* And take the DC offset out before calling anything a level. A MEMS mic sits
+     * a little off zero, and RMS would count that offset as sound. */
+    double mean = 0;
+    for (size_t i = 0; i < got; i++) mean += heard[i];
+    mean = got ? mean / got : 0;
     double sum = 0;
     int32_t peak = 0, nonzero = 0;
     for (size_t i = 0; i < got; i++) {
-        sum += (double)heard[i] * heard[i];
-        int32_t a = heard[i] < 0 ? -heard[i] : heard[i];
+        double v = heard[i] - mean;
+        sum += v * v;
+        int32_t a = (int32_t)(v < 0 ? -v : v);
         if (a > peak) peak = a;
         if (heard[i]) nonzero++;
     }
     double rms = got ? sqrt(sum / got) : 0;
     double dbfs = rms > 0 ? 20.0 * log10(rms / 32768.0) : -999;
-    ESP_LOGI(TAG, "mic: %u samples, %.1f dBFS, peak %ld, %d%% non-zero",
-             (unsigned)got, dbfs, (long)peak, got ? (int)(100 * nonzero / got) : 0);
+    ESP_LOGI(TAG, "mic: %u samples, %.1f dBFS (DC %+.0f), peak %ld, %d%% non-zero",
+             (unsigned)got, dbfs, mean, (long)peak, got ? (int)(100 * nonzero / got) : 0);
     if (!nonzero)
         ESP_LOGE(TAG, "mic reads digital silence — check SD->%d, and that LR is tied", MIC_SD);
 
