@@ -73,6 +73,11 @@ bool audio_start(void)
      * replays whatever it last held whenever the voice stream runs dry for a moment
      * — a Wi-Fi hiccup becomes a stuttering repeat of the Buddy's last syllable. */
     tx_cfg.auto_clear = true;
+    /* Six 20 ms buffers: 120 ms of cover for a packet that arrives late. The default
+     * (6 x 240 frames) is 90 ms, less than the 100 ms the player waits to rebuild its
+     * cushion after a real underrun. */
+    tx_cfg.dma_desc_num = 6;
+    tx_cfg.dma_frame_num = AUDIO_SAMPLE_RATE / 50;
     if (i2s_new_channel(&tx_cfg, &s_tx, NULL) != ESP_OK) { ESP_LOGE(TAG, "no tx channel"); return false; }
     i2s_std_config_t tx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),

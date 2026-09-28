@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -50,6 +51,15 @@ extern const char isrg_root_x1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 #define JB_DEPTH     32                  /* 640 ms: the most a clump can put in hand */
 #define JB_HIGH      16                  /* 320 ms: above this, shed silence to catch up */
 #define JB_PREFILL    5                  /* 100 ms: in hand before playing after a gap */
+/* How long to wait for a late packet before calling it an underrun: less than the
+ * 120 ms the I2S DMA holds (audio.c), so a packet that is merely late never becomes
+ * silence. Measured before this existed: every momentarily empty queue counted as an
+ * underrun and waited out a 100 ms refill against 90 ms of DMA — 54-59 audible gaps
+ * over a few replies, most of them from packets a few milliseconds late. */
+#define JB_WAIT_MS   80
+/* "Waited-for" in the log is not a fault count: once playback keeps pace with omni the
+ * queue sits near empty and most packets are waited for. Underruns are the audible
+ * gaps — 8 over a four-reply conversation after this change, from 54-59 before. */
 /* omni's silence frames are a few bytes; speech is tens. Only used to choose what to
  * shed first, so misjudging one costs 20 ms, not a word. */
 #define SILENCE_MAX   8
@@ -133,7 +143,7 @@ static volatile bool s_connected;
  * a flag rather than calls across tasks, because lip-sync keeps state that only one
  * task may touch. */
 static volatile bool s_speaking;
-static volatile uint32_t s_shed_silence, s_shed_old, s_underruns;
+static volatile uint32_t s_shed_silence, s_shed_old, s_underruns, s_late;
 
 bool voice_active(void) { return s_connected; }
 
@@ -290,6 +300,10 @@ static void session_begin(uint32_t now)
     s_phase = PHASE_OPENING;
     s_opened_ms = s_last_activity_ms = now;
     s_gen++;
+    /* Modem sleep makes the access point hold downlink traffic until each DTIM
+     * beacon, so omni's steady 20 ms packets arrive in 100-300 ms clumps. Off for
+     * the length of a conversation, back on when it ends. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
     show_state("listening");
     if (esp_websocket_client_start(s_ws) != ESP_OK) session_end("could not start");
 }
@@ -306,6 +320,7 @@ static void session_end(const char *why)
     s_speaking = false;
     xQueueReset(s_down);
     audio_speaker_enable(false);
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     show_state("idle");
     /* Not s_wn->clean(): in ESP-SR 2.1.2 it faults inside WakeNet9's quantised model
      * (dl_convq_queue_bzero on a NULL queue), found when the first conversation
@@ -509,14 +524,17 @@ static void down_task(void *arg)
             refill = false;
         }
         if (xQueueReceive(s_down, &p, 0) != pdTRUE) {
-            s_underruns++;
-            refill = true;               /* I2S plays silence meanwhile: auto_clear */
-            continue;
+            if (xQueueReceive(s_down, &p, pdMS_TO_TICKS(JB_WAIT_MS)) != pdTRUE) {
+                s_underruns++;
+                refill = true;           /* I2S plays silence meanwhile: auto_clear */
+                continue;
+            }
+            s_late++;                    /* waited for it; the DMA covered the wait */
         }
         if (++played % 500 == 0) {       /* every 10 s of playback */
-            ESP_LOGI(TAG, "down: held %u, shed %lu silence + %lu old, %lu underruns",
+            ESP_LOGI(TAG, "down: held %u, shed %lu silence + %lu old, %lu waited-for, %lu underruns",
                      (unsigned)uxQueueMessagesWaiting(s_down), (unsigned long)s_shed_silence,
-                     (unsigned long)s_shed_old, (unsigned long)s_underruns);
+                     (unsigned long)s_shed_old, (unsigned long)s_late, (unsigned long)s_underruns);
             ESP_LOGI(TAG, "down: per 20 ms packet: opus decode %llu us, lip-sync %llu us",
                      us_dec / 500, us_lip / 500);
             us_dec = us_lip = 0;
@@ -624,6 +642,7 @@ bool voice_start(const char *serial)
     ESP_LOGI(TAG, "listening for the wake word; will talk to %s as %s", CONFIG_BUDDY_VOICE_URL, serial);
     return true;
 #else
+    esp_wifi_set_ps(WIFI_PS_NONE);       /* always in a conversation: see session_begin */
     ESP_LOGI(TAG, "connecting to %s as %s", CONFIG_BUDDY_VOICE_URL, serial);
     return esp_websocket_client_start(s_ws) == ESP_OK;
 #endif
