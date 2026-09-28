@@ -10,6 +10,9 @@
 #include "esp_websocket_client.h"
 #include "esp_opus_enc.h"
 #include "esp_opus_dec.h"
+#if CONFIG_BUDDY_VOICE_TAP
+#include "mbedtls/base64.h"
+#endif
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -186,6 +189,15 @@ static void up_task(void *arg)
             esp_websocket_client_send_bin(s_ws, (const char *)s_enc_out, fout.encoded_bytes,
                                           pdMS_TO_TICKS(50)) > 0)
             sent++;
+#if CONFIG_BUDDY_VOICE_TAP
+        /* The exact bytes omni was sent, while it is the child's turn. */
+        if (s_connected && !s_speaking) {
+            static unsigned char b64[256];
+            size_t olen = 0;
+            if (mbedtls_base64_encode(b64, sizeof(b64), &olen, s_enc_out, fout.encoded_bytes) == 0)
+                printf("TAP %lu %.*s\n", (unsigned long)frames, (int)olen, b64);
+        }
+#endif
         if (frames % 500 == 0)
             ESP_LOGI(TAG, "up: %lu frames, %lu sent (%u B last)", (unsigned long)frames,
                      (unsigned long)sent, (unsigned)fout.encoded_bytes);

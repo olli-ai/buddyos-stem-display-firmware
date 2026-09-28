@@ -110,6 +110,19 @@ config BUDDY_VOICE_TOKEN
         A user's JWT. omni resolves the kit's persona and voice from BYA with it.
         Kept in sdkconfig, which is gitignored; provisioning will deliver it instead.
 
+config BUDDY_VOICE_TAP
+    bool "Copy every uplink Opus packet to the console"
+    depends on BUDDY_VOICE
+    default n
+    help
+        A diagnostic. Prints the exact packets sent to omni as base64 lines,
+        "TAP <frame> <base64>", while the child is speaking — about 3 KB/s, which
+        even the UART console carries. tools/voice_tap.py turns them back into an
+        Ogg Opus file of exactly what omni heard, which can be listened to and
+        replayed to omni, so a speech recognition problem can be reproduced
+        offline without anyone having to repeat themselves. Off in any build
+        that ships.
+
 config BUDDY_TLS_PROBE
     bool "Open a second TLS session once MQTT is connected"
     depends on BUDDY_NET
