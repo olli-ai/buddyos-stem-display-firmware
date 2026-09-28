@@ -276,6 +276,31 @@ kit whose design names one shows the built-in character and says so in the log. 
 head-first artwork and they belong here too — `ON_DEVICE` in the generator is the only
 thing that would change.
 
+### Audio, proven on hardware 2026-09-28
+
+On the N16R8 bench board, with every pin in `main/board_pins.h`: the MAX98357A plays the
+self-test tone, and the INMP441 hears the room — quiet sits around -40 dBFS, speech and
+claps push the peak to 24,184 of 32,768 (74% of full scale), about 30 dB above the floor,
+and it falls back when the room does.
+
+`CONFIG_BUDDY_AUDIO` brings both up; `CONFIG_BUDDY_AUDIO_SELFTEST` adds a tone and a
+ten-second live meter of both halves of the I2S frame. Both default off.
+
+Four things that each cost a bench round, written down so they cost nothing next time:
+
+- **The INMP441 outputs zeros for its first 2^18 clock cycles** (~85 ms here), then
+  settles with a transient large enough to read as near full scale. Listen too early and
+  a silent room reads -4 dBFS. The self-test discards the wake-up.
+- **Its DC offset is large and wanders** in the first seconds (+646 on one boot, -7,653 on
+  another) while its internal high-pass settles. Remove it before measuring anything, and
+  put a high-pass in front of the encoder in the streaming path.
+- **A flat level is not proof of a dead microphone** — it is also what a quiet room
+  looks like. The meter only means something while someone is talking at it.
+- **Power the amplifier from 5 V, not the board's 3V3.** On the first board the 5 V rail
+  read 4 V under load, the 3V3 regulator ran out of headroom, and the USB-serial bridge
+  was the first thing to fail: dropped bytes, re-enumeration, and a board that looked
+  bricked when it was only starved.
+
 ### It reaches the product broker
 
 `mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted
