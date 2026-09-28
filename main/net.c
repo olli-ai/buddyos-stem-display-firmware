@@ -44,7 +44,21 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "disconnected, retrying");
+        /* The reason, not just the fact. "Disconnected, retrying" looked identical
+         * whether the access point was switched off, out of range, or had changed its
+         * password — and each of those has a different fix. The codes that matter:
+         * 201 no AP with that SSID in range; 15 or 204 handshake failed, which is
+         * almost always a wrong password; 2 or 8 the AP dropped us. */
+        wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)data;
+        const char *why =
+            d->reason == WIFI_REASON_NO_AP_FOUND            ? "no access point with that SSID in range" :
+            d->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ? "handshake timed out (wrong password?)" :
+            d->reason == WIFI_REASON_HANDSHAKE_TIMEOUT      ? "handshake timed out (wrong password?)" :
+            d->reason == WIFI_REASON_AUTH_FAIL              ? "authentication failed" :
+            d->reason == WIFI_REASON_AUTH_EXPIRE            ? "authentication expired" :
+            d->reason == WIFI_REASON_ASSOC_LEAVE            ? "left the network" : "see esp_wifi_types.h";
+        ESP_LOGW(TAG, "disconnected from '%.32s' (reason %d: %s, rssi %d), retrying",
+                 (const char *)d->ssid, d->reason, why, d->rssi);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
