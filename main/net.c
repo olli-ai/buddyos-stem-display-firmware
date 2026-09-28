@@ -42,7 +42,8 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        /* Not connecting here: net_task scans first and connects after, because a
+         * scan and a connect attempt fight over the radio. */
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         /* The reason, not just the fact. "Disconnected, retrying" looked identical
          * whether the access point was switched off, out of range, or had changed its
@@ -194,6 +195,36 @@ static void net_task(void *arg)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* Look before connecting, and say what is out there. "No access point with that
+     * SSID in range" has two causes with different fixes: the network moved (channel,
+     * band, renamed) or the board cannot hear anything at all. A board that lists its
+     * neighbours but not ours is the first; one that lists nothing is the second, and
+     * on a WROOM-1U that means the external antenna is not connected. */
+    wifi_scan_config_t scan = { .show_hidden = true };
+    if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
+        uint16_t n = 0;
+        esp_wifi_scan_get_ap_num(&n);
+        static wifi_ap_record_t aps[20];
+        uint16_t max = sizeof(aps) / sizeof(aps[0]);
+        esp_wifi_scan_get_ap_records(&max, aps);
+        bool ours = false;
+        ESP_LOGI(TAG, "scan: %u networks in range", n);
+        for (int i = 0; i < max; i++) {
+            bool hit = !strcmp((const char *)aps[i].ssid, CONFIG_BUDDY_WIFI_SSID);
+            ours |= hit;
+            ESP_LOGI(TAG, "  %s %-32.32s ch %2d  rssi %4d  auth %d",
+                     hit ? "->" : "  ", (const char *)aps[i].ssid,
+                     aps[i].primary, aps[i].rssi, aps[i].authmode);
+        }
+        if (!n)
+            ESP_LOGE(TAG, "scan: nothing at all in range — check the antenna "
+                          "(a WROOM-1U needs one plugged into its U.FL connector)");
+        else if (!ours)
+            ESP_LOGW(TAG, "scan: '%s' is not among them — renamed, 5 GHz only, "
+                          "or switched off?", CONFIG_BUDDY_WIFI_SSID);
+    }
+    esp_wifi_connect();
     mem_report("wifi started");
 
     if (wc.sta.ssid[0] == '\0') {
