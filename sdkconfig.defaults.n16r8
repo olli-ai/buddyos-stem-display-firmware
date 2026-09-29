@@ -12,3 +12,7 @@
 # bus. The hardware doc names this as the module to move to if bandwidth binds.
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 3 MB app slots: see partitions-16mb.csv.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions-16mb.csv"

@@ -56,6 +56,38 @@ The panel driver glue is written here rather than pulled from `esp_lvgl_port`: a
 two DMA-capable partial buffers, a flush that waits on the panel's completion callback,
 and a tick from `esp_timer`. About sixty lines, and one fewer dependency.
 
+## Setting a kit up
+
+A kit that was never set up boots into **BLE setup** and advertises as its serial,
+`ESP32-<factory MAC>`, with the manufacturer data (`0x4F4C` + the serial's last five
+characters) that stem-fe's *Set up with Bluetooth* filters on. The GATT contract is
+the other STEM kits', copied from `../buddyos-stem-c-firmware/components/stem_ble`
+into `components/buddy_ble`, so the website drives it unchanged:
+
+1. `{"params":{"scan_wifi":1}}` → the kit scans and answers `wifi_list`.
+2. `{"params":{ssid, password, user_jwt, mqtt_jwt, env, gateway}}` → the kit joins
+   Wi-Fi (30 s budget) and answers `wifi_connection` — `successful`, or `failed`
+   with `10002` wrong password / `10004` network not found / `10006` other.
+3. On success it saves everything to NVS (`main/prov.c`), **shuts BLE down**, joins
+   the broker and publishes `device.activate` (`device_type: buddyos_display_kit`)
+   until the gateway answers `device.activate_status`. The website learns the
+   outcome from the gateway, not from BLE (ADR 0006).
+
+`gateway` is new with this kit: the stem-gateway host its voice socket dials
+(`wss://<gateway>/v1/stem/voice/stream`), sent by stem-fe from
+`VITE_STEM_DEVICE_GATEWAY_HOST`. Setup credentials always win over the bench ones in
+`sdkconfig`, which are used only when nothing was provisioned. **Hold BOOT for 5 s**
+to erase the setup and come back up advertising, even on a bench build.
+
+### Flashing the N16R8 board
+
+It uses `partitions-16mb.csv` (3 MB app slots; BLE did not fit beside voice in 2 MB),
+so faces and the wake-word model moved. After changing the table, flash all four:
+
+    esptool.py --chip esp32s3 write_flash 0x8000 build/partition_table/partition-table.bin \
+        0x10000 build/buddyos_stem_display.bin 0x610000 build/ota_data_initial.bin \
+        0x612000 build/face_catalogue.bin 0x792000 build/srmodels/srmodels.bin
+
 ## Watching it without hardware
 
 `sim/` builds the same `face_view.c` / `face_motion.c` / `face_assets.c` for the host and

@@ -1,0 +1,16 @@
+# The N16R8 board (16 MB flash): the same partitions as partitions.csv, with 3 MB
+# app slots. The 2 MB slots filled to 97% once voice and the wake word were in, and
+# BLE setup does not fit beside them; an 8 MB part cannot hold two 3 MB slots plus
+# the catalogue, so the N8R2 keeps partitions.csv and builds without voice.
+#
+# `faces` and `model` are found by name, never by offset, so moving them costs one
+# re-flash of each, not a code change.
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+phy_init,   data, phy,      0xf000,   0x1000
+ota_0,      app,  ota_0,    0x10000,  0x300000
+ota_1,      app,  ota_1,    ,         0x300000
+otadata,    data, ota,      ,         0x2000
+faces,      data, spiffs,   ,         0x180000
+model,      data, spiffs,   ,         0x80000

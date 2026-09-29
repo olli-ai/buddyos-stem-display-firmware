@@ -17,7 +17,10 @@
  * CONFIG_BUDDY_VOICE_IDLE_S of quiet and the socket closes again. Without it, the
  * session opens at boot and reconnects on its own.
  */
-bool voice_start(const char *serial);
+/** `gateway` is the stem-gateway host (no scheme, no path) and `user_token` the
+ *  owner's JWT, both from setup (main/prov.h). The URL is the gateway's
+ *  wss://<gateway>/v1/stem/voice/stream. */
+bool voice_start(const char *serial, const char *gateway, const char *user_token);
 
 /** True while a session is connected — the demo loops stand aside for a real one. */
 bool voice_active(void);

@@ -562,13 +562,17 @@ static void down_task(void *arg)
     }
 }
 
-bool voice_start(const char *serial)
+#define VOICE_PATH "/v1/stem/voice/stream"
+
+bool voice_start(const char *serial, const char *gateway, const char *user_token)
 {
     if (s_ws) return true;
-    if (!CONFIG_BUDDY_VOICE_TOKEN[0]) {
-        ESP_LOGE(TAG, "no user token set (CONFIG_BUDDY_VOICE_TOKEN): omni resolves the persona with it");
+    if (!user_token || !user_token[0]) {
+        ESP_LOGE(TAG, "no user token: omni resolves the persona with it (set the kit up "
+                      "from the website, or CONFIG_BUDDY_VOICE_TOKEN on the bench)");
         return false;
     }
+    if (!gateway || !gateway[0]) { ESP_LOGE(TAG, "no gateway host to talk to"); return false; }
 
 #if CONFIG_BUDDY_WAKE_WORD
     if (!wake_init()) return false;
@@ -601,9 +605,9 @@ bool voice_start(const char *serial)
 
     /* The token alone is over a kilobyte, and it rides in the query string because a
      * WebSocket handshake carries no Authorization header the gateway will read. */
-    size_t ulen = strlen(CONFIG_BUDDY_VOICE_URL) + strlen(serial) + strlen(CONFIG_BUDDY_VOICE_TOKEN) + 32;
+    size_t ulen = strlen(gateway) + strlen(VOICE_PATH) + strlen(serial) + strlen(user_token) + 40;
     char *url = heap_caps_malloc(ulen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    snprintf(url, ulen, "%s?serial=%s&token=%s", CONFIG_BUDDY_VOICE_URL, serial, CONFIG_BUDDY_VOICE_TOKEN);
+    snprintf(url, ulen, "wss://%s" VOICE_PATH "?serial=%s&token=%s", gateway, serial, user_token);
 
     esp_websocket_client_config_t wc = {
         .uri = url,
@@ -619,7 +623,7 @@ bool voice_start(const char *serial)
         .disable_auto_reconnect = true,
 #endif
     };
-    if (!strncmp(CONFIG_BUDDY_VOICE_URL, "wss://", 6)) wc.cert_pem = isrg_root_x1_pem_start;
+    wc.cert_pem = isrg_root_x1_pem_start;
     s_ws = esp_websocket_client_init(&wc);
     esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY, on_ws, NULL);
 
@@ -639,18 +643,22 @@ bool voice_start(const char *serial)
     /* A kit waiting to be spoken to looks idle, not like the demo reel: the demo's
      * cycle runs through "error" and "speaking", which say something untrue here. */
     show_state("idle");
-    ESP_LOGI(TAG, "listening for the wake word; will talk to %s as %s", CONFIG_BUDDY_VOICE_URL, serial);
+    ESP_LOGI(TAG, "listening for the wake word; will talk to wss://%s" VOICE_PATH " as %s", gateway, serial);
     return true;
 #else
     esp_wifi_set_ps(WIFI_PS_NONE);       /* always in a conversation: see session_begin */
-    ESP_LOGI(TAG, "connecting to %s as %s", CONFIG_BUDDY_VOICE_URL, serial);
+    ESP_LOGI(TAG, "connecting to wss://%s" VOICE_PATH " as %s", gateway, serial);
     return esp_websocket_client_start(s_ws) == ESP_OK;
 #endif
 }
 
 #else   /* voice off: the rest of the firmware asks, and is told no */
 
-bool voice_start(const char *serial) { (void)serial; return false; }
+bool voice_start(const char *serial, const char *gateway, const char *user_token)
+{
+    (void)serial; (void)gateway; (void)user_token;
+    return false;
+}
 bool voice_active(void) { return false; }
 
 #endif

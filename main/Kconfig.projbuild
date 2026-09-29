@@ -8,9 +8,15 @@ config BUDDY_NET
         measured against. On is the number the planning docs actually ask for.
 
 config BUDDY_WIFI_SSID
-    string "Wi-Fi SSID"
+    string "Bench Wi-Fi SSID (used only when the kit was never set up)"
     depends on BUDDY_NET
     default ""
+    help
+        A shipped kit is set up over BLE from the website, and what it is told
+        there is kept in NVS and always wins. This and the other bench settings
+        below are the laptop path: used only when NVS holds nothing, and ignored
+        after BOOT has been held for 5 s (see main/prov.h). Empty, an unprovisioned
+        kit boots straight into BLE setup.
 
 config BUDDY_WIFI_PASS
     string "Wi-Fi password"
@@ -20,19 +26,21 @@ config BUDDY_WIFI_PASS
 config BUDDY_MQTT_URI
     string "MQTT broker URI"
     depends on BUDDY_NET
-    default "mqtt://test.mosquitto.org:1883"
+    default "mqtts://mqtt-sg.buddyos.ai:1883"
     help
+        The product broker, shared by every environment (dev, staging, uat,
+        production): topics are namespaced by env instead, see BUDDY_MQTT_ENV.
         mqtt:// is plaintext. mqtts:// pulls in mbedTLS, whose handshake is the
         expensive moment — and on this product line a starved handshake has already
         been seen to misreport itself as NOT_TRUSTED rather than as out of memory.
 
 config BUDDY_MQTT_USER
-    string "MQTT username (the device serial)"
+    string "Bench serial (MQTT username) for the bench token"
     depends on BUDDY_NET
     default ""
 
 config BUDDY_MQTT_PASS
-    string "MQTT password (the device JWT)"
+    string "Bench MQTT password (the device JWT)"
     depends on BUDDY_NET
     default ""
     help
@@ -41,12 +49,26 @@ config BUDDY_MQTT_PASS
         the token rather than by anything here.
 
 config BUDDY_MQTT_ENV
-    string "Topic namespace (the stem-gateway environment)"
+    string "Bench topic namespace (the stem-gateway environment)"
     depends on BUDDY_NET
     default "staging"
     help
         Topics are {env}/stem/device/{username}/{directive,event,log}. It must match
         the `environment` claim in the token or every publish is denied.
+
+config BUDDY_GATEWAY_HOST
+    string "Bench stem-gateway host"
+    depends on BUDDY_NET
+    default "staging.stem-gateway.aws.iviet.com"
+    help
+        Host only. A kit set up from the website is told its gateway during setup
+        (stem-fe's VITE_STEM_DEVICE_GATEWAY_HOST, one per environment); this is
+        the bench fallback. The voice socket dials wss://<host>/v1/stem/voice/stream.
+
+config BUDDY_BOOT_RESET
+    bool "Hold BOOT (GPIO 0) for 5 s to erase setup and re-enter BLE setup"
+    depends on BUDDY_NET
+    default y
 
 config BUDDY_MQTT_AWS_ROOT
     bool "Verify the broker with the embedded Amazon Root CA 1"
@@ -97,18 +119,14 @@ config BUDDY_VOICE
         Streams the microphone to the gateway's voice route as Opus and plays the
         Buddy's replies, with its face following the conversation. See main/voice.c.
 
-config BUDDY_VOICE_URL
-    string "Voice WebSocket URL"
-    depends on BUDDY_VOICE
-    default "wss://staging.stem-gateway.aws.iviet.com/v1/stem/voice/stream"
-
 config BUDDY_VOICE_TOKEN
-    string "User token the voice route resolves the persona with"
+    string "Bench user token the voice route resolves the persona with"
     depends on BUDDY_VOICE
     default ""
     help
         A user's JWT. omni resolves the kit's persona and voice from BYA with it.
-        Kept in sdkconfig, which is gitignored; provisioning will deliver it instead.
+        A kit set up over BLE uses the user_jwt it was given there instead; this
+        is the bench fallback, kept in sdkconfig, which is gitignored.
 
 config BUDDY_WAKE_WORD
     bool "Start a conversation on a wake word"
