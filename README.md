@@ -1,15 +1,19 @@
 # buddyos-stem-display-firmware
 
 ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**: the kit that shows the
-Buddy a child designed on the website, drawn with LVGL and animated from the child's own
-keyframes.
+Buddy a child designed on the website, drawn with LVGL, lip-syncing to the voice it speaks
+with, and animated from the child's own keyframes.
 
-It is planned in `../buddyos-stem-features-management`:
+**You can build one.** The parts are off-the-shelf modules on a breadboard, this firmware is
+Apache-2.0, and a kit you flashed yourself joins the BuddyOS cloud exactly like one that came
+in a box — same provisioning, same studio, same face designer. See
+**[Build one yourself](#build-one-yourself)**.
 
-- [Kid-designed Buddy faces on a device screen](../buddyos-stem-features-management/docs/features/kid-designed-faces-on-device-screen.md)
-- [Kid-authored face motion](../buddyos-stem-features-management/docs/features/kid-authored-face-motion.md)
-- [ADR 0009 — the face catalogue ships as its own updatable partition](../buddyos-stem-features-management/docs/adr/0009-face-catalogue-as-updatable-partition.md)
-- [ADR 0010 — motion is keyframes over targets](../buddyos-stem-features-management/docs/adr/0010-face-motion-as-keyframes-over-catalogue-layers.md)
+> **This README is an engineering record**, not a tutorial. It is long on purpose: every
+> measurement here was taken on real hardware, and most of the surprising ones cost a bench
+> day. If you only want to get a kit working, read [Build one yourself](#build-one-yourself)
+> and [Setting a kit up](#setting-a-kit-up), then stop. The rest is here for when something
+> does not behave.
 
 ## What this repo is for
 
@@ -37,6 +41,102 @@ Read that repo for two things only, and do not change it:
 - its **measurements** — what a device without the vision stack gets back;
 - its **model loader**, the precedent for download-and-verify (presigned URL → streamed to
   flash → CRC checked before commit).
+
+## Build one yourself
+
+Everything here is a common module and a breadboard. No PCB, no reflow, no custom parts.
+
+| Part | What to get | Notes |
+| --- | --- | --- |
+| MCU | **ESP32-S3-WROOM-1-N16R8** devkit — 16 MB flash, 8 MB PSRAM | **Not the N8R2.** See below. |
+| Display | **GC9A01** 1.28" 240×240 round TFT, SPI | The bring-up module has no backlight pin; one that exposes it is better. |
+| Microphone | **INMP441** I²S MEMS breakout | The same part the Robot Kit uses. |
+| Amplifier | **MAX98357A** I²S breakout | |
+| Speaker | 4 Ω, 2–3 W, small | |
+| Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
+
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) runs the face fine, but its
+2 MB app slots cannot hold the voice path *and* BLE setup together; the build fails at link
+time. The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 2.14 MB.
+
+**Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
+the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
+dropped bytes, re-enumeration, and a board that looked bricked when it was only starved. If
+your board behaves strangely the moment audio starts, this is why.
+
+### Wiring
+
+`main/board_pins.h` is the source of truth — if this table and that file ever disagree,
+the file is right. As wired on the N16R8 bench board:
+
+| Signal | GPIO | Module pin |
+| --- | --- | --- |
+| **GC9A01** SCLK | 15 | `SCL` |
+| MOSI | 16 | `SDA` |
+| DC | 17 | `DC` |
+| CS | 18 | `CS` |
+| RST | 8 | `RST` |
+| **MAX98357A** SD | 13 | shutdown — high enables, low mutes |
+| GAIN | 12 | see `audio_set_gain()` |
+| DIN | 11 | |
+| BCLK | 10 | |
+| LRC | 9 | |
+| **INMP441** SD | 4 | the mic's data *out*, an input to us |
+| SCK | 5 | |
+| WS | 6 | |
+| L/R | 7 | held low = left channel |
+
+Plus 3V3 and GND to the panel and the mic, and **5 V** to the amplifier.
+
+These pins were chosen around what the S3 reserves on this module — octal PSRAM (35–37),
+native USB (19/20), flash (26–32) and the strapping pins (0, 3, 45, 46). **GPIO 3 especially:**
+it is sampled at reset, and an I²S word clock on it was the first suspect when an earlier
+board would not boot cleanly.
+
+The original N8R2 bench board was wired differently (panel SCK 14, MOSI 10, DC 11, CS 12,
+RST 13; amp SD 5, DIN 4, BCLK 6, LRC 7; mic SD 17, SCK 16, WS 9, LR 18). Those numbers appear
+in older notes and in the header's history comment — they will not work with this build
+without editing `board_pins.h`.
+
+### Flash it
+
+Build in Docker (next section), then write all five images:
+
+    esptool.py --chip esp32s3 -p /dev/ttyUSB0 write_flash \
+        0x8000   build/partition_table/partition-table.bin \
+        0x10000  build/buddyos_stem_display.bin \
+        0x610000 build/ota_data_initial.bin \
+        0x612000 build/face_catalogue.bin \
+        0x792000 build/srmodels/srmodels.bin
+
+On macOS the container cannot see the serial port, so build in Docker and flash from the host
+(`python3 -m venv venv && venv/bin/pip install esptool`). `idf.py build` prints the command
+with the right offsets for whichever partition table you built against.
+
+With nothing else done, the kit boots, shows the built-in Buddy and cycles through its states.
+To put it on the network, carry on to [Setting a kit up](#setting-a-kit-up).
+
+### Bringing it onto BuddyOS
+
+The firmware is free; the cloud it talks to is a paid service, and that is the deal. Register
+at the BuddyOS STEM website, then follow the **display-kit setup guide** in its *Documents*
+section — it is written for people holding a board, kept in step with this repo, and available
+in English and Vietnamese. It covers creating the account, provisioning over Bluetooth,
+designing a face and what cloud usage costs.
+
+Two things to know before you start:
+
+- **A kit you built is not offered firmware updates over the air.** Your partition table may
+  not match ours, and a brick you cannot recover is a bad first day. Update by reflashing.
+- **A device token may only subscribe to its own directive topic.** Publishing there is the
+  gateway's privilege, so bench tools like `tools/send_face.py` reach the device by a
+  different route (see [Which face, during a conversation](#which-face-during-a-conversation)).
+
+### Try it before you buy anything
+
+If you have not bought anything yet, the [simulator](#simulator) builds the same face
+renderer, motion interpreter and lip-sync classifier for your own machine and serves them in
+a browser. It is the cheapest way to see what you would be building.
 
 ## Building
 
@@ -81,12 +181,10 @@ to erase the setup and come back up advertising, even on a bench build.
 
 ### Flashing the N16R8 board
 
-It uses `partitions-16mb.csv` (3 MB app slots; BLE did not fit beside voice in 2 MB),
-so faces and the wake-word model moved. After changing the table, flash all four:
-
-    esptool.py --chip esp32s3 write_flash 0x8000 build/partition_table/partition-table.bin \
-        0x10000 build/buddyos_stem_display.bin 0x610000 build/ota_data_initial.bin \
-        0x612000 build/face_catalogue.bin 0x792000 build/srmodels/srmodels.bin
+It uses `partitions-16mb.csv` (3 MB app slots; BLE did not fit beside voice in 2 MB), so
+faces and the wake-word model moved to new offsets. **After changing the partition table,
+flash all five images** — app alone leaves the old table in place and the kit looks for its
+catalogue where it no longer is. The command is in [Flash it](#flash-it).
 
 ## Watching it without hardware
 
@@ -100,8 +198,9 @@ renders them into a memory buffer. See **Simulator** below.
 SPI at 40 MHz. The Buddy appears, in the child's colours, and cycles idle → listening →
 thinking → speaking with the mouth following the embedded speech clip.
 
-Pins as wired on that bench board: **SCK 14, MOSI 10, DC 11, CS 12, RST 13**, no backlight
-line. (The newbiely tutorial this started from uses 11/12/1/13/14; the board in hand wins.)
+That board was wired SCK 14, MOSI 10, DC 11, CS 12, RST 13, with no backlight line. **The
+current bench board is an N16R8, rewired 2026-09-28, and its pins are different** — see
+[Wiring](#wiring), and `main/board_pins.h`, which is the only place that is kept correct.
 
 ### What only hardware found
 
@@ -535,3 +634,35 @@ DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cy
   v5.5 problem in `../buddyos-stem-c-firmware` was an I²C `driver_ng` conflict caused by the
   *camera* driver, which this firmware does not have — so that constraint is inherited by
   convention here, not by necessity.
+
+## Design notes
+
+The product thinking behind this firmware lives in a private planning repo, and the links
+below will only resolve for teammates who have it checked out as a sibling directory. They
+are listed because the *reasoning* is often the answer to "why is it done this way" — the
+face format, the catalogue partition and the motion format each have a document arguing for
+them.
+
+- [Kid-designed Buddy faces on a device screen](../buddyos-stem-features-management/docs/features/kid-designed-faces-on-device-screen.md)
+- [Kid-authored face motion](../buddyos-stem-features-management/docs/features/kid-authored-face-motion.md)
+- [Open-source display kit and setup guides](../buddyos-stem-features-management/docs/features/open-source-display-kit-and-setup-guides.md)
+- [ADR 0009 — the face catalogue ships as its own updatable partition](../buddyos-stem-features-management/docs/adr/0009-face-catalogue-as-updatable-partition.md)
+- [ADR 0010 — motion is keyframes over targets](../buddyos-stem-features-management/docs/adr/0010-face-motion-as-keyframes-over-catalogue-layers.md)
+
+## Licence and support
+
+This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE). Vendored dependencies keep their
+own licences and are listed in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md): LVGL 9.2
+(MIT) in `components/lvgl`, and `esp_lcd_gc9a01` from esp-bsp (Apache-2.0).
+
+The **cloud is not open source.** The gateway, the voice pipeline, the broker and the identity
+service are a hosted product, and a kit uses them through a normal account. That is what the
+licence covers and what it does not.
+
+**What we answer:** this firmware building, the protocols it speaks, and a device that
+provisions but will not come online. **What we cannot:** your wiring, your module, your
+soldering, and boards other than the one named in [Build one yourself](#build-one-yourself).
+Nothing here promises a response time.
+
+Credentials live in `sdkconfig`, which is gitignored. **Nothing in this repo carries a token**
+— if you find one, that is a bug worth reporting privately rather than in an issue.
