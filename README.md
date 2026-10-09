@@ -102,16 +102,25 @@ without editing `board_pins.h`.
 
 Build in Docker (next section), then write all five images:
 
-    esptool.py --chip esp32s3 -p /dev/ttyUSB0 write_flash \
+    python3 -m venv venv && venv/bin/pip install esptool
+    venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
         0x8000   build/partition_table/partition-table.bin \
         0x10000  build/buddyos_stem_display.bin \
         0x610000 build/ota_data_initial.bin \
         0x612000 build/face_catalogue.bin \
         0x792000 build/srmodels/srmodels.bin
 
-On macOS the container cannot see the serial port, so build in Docker and flash from the host
-(`python3 -m venv venv && venv/bin/pip install esptool`). `idf.py build` prints the command
-with the right offsets for whichever partition table you built against.
+esptool does not come with the Docker build — the container cannot see a USB port, so
+flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
+not `esptool.py` and `write_flash`**: esptool 5 deprecated both older spellings (they warn
+now and are slated for removal), and a fresh `pip install esptool` today gives you 5.x.
+
+Your port will not be `/dev/ttyUSB0` on every machine — on macOS it is a
+`/dev/cu.usbserial-*` (`ls /dev/cu.*` finds it), on Windows a `COM` number. On Linux, a
+*permission denied* means your account is not in the `dialout` group.
+
+`idf.py build` prints the command with the right offsets for whichever partition table you
+built against.
 
 With nothing else done, the kit boots, shows the built-in Buddy and cycles through its states.
 To put it on the network, carry on to [Setting a kit up](#setting-a-kit-up).
