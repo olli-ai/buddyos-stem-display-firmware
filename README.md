@@ -102,21 +102,31 @@ without editing `board_pins.h`.
 
 ### Flash it
 
-Build in Docker (next section), then write the four images the build produces:
+Build in Docker (next section), then write the five images the build produces:
 
     python3 -m venv venv && venv/bin/pip install esptool
-    venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
+    venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 \
+        --flash_mode dio --flash_freq 80m --flash_size 16MB write-flash \
+        0x0      build/bootloader/bootloader.bin \
         0x8000   build/partition_table/partition-table.bin \
         0x10000  build/buddyos_stem_display.bin \
         0x610000 build/ota_data_initial.bin \
         0x792000 build/srmodels/srmodels.bin
 
+**Do not drop the bootloader at `0x0`** on a board that has never run this firmware —
+without it there is nothing to start the app, and the board comes up silent in a way that
+looks like a hardware fault.
+
+`build/flash_args` is written by the build and is the authoritative list of offsets for
+whatever you just built; if it and this README ever disagree, the file is right.
+
 **`face_catalogue.bin` is deliberately not in that list.** It is extra character artwork,
-it is *not* produced by `idf.py build`, and esptool aborts the whole command if any file is
-missing — so including it would mean flashing nothing at all. Without it the `faces`
-partition reads as blank, the mount says so in the log, and the kit draws the Buddy baked
-into the firmware. See [The characters live in their own
-partition](#the-characters-live-in-their-own-partition) if you want to build one.
+it is *not* produced by `idf.py build` (which is why it is absent from `flash_args`), and
+esptool aborts the whole command if any file is missing — so including it would mean
+flashing nothing at all. Without it the `faces` partition reads as blank, the mount says so
+in the log, and the kit draws the Buddy baked into the firmware. See [The characters live
+in their own partition](#the-characters-live-in-their-own-partition) if you want to build
+one.
 
 esptool does not come with the Docker build — the container cannot see a USB port, so
 flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
@@ -404,7 +414,10 @@ so in the log, and draws the Buddy compiled into the firmware. Everything else w
 
 Flashing one, if you have built it:
 
-    esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash 0x412000 build/face_catalogue.bin
+    # The `faces` offset depends on which partition table you built against — the
+    # tables declare sizes, not offsets, so it moves. `idf.py partition-table` prints
+    # yours. It is 0x612000 with partitions-16mb.csv and 0x412000 with partitions.csv.
+    esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash 0x612000 build/face_catalogue.bin
 
 Each character carries its body (RGB565A8, so it can be tinted) and the face its artist
 drew — the `artwork` part ids, which are bitmaps rather than shapes anything can compute.
@@ -454,14 +467,14 @@ Four things that each cost a bench round, written down so they cost nothing next
 
 ### It reaches the product broker
 
-`mqtts://mqtt-sg.buddyos.ai:1883` — EMQX, with the device JWT as the password — accepted
-this firmware on 2026-09-27, and the token's ACL allowed both topics it needs:
+An EMQX broker over `mqtts://`, with the device JWT as the password, accepted this
+firmware on 2026-09-27, and the token's ACL allowed both topics it needs:
 
     net: TLS: verifying against the embedded Amazon Root CA 1
-    net: connecting as buddyos-stem-staging-ESP32-sim-b17712ac (token 1267 B)
+    net: connecting as buddyos-stem-<env>-ESP32-<serial> (token 1267 B)
     net: mqtt connected
-    net: subscribed: staging/stem/device/ESP32-sim-b17712ac/directive
-    net: published  staging/stem/device/ESP32-sim-b17712ac/event
+    net: subscribed: <env>/stem/device/ESP32-<serial>/directive
+    net: published  <env>/stem/device/ESP32-<serial>/event
 
 Connecting only proves the token was accepted; the subscribe and the publish prove the ACL
 *inside* it allows what the device actually needs, which is a separate question and the one

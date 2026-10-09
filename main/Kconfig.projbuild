@@ -26,10 +26,13 @@ config BUDDY_WIFI_PASS
 config BUDDY_MQTT_URI
     string "MQTT broker URI"
     depends on BUDDY_NET
-    default "mqtts://mqtt-sg.buddyos.ai:1883"
+    default ""
     help
-        The product broker, shared by every environment (dev, staging, uat,
-        production): topics are namespaced by env instead, see BUDDY_MQTT_ENV.
+        Empty by default, and empty is the right answer for a kit that is set up
+        from the website: setup tells it where to go. Set this only for a bench
+        build that is never provisioned — e.g. mqtts://broker.example.com:8883.
+        Topics are namespaced by environment rather than by broker, see
+        BUDDY_MQTT_ENV.
         mqtt:// is plaintext. mqtts:// pulls in mbedTLS, whose handshake is the
         expensive moment — and on this product line a starved handshake has already
         been seen to misreport itself as NOT_TRUSTED rather than as out of memory.
@@ -59,11 +62,14 @@ config BUDDY_MQTT_ENV
 config BUDDY_GATEWAY_HOST
     string "Bench stem-gateway host"
     depends on BUDDY_NET
-    default "staging.stem-gateway.aws.iviet.com"
+    default ""
     help
-        Host only. A kit set up from the website is told its gateway during setup
-        (stem-fe's VITE_STEM_DEVICE_GATEWAY_HOST, one per environment); this is
-        the bench fallback. The voice socket dials wss://<host>/v1/stem/voice/stream.
+        Host only, and empty by default. A kit set up from the website is TOLD its
+        gateway during setup — the website sends the one matching its own
+        environment — so this is only the bench fallback for a build that is never
+        provisioned. With it empty, a kit that was never set up simply does not
+        start the voice socket and says so in the log.
+        The voice socket dials wss://<host>/v1/stem/voice/stream.
 
 config BUDDY_BOOT_RESET
     bool "Hold BOOT (GPIO 0) for 5 s to erase setup and re-enter BLE setup"
@@ -170,19 +176,6 @@ config BUDDY_VOICE_TAP
         replayed to omni, so a speech recognition problem can be reproduced
         offline without anyone having to repeat themselves. Off in any build
         that ships.
-
-config BUDDY_TLS_PROBE
-    bool "Open a second TLS session once MQTT is connected"
-    depends on BUDDY_NET
-    default n
-    help
-        A measurement, not a feature. The voice path brings DTLS-SRTP — a second TLS
-        context on top of the broker's — and the question that decides whether it
-        fits is what the *second* one costs, not the first. This opens one and
-        reports the heap on both sides of it.
-
-        Off by default: it dials an outside host, which a shipped device has no
-        business doing.
 
 config BUDDY_LIPSYNC_DEMO
     bool "Lip-sync the face to an embedded speech clip"

@@ -26,9 +26,12 @@ no paho, no broker install.
 """
 import argparse, json, os, socket, ssl, struct, sys, time, uuid
 
-HOST = os.environ.get("STEM_MQTT_HOST", "mqtt-sg.buddyos.ai")
-PORT = int(os.environ.get("STEM_MQTT_PORT", "1883"))
-ENV = os.environ.get("STEM_ENV", "staging")
+# No default broker: this is a bench tool, and a hard-coded host is one somebody runs
+# against by accident. Set it alongside the credentials it already needs:
+#   export STEM_MQTT_HOST=... STEM_MQTT_PORT=8883 STEM_ENV=... STEM_MQTT_USER=... STEM_MQTT_PASS=...
+HOST = os.environ.get("STEM_MQTT_HOST", "")
+PORT = int(os.environ.get("STEM_MQTT_PORT", "8883"))
+ENV = os.environ.get("STEM_ENV", "")
 
 # Faces the device can certainly draw: every part here is in the baked catalogue.
 PRESETS = {
@@ -94,6 +97,13 @@ def design_from(args):
             "talk": {"v": 1, "style": args.style, "parts": {}}}
 
 
+def _require_env():
+    missing = [n for n, v in (("STEM_MQTT_HOST", HOST), ("STEM_ENV", ENV)) if not v]
+    if missing:
+        sys.exit("set " + " and ".join(missing) + " — this tool has no default broker "
+                 "(see the comment at the top of this file)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = ap.add_mutually_exclusive_group(required=True)
@@ -106,6 +116,7 @@ def main():
     ap.add_argument("--serial", default=os.environ.get("STEM_MQTT_USER", ""), help="device serial")
     ap.add_argument("--no-retain", action="store_true", help="do not leave it waiting for an offline kit")
     args = ap.parse_args()
+    _require_env()
 
     user = os.environ.get("STEM_MQTT_ADMIN_USER") or os.environ.get("STEM_MQTT_USER")
     pw = os.environ.get("STEM_MQTT_ADMIN_PASS") or os.environ.get("STEM_MQTT_PASS")

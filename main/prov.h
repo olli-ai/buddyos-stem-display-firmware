@@ -20,7 +20,7 @@ typedef struct {
     char ssid[33];
     char password[65];
     char env[16];            /* topic namespace; must match the MQTT token's ACL */
-    char gateway[96];        /* host only, e.g. staging.stem-gateway.aws.iviet.com */
+    char gateway[96];        /* host only, no scheme, e.g. gateway.example.com */
     char *user_jwt;          /* the owner's JWT: activation, and the voice route */
     char *mqtt_jwt;          /* the device's broker password (EMQX JWT with ACL) */
     bool activated;          /* the gateway has answered device.activate */

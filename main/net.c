@@ -36,14 +36,10 @@
 #include "nvs_flash.h"
 #include "mqtt_client.h"
 #include "esp_crt_bundle.h"
-#if CONFIG_BUDDY_TLS_PROBE
-#include "esp_tls.h"
-#endif
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_events;
 #define GOT_IP BIT0
-#define MQTT_UP BIT1
 
 /* Reconnect on every drop, except while a setup attempt is deciding for itself
  * whether the password the child just typed is right. */
@@ -169,9 +165,6 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
          * already been seen to misreport itself as NOT_TRUSTED, so if this line
          * never appears, read the numbers above it before believing the error. */
         mem_report("mqtt connected");
-#if CONFIG_BUDDY_TLS_PROBE
-        xEventGroupSetBits(s_events, MQTT_UP);
-#endif
         if (s_topic_dir[0]) {
             /* Connecting proves the token was accepted; these prove the ACL in it
              * actually allows what this device needs, which is a separate question
@@ -230,37 +223,6 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-#if CONFIG_BUDDY_TLS_PROBE
-/**
- * What a *second* TLS context costs, which is the question the voice path turns on.
- *
- * esp-webrtc brings DTLS-SRTP alongside the broker's session, and no amount of
- * arithmetic about the first one answers whether the second fits. This opens a real
- * handshake to a real host and reports the heap on both sides of it. It is a proxy —
- * DTLS is not TLS, and SRTP is extra — but it is a measured proxy, and the
- * alternative is a guess.
- */
-static void tls_probe(void)
-{
-    mem_report("before 2nd tls");
-    /* Verified against the bundled roots, so this is a *real* second handshake and
-     * not a cheaper imitation of one. The bundle is flash, which this probe build can
-     * afford; a shipped build carries one root and no probe. */
-    esp_tls_cfg_t cfg = { .crt_bundle_attach = esp_crt_bundle_attach };
-    esp_tls_t *tls = esp_tls_init();
-    if (!tls) { ESP_LOGE(TAG, "2nd tls: no memory even to start"); return; }
-    int rc = esp_tls_conn_http_new_sync("https://staging.api.bya.ai", &cfg, tls);
-    if (rc == 1) {
-        mem_report("2nd tls up");
-    } else {
-        ESP_LOGE(TAG, "2nd tls: handshake failed (rc=%d) — read the heap above before "
-                      "believing it was the certificate", rc);
-        mem_report("2nd tls failed");
-    }
-    esp_tls_conn_destroy(tls);
-    mem_report("2nd tls closed");
-}
-#endif
 
 /* ------------------------------------------------------------------ Wi-Fi */
 
@@ -624,12 +586,6 @@ static void net_task(void *arg)
     /* Voice needs the network and nothing from the broker, so it starts here rather
      * than waiting for MQTT to connect. The kit's serial names it to the gateway. */
     voice_start(serial, p->gateway, p->user_jwt);
-#endif
-
-#if CONFIG_BUDDY_TLS_PROBE
-    xEventGroupWaitBits(s_events, MQTT_UP, pdFALSE, pdTRUE, pdMS_TO_TICKS(30000));
-    vTaskDelay(pdMS_TO_TICKS(500));         /* let the broker's session settle */
-    tls_probe();
 #endif
 
     vTaskDelete(NULL);
