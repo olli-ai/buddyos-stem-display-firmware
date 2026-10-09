@@ -1,5 +1,5 @@
 /*
- * The baked form of a stem-fe design — see tools/bake_face.ts.
+ * The baked form of a website design, generated offline and committed.
  *
  * This is the *in-memory* shape of a face, not the packed `.buddy` wire format of
  * ADR 0010. Translating the website's choices into something a panel can draw is the

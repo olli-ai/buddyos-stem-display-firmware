@@ -20,3 +20,14 @@ sim/liblvgl.a
 sim/objs/
 sim/frames/
 sdkconfig
+
+# Internal, not published. These stay on disk for whoever has the sibling repos
+# checked out; they are untracked so a public clone does not carry them.
+#
+#   tools/bake_*.ts   import directly from the website's source (../buddyos-stem-fe)
+#                     and cannot compile without it. Their OUTPUT is committed
+#                     (main/generated/), so the firmware builds without them.
+#   CLAUDE.md         working notes whose value is cross-repo navigation.
+tools/bake_face.ts
+tools/bake_catalogue.ts
+CLAUDE.md

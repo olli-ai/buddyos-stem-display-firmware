@@ -1,7 +1,7 @@
 /*
  * Hold the firmware to the website's answers.
  *
- * Two generated goldens, both emitted by tools/bake_face.ts from the front end's own
+ * Two generated goldens, both emitted by the offline face baker from the website's own
  * TypeScript, so the expectation cannot drift from the thing it is generated beside:
  *
  *   main/generated/xcheck.txt          — sampleMotion(), per layer, per instant

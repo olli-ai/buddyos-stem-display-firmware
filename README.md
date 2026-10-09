@@ -405,10 +405,10 @@ than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
 six characters cost **no RAM at all**. That is the only reason they are affordable, and
 it is also why a new character is a catalogue image rather than an OTA for every device.
 
-`tools/bake_catalogue.ts` builds the partition image, but it reads the **character
-artwork**, which is not published — so `face_catalogue.bin` cannot be produced from this
-repo alone, is not an output of `idf.py build`, and is deliberately absent from the flash
-command in [Flash it](#flash-it). A kit without it mounts a blank `faces` partition, says
+The partition image is built by an internal tool from **character artwork that is not
+published** — so `face_catalogue.bin` cannot be produced from this repo, is not an output
+of `idf.py build`, and is deliberately absent from the flash command in
+[Flash it](#flash-it). A kit without it mounts a blank `faces` partition, says
 so in the log, and draws the Buddy compiled into the firmware. Everything else works.
 
 Flashing one, if you have built it:
@@ -431,8 +431,7 @@ and Board are objects that happen to have a face — a box on wheels, a robot wi
 dev board — worn as a printed sticker or a lit screen, nothing like those ellipses. On a
 240 px round panel their bodies win the circle, their eyes come out a few pixels across,
 and the patch misses their real features so drawn parts land beside them rather than over
-them. Framing each on its head was tried and made Robot show *two* faces (the note is
-kept in `tools/bake_catalogue.ts`).
+them. Framing each on its head was tried and made Robot show *two* faces.
 
 They stay on the website, where a kit card is the right place for a picture of the kit. A
 kit whose design names one shows the built-in character and says so in the log. Give them
@@ -610,8 +609,9 @@ otherwise lip-sync to the room, and to itself.
 
     docker run --rm -v "$PWD":/fw -w /fw espressif/idf:v5.2.2 bash tools/xcheck.sh
 
-Two generated goldens, both emitted by `tools/bake_face.ts` from the front end's own
-TypeScript: `xcheck.txt` for motion sampling, `lipsync-xcheck.txt` for the classifier over
+Two generated goldens, both emitted from the website's own TypeScript and **committed
+here** so this check runs with nothing but this repo: `main/generated/xcheck.txt` for
+motion sampling, `lipsync-xcheck.txt` for the classifier over
 `tools/lipsync-fixture.pcm` — 2.4 s of real Omnivoice speech, Vietnamese then English in
 one utterance, because code-switching is the case the design exists for. The C is fed in
 173-sample chunks that divide neither the frame nor the hop, since the decoder will not
