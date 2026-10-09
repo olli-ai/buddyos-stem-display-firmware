@@ -21,9 +21,11 @@ in a box — same provisioning, same studio, same face designer. See
 2. **The face renderer** — composite catalogue sprites into a face from a few hundred bytes
    of the child's choices. Never pixels over the wire; part ids and colours.
 3. **The `.buddy` motion interpreter** — walk keyframe tracks, drive `lv_anim`. The format
-   is defined in `../buddyos-stem-fe/src/data/motion.ts`, and its behaviour is pinned by
-   `src/data/motion.fixtures.json` there. **Those fixtures are the contract**: this firmware
-   is correct when it reproduces them, including the per-easing LUT checksums.
+   is defined by the website's own implementation, and its behaviour is pinned by a set of
+   conformance fixtures. **Those fixtures are the contract**: this firmware is correct when
+   it reproduces them, including the per-easing LUT checksums. The goldens are vendored
+   here as `main/generated/` and `tools/`, so `tools/xcheck.sh` runs with nothing but this
+   repo — see [Holding it to the website's answer](#holding-it-to-the-websites-answer).
 4. **The catalogue partition** — artwork delivered and updated without a firmware release,
    over the download-and-verify path the vision model already proves.
 5. **Lip-sync** — the mouth follows the audio the Buddy is speaking, never its text. See
@@ -31,7 +33,7 @@ in a box — same provisioning, same studio, same face designer. See
 
 ## What this repo is *not*
 
-**It is not `../buddyos-stem-c-firmware`.** That repo is the on-device *vision* spike —
+**It is not the vision firmware.** That is a separate, internal repo — the on-device *vision* spike —
 camera, TFLite Micro, esp-nn — deliberately narrow, and it stays that way. This device type
 **does not carry the offline image model**, which is the entire premise of the faces spec:
 the vision stack is 259 KB of a 1,449 KB app image, and the memory it frees is what makes a
@@ -100,15 +102,21 @@ without editing `board_pins.h`.
 
 ### Flash it
 
-Build in Docker (next section), then write all five images:
+Build in Docker (next section), then write the four images the build produces:
 
     python3 -m venv venv && venv/bin/pip install esptool
     venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
         0x8000   build/partition_table/partition-table.bin \
         0x10000  build/buddyos_stem_display.bin \
         0x610000 build/ota_data_initial.bin \
-        0x612000 build/face_catalogue.bin \
         0x792000 build/srmodels/srmodels.bin
+
+**`face_catalogue.bin` is deliberately not in that list.** It is extra character artwork,
+it is *not* produced by `idf.py build`, and esptool aborts the whole command if any file is
+missing — so including it would mean flashing nothing at all. Without it the `faces`
+partition reads as blank, the mount says so in the log, and the kit draws the Buddy baked
+into the firmware. See [The characters live in their own
+partition](#the-characters-live-in-their-own-partition) if you want to build one.
 
 esptool does not come with the Docker build — the container cannot see a USB port, so
 flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
@@ -170,8 +178,8 @@ and a tick from `esp_timer`. About sixty lines, and one fewer dependency.
 A kit that was never set up boots into **BLE setup** and advertises as its serial,
 `ESP32-<factory MAC>`, with the manufacturer data (`0x4F4C` + the serial's last five
 characters) that stem-fe's *Set up with Bluetooth* filters on. The GATT contract is
-the other STEM kits', copied from `../buddyos-stem-c-firmware/components/stem_ble`
-into `components/buddy_ble`, so the website drives it unchanged:
+the other STEM kits', carried over into `components/buddy_ble` (which is in this repo and
+is the complete implementation), so the website drives it unchanged:
 
 1. `{"params":{"scan_wifi":1}}` → the kit scans and answers `wifi_list`.
 2. `{"params":{ssid, password, user_jwt, mqtt_jwt, env, gateway}}` → the kit joins
@@ -388,10 +396,13 @@ than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
 six characters cost **no RAM at all**. That is the only reason they are affordable, and
 it is also why a new character is a catalogue image rather than an OTA for every device.
 
-    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_catalogue.ts \
-      --bundle --platform=node --format=cjs --outfile=/tmp/cat.cjs \
-      --loader:.webp=dataurl --loader:.png=dataurl \
-    && node /tmp/cat.cjs ../buddyos-stem-display-firmware/build/face_catalogue.bin
+`tools/bake_catalogue.ts` builds the partition image, but it reads the **character
+artwork**, which is not published — so `face_catalogue.bin` cannot be produced from this
+repo alone, is not an output of `idf.py build`, and is deliberately absent from the flash
+command in [Flash it](#flash-it). A kit without it mounts a blank `faces` partition, says
+so in the log, and draws the Buddy compiled into the firmware. Everything else works.
+
+Flashing one, if you have built it:
 
     esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash 0x412000 build/face_catalogue.bin
 
@@ -457,9 +468,9 @@ Connecting only proves the token was accepted; the subscribe and the publish pro
 that bites later. Both are done on connect, so a bad token is visible in the log rather than
 at the first directive.
 
-The client follows `../buddyos-stem-c-firmware/components/stem_mqtt` rather than inventing a
-second way to reach the same broker. Three details are carried over because each is a silent
-failure otherwise:
+The client follows the MQTT client our other STEM firmware already uses rather than
+inventing a second way to reach the same broker. Three details are carried over because
+each is a silent failure otherwise:
 
 - **`buffer.size = 4096`.** The device JWT is ~1.3 KB, so the default 1 KB buffer cannot
   hold the CONNECT this client sends. The symptom is a broker that appears to hang up.
@@ -564,8 +575,8 @@ really PSRAM's doing.
 The mouth shape comes from **the audio, never the text**. This product speaks Vietnamese
 and English and switches between them inside a sentence; text would mean grapheme-to-
 phoneme rules per language, while a vowel's formants are the same in either and a
-fricative is noise in both. `main/face_lipsync.c` is a transcription of
-`../buddyos-stem-fe/src/data/visemes.ts`, and the thresholds are **generated** into
+fricative is noise in both. `main/face_lipsync.c` is a transcription of the website's own
+viseme classifier, and the thresholds are **generated** into
 `main/generated/face_assets.c` by the baker rather than copied — the same discipline as the
 easing table.
 
@@ -640,23 +651,16 @@ DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cy
   choice. The 8 MB partition table is no longer a placeholder. Whether *2 MB* of PSRAM is
   enough is a voice question, not a face one, and is still open.
 - **IDF version.** Pinned to v5.2.2 to match the org's existing Docker workflow. Note the
-  v5.5 problem in `../buddyos-stem-c-firmware` was an I²C `driver_ng` conflict caused by the
-  *camera* driver, which this firmware does not have — so that constraint is inherited by
-  convention here, not by necessity.
+  v5.5 problem we hit on another ESP32-S3 firmware was an I²C `driver_ng` conflict caused
+  by the *camera* driver, which this firmware does not have — so that constraint is
+  inherited by convention here, not by necessity.
 
 ## Design notes
 
-The product thinking behind this firmware lives in a private planning repo, and the links
-below will only resolve for teammates who have it checked out as a sibling directory. They
-are listed because the *reasoning* is often the answer to "why is it done this way" — the
-face format, the catalogue partition and the motion format each have a document arguing for
-them.
-
-- [Kid-designed Buddy faces on a device screen](../buddyos-stem-features-management/docs/features/kid-designed-faces-on-device-screen.md)
-- [Kid-authored face motion](../buddyos-stem-features-management/docs/features/kid-authored-face-motion.md)
-- [Open-source display kit and setup guides](../buddyos-stem-features-management/docs/features/open-source-display-kit-and-setup-guides.md)
-- [ADR 0009 — the face catalogue ships as its own updatable partition](../buddyos-stem-features-management/docs/adr/0009-face-catalogue-as-updatable-partition.md)
-- [ADR 0010 — motion is keyframes over targets](../buddyos-stem-features-management/docs/adr/0010-face-motion-as-keyframes-over-catalogue-layers.md)
+The product reasoning behind this firmware — why a face is part ids rather than pixels, why
+the catalogue gets its own partition, why motion is keyframes over catalogue layers — lives
+in a private planning repo and is not published. The decisions it reaches are recorded in
+this README where they affect the code, which is the part you need to work on it.
 
 ## Licence and support
 
