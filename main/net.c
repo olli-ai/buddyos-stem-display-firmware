@@ -47,8 +47,8 @@ static volatile bool s_autoreconnect = true;
 static volatile uint8_t s_last_reason;
 
 /* The product broker (EMQX, behind an AWS certificate). One root rather than the
- * whole bundle, following ../buddyos-stem-c-firmware/components/stem_mqtt — the
- * in-house client that already talks to this broker. */
+ * whole bundle, following the in-house MQTT client that already talks to this
+ * broker on our other kits. */
 extern const char amazon_root_ca1_pem_start[] asm("_binary_AmazonRootCA1_pem_start");
 
 /* Topics are the token's business: the JWT carries an EMQX ACL naming exactly these,
@@ -57,8 +57,8 @@ extern const char amazon_root_ca1_pem_start[] asm("_binary_AmazonRootCA1_pem_sta
 static char s_topic_dir[160], s_topic_evt[160];
 
 /* The envelope every STEM kit publishes in, field for field as
- * ../buddyos-stem-c-firmware's stem_mqtt_envelope() builds it, so the gateway's
- * event handler needs nothing new for this kit. Takes ownership of `data`. */
+ * our other STEM firmware builds it, so the gateway's event handler needs nothing
+ * new for this kit. Takes ownership of `data`. */
 static char *envelope(const char *type, cJSON *data)
 {
     static uint32_t seq;
@@ -229,8 +229,8 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
 typedef enum { JOIN_OK, JOIN_WRONG_PASSWORD, JOIN_NOT_FOUND, JOIN_OTHER } join_t;
 
 /* One setup attempt: try the credentials for up to `ms`, and say which way they
- * failed. 30 s, as the vision kit found: a classroom access point took 33 s to
- * associate cold, and a shorter wait turned a slow network into "wrong password". */
+ * failed. 30 s, from measurement rather than taste: a classroom access point took 33 s
+ * to associate cold, and a shorter wait turned a slow network into "wrong password". */
 static join_t wifi_try(const char *ssid, const char *pass, int ms)
 {
     wifi_config_t wc = { 0 };
@@ -301,7 +301,7 @@ static char *s_setup_result;             /* the verdict, until a central takes i
 
 /* The NimBLE host task hands messages over and returns: anything that blocks — a
  * scan is ~4 s — must not run on it, or the notification carrying the answer can
- * never be sent. The vision kit learned that one the hard way. */
+ * never be sent. Learned the hard way on an earlier kit. */
 static void on_ble_data(const char *json, void *user)
 {
     (void)user;
@@ -348,7 +348,7 @@ static void ble_send_wifi_list(void)
 }
 
 /* The app's whole verdict rides on one unacknowledged notification, sent just after
- * the Wi-Fi join fought BLE for the radio. The vision kit lost it often enough that
+ * the Wi-Fi join fought BLE for the radio. An earlier kit lost it often enough that
  * the app told users "check your password" about working kits, so: hold it until it
  * has gone out on a live link, advertising again if the link dropped, for up to
  * `wait_s`. Returns at once on the happy path. */
@@ -479,8 +479,8 @@ static void run_setup(void)
 }
 
 #if CONFIG_BUDDY_BOOT_RESET
-/* BOOT held for 5 s: forget everything and come back up in setup. The same gesture
- * as the vision kit's factory-reset button, on the one button every S3 board has. */
+/* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
+ * gesture our other kits use, on the one button every S3 board has. */
 static void boot_button_task(void *arg)
 {
     (void)arg;

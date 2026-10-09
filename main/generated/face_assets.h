@@ -45,7 +45,7 @@ typedef struct { int16_t sprite; } face_layer_part_t;
  * its text: the product speaks Vietnamese and English and code-switches inside a
  * sentence, and a vowel's formants are the same in either. The thresholds below
  * are generated from the front end's own table so both sides reach the same
- * answer — see ../buddyos-stem-fe/src/data/visemes.ts.
+ * answer — see the website's viseme classifier.
  */
 typedef struct {
     int f1lo_a, f1lo_b;   /* Hz. Openness is where the energy sits *inside* F1's */

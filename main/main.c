@@ -5,7 +5,7 @@
  * animation the child authored, cycling idle -> listening -> thinking -> speaking.
  *
  * Nothing about the face is written here. The design and its motion are baked from
- * ../buddyos-stem-fe by tools/bake_face.ts; this only drives the panel and hands
+ * the website's design data by tools/bake_face.ts; this only drives the panel and hands
  * LVGL its buffers. sim/ renders the identical face_view.c / face_motion.c on a
  * laptop, which is where this was developed, there being no panel to hand.
  *

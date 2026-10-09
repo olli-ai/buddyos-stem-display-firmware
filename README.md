@@ -26,23 +26,22 @@ in a box — same provisioning, same studio, same face designer. See
    it reproduces them, including the per-easing LUT checksums. The goldens are vendored
    here as `main/generated/` and `tools/`, so `tools/xcheck.sh` runs with nothing but this
    repo — see [Holding it to the website's answer](#holding-it-to-the-websites-answer).
-4. **The catalogue partition** — artwork delivered and updated without a firmware release,
-   over the download-and-verify path the vision model already proves.
+4. **The catalogue partition** — artwork delivered and updated without a firmware
+   release: a presigned URL streamed to flash and CRC-checked before it is committed.
 5. **Lip-sync** — the mouth follows the audio the Buddy is speaking, never its text. See
    **Lip-sync** below.
 
 ## What this repo is *not*
 
-**It is not the vision firmware.** That is a separate, internal repo — the on-device *vision* spike —
-camera, TFLite Micro, esp-nn — deliberately narrow, and it stays that way. This device type
-**does not carry the offline image model**, which is the entire premise of the faces spec:
-the vision stack is 259 KB of a 1,449 KB app image, and the memory it frees is what makes a
-screen affordable at all.
+**It is a face, a voice and a screen — nothing else.** The whole 2 MB app image goes on the
+panel driver, the face renderer and its catalogue, the motion interpreter, the wake word
+and the voice path, and that is already a tight fit: see [Static
+sizes](#static-sizes) for where every kilobyte goes.
 
-Read that repo for two things only, and do not change it:
-- its **measurements** — what a device without the vision stack gets back;
-- its **model loader**, the precedent for download-and-verify (presigned URL → streamed to
-  flash → CRC checked before commit).
+The only inference on the device is the wake word (ESP-SR WakeNet, in its own partition)
+and the lip-sync classifier, which is a 512-point FFT and a few thresholds rather than a
+model. Anything heavier than that does not fit beside what is here, and the measurements
+in this README are the argument.
 
 ## Build one yourself
 
@@ -664,9 +663,9 @@ DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cy
   choice. The 8 MB partition table is no longer a placeholder. Whether *2 MB* of PSRAM is
   enough is a voice question, not a face one, and is still open.
 - **IDF version.** Pinned to v5.2.2 to match the org's existing Docker workflow. Note the
-  v5.5 problem we hit on another ESP32-S3 firmware was an I²C `driver_ng` conflict caused
-  by the *camera* driver, which this firmware does not have — so that constraint is
-  inherited by convention here, not by necessity.
+  v5.5 problem we hit elsewhere was an I²C `driver_ng` conflict raised by a peripheral
+  driver this firmware does not use — so that constraint is inherited by convention here,
+  not by necessity. It may well build on a newer IDF; nobody has tried.
 
 ## Design notes
 

@@ -10,7 +10,7 @@
  * language. A vowel's formants are the same in either, and a fricative is noise in
  * both — so the classifier hears, and needs to know no language at all.
  *
- * It is a transcription of ../buddyos-stem-fe/src/data/visemes.ts, reading the
+ * It is a transcription of the website's viseme classifier, reading the
  * thresholds the baker copied out of that same table. Two rules carry the weight:
  *
  *  - Loudness is **relative**. Every persona has a cloned voice, so a fixed gate

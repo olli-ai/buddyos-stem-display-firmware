@@ -133,8 +133,8 @@ const char *prov_serial(void)
 {
     if (s_prov.from_bench && CONFIG_BUDDY_MQTT_USER[0]) return CONFIG_BUDDY_MQTT_USER;
     if (!s_serial[0]) {
-        /* The factory base MAC, as ../buddyos-stem-c-firmware's stem_board does and
-         * as MicroPython's machine.unique_id() returns — not the STA MAC, which only
+        /* The factory base MAC, as our other STEM firmware uses and as
+         * MicroPython's machine.unique_id() returns — not the STA MAC, which only
          * happens to equal it on this chip. */
         uint8_t mac[6] = { 0 };
         esp_efuse_mac_get_default(mac);

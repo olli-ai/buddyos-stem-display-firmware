@@ -21,8 +21,7 @@ the gateway's directive reaches.
 With service credentials (STEM_MQTT_ADMIN_USER / _PASS) it publishes to the real
 directive topic instead, which is the production path.
 
-MQTT in pure stdlib, following ../buddyos-stem-c-firmware/tools/send_directive.py —
-no paho, no broker install.
+MQTT in pure stdlib — no paho, no broker install.
 """
 import argparse, json, os, socket, ssl, struct, sys, time, uuid
 

@@ -125,7 +125,10 @@ function raster(svg: string): { w: number; h: number; x: number; y: number; px: 
  *  same pixels, which is why the two agree without anyone matching them by eye.
  *  Costs 57,600 B more than the flattened version and buys every body colour. */
 function bakeBackground(): { px: Buffer } {
-    const src = '/Users/leminhson/olli_projects/buddyos-stem-fe/src/assets/mascots/sprout.webp';
+    // Relative to this file, so it does not depend on where anybody checked the
+    // repos out. Override with MASCOT_SRC.
+    const src = process.env.MASCOT_SRC
+        ?? new URL('../../buddyos-stem-fe/src/assets/mascots/sprout.webp', import.meta.url).pathname;
     const k = 1.6; // PATCH_SCALE, as BuddyFace uses it
     const grad = `<defs><radialGradient id="g" cx="0.5" cy="0.5" r="0.5">
         <stop offset="0" stop-color="${patchFill}" stop-opacity="1"/>

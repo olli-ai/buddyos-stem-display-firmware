@@ -8,5 +8,5 @@ typedef struct {
 } face_values_t;
 
 /** Sample every layer of `state` at `t` ms. Mirrors sampleMotion() in
- *  ../buddyos-stem-fe/src/data/motion.ts — the fixtures there are the contract. */
+ *  the website's motion implementation — its fixtures are the contract. */
 void face_motion_sample(int state, uint32_t t, face_values_t out[FACE_LAYER_COUNT]);

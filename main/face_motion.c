@@ -2,7 +2,7 @@
  * The `.buddy` interpreter.
  *
  * A deliberate transcription of sampleMotion() in
- * ../buddyos-stem-fe/src/data/motion.ts. Two rules carry over and are the easy ones
+ * the website's own motion code. Two rules carry over and are the easy ones
  * to get wrong:
  *
  *  - Easing is read from the shipped table, never recomputed from a formula. Two
