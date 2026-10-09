@@ -176,6 +176,36 @@ Two known rough edges, both on the detector rather than the pipeline:
 - **Half-duplex while speaking.** There is no echo cancellation yet, so the microphone is
   muted while the Buddy talks; you cannot interrupt it mid-sentence by voice.
 
+### Going to sleep, and waking up
+
+After **three minutes of quiet** (`CONFIG_BUDDY_SLEEP_IDLE_S`, 0 disables) the kit shows
+its `asleep` face, tells the gateway, blanks the panel and enters **deep sleep**. A
+`device.sleep` directive does the same thing on demand. **Press BOOT to wake it.**
+
+**While it is asleep, "Jarvis" does nothing.** Deep sleep has no microphone, so the button
+is the only way back. That is the trade for microamps, and it is the thing most likely to
+surprise somebody — on a bench, set `CONFIG_BUDDY_SLEEP_IDLE_S=0`.
+
+Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The design is
+restored from NVS before the radio is up, so the face is back long before the network is.
+
+Two details that are deliberate rather than incidental:
+
+- **The wake pin must be an RTC GPIO (0–21).** Waking from deep sleep uses `ext0`, which
+  the S3 supports on those pins only — `SOC_RTCIO_PIN_COUNT` is 22. GPIO 47 cannot do it at
+  any speed, which is why the button is BOOT. A production enclosure's button has the same
+  constraint. `CONFIG_BUDDY_SLEEP_WAKE_GPIO` is range-limited to 0–21 so this cannot be got
+  wrong quietly, and `sleep_now()` refuses to sleep rather than sleep with no way back.
+- **`device.sleeping` is published and waited for** before the radio goes down. An event
+  that was queued but never sent is how a kit that works perfectly disappears from the
+  website — the same lesson this firmware already learned on the BLE provisioning
+  notification.
+
+**Not yet confirmed on hardware:** GPIO 0 is a strapping pin, and held low at reset it
+selects download mode. A press-and-release to wake should be clear of the latch, but
+nobody has checked. If a wake ever drops the board into download mode, move
+`CONFIG_BUDDY_SLEEP_WAKE_GPIO` to another RTC pin.
+
 ### Try it before you buy anything
 
 If you have not bought anything yet, the [simulator](#simulator) builds the same face

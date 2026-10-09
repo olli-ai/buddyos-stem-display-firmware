@@ -1,4 +1,5 @@
 #include "voice.h"
+#include "sleep.h"
 #include "sdkconfig.h"
 
 #if CONFIG_BUDDY_VOICE
@@ -297,6 +298,7 @@ static void barge_in(uint32_t now)
 static void session_begin(uint32_t now)
 {
     ESP_LOGI(TAG, "wake word: opening a conversation");
+    sleep_note_activity();      /* being talked to is the clearest activity there is */
     s_phase = PHASE_OPENING;
     s_opened_ms = s_last_activity_ms = now;
     s_gen++;

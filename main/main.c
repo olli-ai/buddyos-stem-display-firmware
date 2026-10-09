@@ -33,6 +33,7 @@
 #include "face_lipsync.h"
 #include "mem_report.h"
 #include "net.h"
+#include "sleep.h"
 #include "audio.h"
 
 static const char *TAG = "buddy-display";
@@ -54,6 +55,12 @@ static const char *TAG = "buddy-display";
 #define STATE_MS 6000
 
 static esp_lcd_panel_handle_t s_panel;
+
+/* display.h — the panel's only public switch, so sleep.c need not know about esp_lcd. */
+void display_set_on(bool on)
+{
+    if (s_panel) esp_lcd_panel_disp_on_off(s_panel, on);
+}
 
 /* The panel transfer is asynchronous, so LVGL is told the flush is done from the
  * driver's completion callback rather than when draw_bitmap returns. Getting this
@@ -242,6 +249,10 @@ void app_main(void)
      * how the robokit ended up with BLE unable to start. */
     net_start();
 #endif
+
+    /* After the face and the radio: sleep_init() reads the wake cause and arms the idle
+     * timer, and the timer must not start counting while the panel is still coming up. */
+    sleep_init();
 
     uint32_t report = 0;
     while (1) {

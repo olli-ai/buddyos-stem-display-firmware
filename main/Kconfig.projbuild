@@ -71,6 +71,58 @@ config BUDDY_GATEWAY_HOST
         start the voice socket and says so in the log.
         The voice socket dials wss://<host>/v1/stem/voice/stream.
 
+config BUDDY_SLEEP
+    bool "Sleep when idle, and on a device.sleep directive"
+    default y
+    help
+        Deep sleep, woken by a press of the button below. The kit blanks its panel
+        and stops listening; only the button brings it back.
+
+        See docs: display-kit-sleep-mode in the planning repo.
+
+config BUDDY_SLEEP_IDLE_S
+    int "Seconds of quiet before the kit sleeps (0 disables)"
+    depends on BUDDY_SLEEP
+    range 0 3600
+    default 180
+    help
+        Counted from the last thing the kit did or was told: a wake word, a
+        directive, a button, a conversation. NOT the same timer as
+        BUDDY_VOICE_IDLE_S, which ends a *conversation* after 15 s and leaves the
+        kit awake and listening. This one ends the *kit*.
+
+        **After this, the wake word stops working** — deep sleep has no microphone,
+        so the button is the only way back. 0 disables idle sleep entirely, which is
+        what a classroom or a demo table wants.
+
+config BUDDY_SLEEP_WAKE_GPIO
+    int "GPIO that wakes the kit (RTC GPIO, 0-21)"
+    depends on BUDDY_SLEEP
+    range 0 21
+    default 0
+    help
+        Must be an **RTC GPIO**: waking from deep sleep uses ext0, which the ESP32-S3
+        supports only on GPIO 0-21 (SOC_RTCIO_PIN_COUNT is 22). GPIO 47 cannot do it
+        at any speed.
+
+        0 is the BOOT button, present on every S3 devkit and already read by this
+        firmware for the 5-second factory reset, so a short press and a long hold are
+        two gestures on one button.
+
+        NOTE: GPIO 0 is also a strapping pin — held low at reset it selects download
+        mode. A press-and-release to wake should be clear of the latch, but this has
+        not been confirmed on hardware; if a wake ever drops the board into download
+        mode, move this to another RTC GPIO.
+
+config BUDDY_SLEEP_FACE_MS
+    int "Milliseconds to show the asleep face before the panel blanks"
+    depends on BUDDY_SLEEP
+    range 0 5000
+    default 800
+    help
+        A Buddy closing its eyes reads as a character going to sleep; a screen that
+        simply blanks reads as a fault. 0 to skip.
+
 config BUDDY_BOOT_RESET
     bool "Hold BOOT (GPIO 0) for 5 s to erase setup and re-enter BLE setup"
     depends on BUDDY_NET

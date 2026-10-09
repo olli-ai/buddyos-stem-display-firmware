@@ -16,6 +16,7 @@
 #include "prov.h"
 #include "mem_report.h"
 #include "face_directive.h"
+#include "sleep.h"
 #include "voice.h"
 #include "buddy_ble.h"
 #include <stdlib.h>
@@ -39,7 +40,10 @@
 
 static const char *TAG = "net";
 static EventGroupHandle_t s_events;
-#define GOT_IP BIT0
+static esp_mqtt_client_handle_t s_client;   /* for events published outside net_task */
+static bool s_announced_awake;
+#define GOT_IP    BIT0
+#define PUBLISHED BIT1
 
 /* Reconnect on every drop, except while a setup attempt is deciding for itself
  * whether the password the child just typed is right. */
@@ -94,6 +98,64 @@ static void send_activate(esp_mqtt_client_handle_t c)
     esp_mqtt_client_publish(c, s_topic_evt, json, 0, 1, 0);
     free(json);
     ESP_LOGI(TAG, "announced device.activate as %s", prov_serial());
+}
+
+/* device.sleep: put the kit to sleep. Handled here rather than in face_directive.c,
+ * which rejects anything whose type is not "face.*" — deliberately, so a malformed
+ * directive cannot be mistaken for a design. */
+static bool handle_sleep_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "device.sleep");
+    if (mine) {
+        const cJSON *d = cJSON_GetObjectItem(j, "data");
+        const cJSON *r = d ? cJSON_GetObjectItem(d, "reason") : NULL;
+        /* Copied before the parse tree is freed: sleep_now() outlives it. */
+        char reason[24];
+        snprintf(reason, sizeof(reason), "%s",
+                 cJSON_IsString(r) ? r->valuestring : "manual");
+        cJSON_Delete(j);
+        sleep_now(reason);      /* does not return when it succeeds */
+        return true;
+    }
+    cJSON_Delete(j);
+    return false;
+}
+
+/* Tell the gateway the kit is going, and WAIT for the publish to leave the device.
+ * qos 1 and an ack bit rather than fire-and-forget: the next thing that happens is the
+ * radio powering down, and an event still sitting in the client's queue is how a kit
+ * that works perfectly disappears from the website. */
+bool net_publish_sleeping(const char *reason, int timeout_ms)
+{
+    if (!s_client || !s_topic_evt[0]) return false;
+    cJSON *d = cJSON_CreateObject();
+    if (!d) return false;
+    cJSON_AddStringToObject(d, "reason", reason ? reason : "manual");
+    char *json = envelope("device.sleeping", d);
+    if (!json) return false;
+    xEventGroupClearBits(s_events, PUBLISHED);
+    int id = esp_mqtt_client_publish(s_client, s_topic_evt, json, 0, 1, 0);
+    free(json);
+    if (id < 0) { ESP_LOGW(TAG, "could not queue device.sleeping"); return false; }
+    bool acked = (xEventGroupWaitBits(s_events, PUBLISHED, pdTRUE, pdTRUE,
+                                      pdMS_TO_TICKS(timeout_ms)) & PUBLISHED) != 0;
+    if (!acked) ESP_LOGW(TAG, "device.sleeping not acked in %d ms; sleeping anyway", timeout_ms);
+    return acked;
+}
+
+/* The counterpart, sent once the radio is back after a wake. */
+static void send_awake(esp_mqtt_client_handle_t c)
+{
+    cJSON *d = cJSON_CreateObject();
+    if (!d) return;
+    cJSON_AddStringToObject(d, "woke_by", "button");
+    char *json = envelope("device.awake", d);
+    if (!json) return;
+    esp_mqtt_client_publish(c, s_topic_evt, json, 0, 1, 0);
+    free(json);
+    ESP_LOGI(TAG, "announced device.awake");
 }
 
 /* Anything that is not the gateway's answer to device.activate is the face's. */
@@ -170,6 +232,13 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
              * actually allows what this device needs, which is a separate question
              * and the one that bites later. */
             esp_mqtt_client_subscribe(e->client, s_topic_dir, 1);
+            /* Only once, and only if this boot was a wake: a reconnect mid-session is
+             * not news, and the website would show the kit waking every time the
+             * broker blinked. */
+            if (sleep_woke_from_deep() && !s_announced_awake) {
+                send_awake(e->client);
+                s_announced_awake = true;
+            }
 #if CONFIG_BUDDY_DESIGN_VIA_EVENT
             /* A bench path, and an honest one. Publishing to the directive topic is
              * the gateway's privilege — a device token may only subscribe there —
@@ -183,7 +252,10 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         break;
     case MQTT_EVENT_SUBSCRIBED:   ESP_LOGI(TAG, "subscribed: %s", s_topic_dir); break;
-    case MQTT_EVENT_PUBLISHED:    ESP_LOGI(TAG, "published to %s", s_topic_evt); break;
+    case MQTT_EVENT_PUBLISHED:
+        ESP_LOGI(TAG, "published to %s", s_topic_evt);
+        xEventGroupSetBits(s_events, PUBLISHED);
+        break;
     case MQTT_EVENT_DATA:
         /* A design from the website. The payload is the directive envelope; the
          * handler takes either that or a bare design, because a bench test
@@ -196,7 +268,9 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
                      e->data_len, e->total_data_len);
             break;
         }
-        if (!handle_activate_status(e->data, e->data_len))
+        sleep_note_activity();
+        if (!handle_activate_status(e->data, e->data_len)
+            && !handle_sleep_directive(e->data, e->data_len))
             face_directive_receive(e->data, e->data_len);
         break;
     case MQTT_EVENT_DISCONNECTED: ESP_LOGW(TAG, "mqtt disconnected"); break;
@@ -578,6 +652,7 @@ static void net_task(void *arg)
     ESP_LOGI(TAG, "connecting as %s (token %u B)", client_id,
              (unsigned)(p->mqtt_jwt ? strlen(p->mqtt_jwt) : 0));
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mc);
+    s_client = client;        /* sleep_now() publishes device.sleeping through this */
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, on_mqtt, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(client));
     mem_report("mqtt started");
