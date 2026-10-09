@@ -203,8 +203,18 @@ Two details that are deliberate rather than incidental:
 
 **Not yet confirmed on hardware:** GPIO 0 is a strapping pin, and held low at reset it
 selects download mode. A press-and-release to wake should be clear of the latch, but
-nobody has checked. If a wake ever drops the board into download mode, move
-`CONFIG_BUDDY_SLEEP_WAKE_GPIO` to another RTC pin.
+nobody has checked. It is a minute to test: let the kit sleep, press BOOT, and see whether
+it boots or lands in the bootloader.
+
+**If it misbehaves, use GPIO 21.** The RTC range is 0–21 and most of it is spoken for here
+— 4–13 and 15–18 are the mic, amp and panel, 0 and 3 are strapping pins, 19/20 are native
+USB — which leaves **1, 2, 14 and 21**. 21 is the pick: 14 sits between the amp and panel
+blocks and is the pin you would want back for a peripheral, while 1 and 2 are neighbours of
+strapping pin 3, where a jumper one position over fails to boot in a way that looks like
+nothing at all. Nothing adjoins 21.
+
+It costs a button and a pull-up to wire, where BOOT is already on the board — so test
+GPIO 0 first.
 
 ### Try it before you buy anything
 

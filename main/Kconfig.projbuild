@@ -111,8 +111,18 @@ config BUDDY_SLEEP_WAKE_GPIO
 
         NOTE: GPIO 0 is also a strapping pin — held low at reset it selects download
         mode. A press-and-release to wake should be clear of the latch, but this has
-        not been confirmed on hardware; if a wake ever drops the board into download
-        mode, move this to another RTC GPIO.
+        not been confirmed on hardware.
+
+        **If that test fails, use GPIO 21.** On this board the RTC range (0-21) is
+        otherwise spoken for: 4-13 and 15-18 are the mic, amp and panel, 0 and 3 are
+        strapping pins, and 19/20 are native USB — which leaves 1, 2, 14 and 21.
+        21 is the pick of them: 14 sits between the amp block (9-13) and the panel
+        block (15-18) and is the one you would want back for a peripheral, and 1 and 2
+        are neighbours of strapping pin 3, where a jumper one pin over is a boot
+        failure that looks like nothing at all. Nothing adjoins 21.
+
+        The cost of moving is a button and a pull-up to wire by hand, where GPIO 0 is
+        already on every devkit — so test GPIO 0 first and only move if it misbehaves.
 
 config BUDDY_SLEEP_FACE_MS
     int "Milliseconds to show the asleep face before the panel blanks"
