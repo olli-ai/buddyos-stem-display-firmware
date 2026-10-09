@@ -158,6 +158,24 @@ Two things to know before you start:
   gateway's privilege, so bench tools like `tools/send_face.py` reach the device by a
   different route (see [Which face, during a conversation](#which-face-during-a-conversation)).
 
+### Talking to it
+
+**Say "Jarvis."** That is the wake word, and nothing is sent anywhere until the kit hears
+it — the microphone feeds ESP-SR WakeNet on the device, and only a detection opens a voice
+session. The session closes again after `BUDDY_VOICE_IDLE_S` of quiet.
+
+It is a **stock Espressif WakeNet9 model** (`CONFIG_SR_WN_WN9_JARVIS_TTS`), one of several
+that ship with ESP-SR, not something trained here. To use a different one, pick it under
+*ESP Speech Recognition* in `idf.py menuconfig` and reflash — the model is packed into the
+`model` partition at build time, so changing it changes `srmodels.bin`.
+
+Two known rough edges, both on the detector rather than the pipeline:
+
+- **It may wake itself** if the Buddy's own persona is also called Jarvis and the detector
+  is in its aggressive mode (`CONFIG_BUDDY_WAKE_THRESHOLD_MODE=1`).
+- **Half-duplex while speaking.** There is no echo cancellation yet, so the microphone is
+  muted while the Buddy talks; you cannot interrupt it mid-sentence by voice.
+
 ### Try it before you buy anything
 
 If you have not bought anything yet, the [simulator](#simulator) builds the same face
