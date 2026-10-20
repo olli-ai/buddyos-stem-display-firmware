@@ -1,8 +1,8 @@
 /*
  * BuddyOS STEM — display firmware, format-translation test.
  *
- * A face designed on the website appears on a GC9A01 round panel and runs the
- * animation the child authored, cycling idle -> listening -> thinking -> speaking.
+ * A face designed on the website appears on a 2.1" 480x480 round ST7701S panel and runs
+ * the animation the child authored, cycling idle -> listening -> thinking -> speaking.
  *
  * Nothing about the face is written here. The design and its motion are baked from
  * the website's design data by an offline baker; this only drives the panel and hands
@@ -10,7 +10,7 @@
  * laptop, which is where this was developed, there being no panel to hand.
  *
  * Panel wiring lives in board_pins.h with everything else this firmware drives.
- * The module has no separate backlight pin.
+ * The backlight is hardwired on.
  *
  * Dependencies are vendored in components/ and the component manager is switched
  * off (see README): idf 5.2.2's resolver cannot parse a `&&` in a dependency
@@ -22,12 +22,13 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include <string.h>
-#include "driver/spi_master.h"
-#include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_gc9a01.h"
 #include "lvgl.h"
-#include "board_pins.h"
+#include "st7701.h"
+#include "touch.h"
+#if CONFIG_BUDDY_GALLERY
+#include "gallery.h"
+#endif
 #include "face_view.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
@@ -38,18 +39,14 @@
 
 static const char *TAG = "buddy-display";
 
-#define PIN_SCLK   PIN_LCD_SCLK
-#define PIN_MOSI   PIN_LCD_MOSI
-#define PIN_DC     PIN_LCD_DC
-#define PIN_CS     PIN_LCD_CS
-#define PIN_RST    PIN_LCD_RST
-#define LCD_W     240
-#define LCD_H     240
-#define LCD_HZ  (40 * 1000 * 1000)
+#define LCD_W  ST7701_W
+#define LCD_H  ST7701_H
 
-/* A tenth of the screen, twice — the figure the planning docs budget. The simulator
- * runs the same two buffers and reports a ~13 KB LVGL heap peak on top. */
-#define BUF_PX  (LCD_W * LCD_H / 10)
+/* A twentieth of the screen, once: 24 lines, 23 KB of internal RAM — what the two
+ * GC9A01 buffers cost before, on a screen with four times the pixels. One buffer, not
+ * two: the flush below is a CPU copy into the frame buffer that has finished when it
+ * returns, so there is never a transfer in flight for a second buffer to overlap. */
+#define BUF_PX  (LCD_W * LCD_H / 20)
 
 /* How long each state is shown. Long enough for a 4 s blink cycle to come round. */
 #define STATE_MS 6000
@@ -59,33 +56,37 @@ static esp_lcd_panel_handle_t s_panel;
 /* display.h — the panel's only public switch, so sleep.c need not know about esp_lcd. */
 void display_set_on(bool on)
 {
-    if (s_panel) esp_lcd_panel_disp_on_off(s_panel, on);
-}
-
-/* The panel transfer is asynchronous, so LVGL is told the flush is done from the
- * driver's completion callback rather than when draw_bitmap returns. Getting this
- * wrong means LVGL reuses a buffer the DMA engine is still reading. */
-static bool on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *arg)
-{
-    (void)io; (void)e;
-    lv_display_flush_ready((lv_display_t *)arg);
-    return false;
+    if (s_panel) st7701_set_on(on);
 }
 
 static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
-    /* LVGL stores an RGB565 pixel in host order — low byte first — and the panel
-     * clocks the high byte first. Without this the face draws in exactly the right
-     * shape and entirely the wrong colours: a cyan-green body, purple contour bands
-     * across every gradient, an orange rim at the chin. That is what the first photo
-     * of real hardware showed, and it is a swap rather than a wiring fault because
-     * the same swap applied to a simulator frame reproduces the photograph.
+    /* No byte swap. The GC9A01 took RGB565 over SPI high byte first, which is why
+     * this used to swap; an RGB panel is fed 16 data lines at once from a uint16_t in
+     * memory, so LVGL's host order is exactly what the bus wants.
      *
-     * The simulator cannot catch this. It renders into host memory and displays from
-     * host memory, so the two endiannesses cancel and it has always looked right. */
-    lv_draw_sw_rgb565_swap(px, lv_area_get_size(a));
+     * draw_bitmap on an RGB panel copies the area into the PSRAM frame buffer and
+     * writes it back from the cache, and has finished when it returns — so the flush
+     * is ready here, not in a completion callback. */
     esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
-    (void)d;
+    lv_display_flush_ready(d);
+}
+
+/* The touch layer as an LVGL pointer. Nothing on the face is tappable yet; what a
+ * touch does today is count as somebody being there, so a child playing with the
+ * screen does not have the kit fall asleep under their finger. */
+static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    (void)indev;
+    uint16_t x, y;
+    if (touch_read(&x, &y)) {
+        data->point.x = x;
+        data->point.y = y;
+        data->state = LV_INDEV_STATE_PRESSED;
+        sleep_note_activity();
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
 }
 
 static uint32_t tick_cb(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -169,66 +170,53 @@ static void face_timer(lv_timer_t *t)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "BuddyOS STEM display — GC9A01 %dx%d", LCD_W, LCD_H);
+    ESP_LOGI(TAG, "BuddyOS STEM display — ST7701S %dx%d", LCD_W, LCD_H);
     mem_report("boot");
 
-    spi_bus_config_t bus = {
-        .sclk_io_num = PIN_SCLK,
-        .mosi_io_num = PIN_MOSI,
-        .miso_io_num = -1,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = BUF_PX * (int)sizeof(uint16_t),
-    };
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO));
+#if CONFIG_BUDDY_BOOT_RESET
+    /* Before the panel: BOOT is GPIO 0, which the panel is about to take as a data
+     * line, so this is the only moment it can be read. */
+    net_boot_reset_check();
+#endif
 
-    esp_lcd_panel_io_handle_t io = NULL;
-    esp_lcd_panel_io_spi_config_t io_cfg = {
-        .dc_gpio_num = PIN_DC,
-        .cs_gpio_num = PIN_CS,
-        .pclk_hz = LCD_HZ,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .spi_mode = 0,
-        .trans_queue_depth = 10,
-    };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &io));
-
-    esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = PIN_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
-        .bits_per_pixel = 16,
-    };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(io, &panel_cfg, &s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));   /* GC9A01 wants this */
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
+    if (st7701_start(&s_panel) != ESP_OK) return;
 
     lv_init();
     lv_tick_set_cb(tick_cb);
 
     lv_display_t *disp = lv_display_create(LCD_W, LCD_H);
-    /* DMA-capable internal memory: PSRAM cannot feed the SPI engine directly, and
-     * this is the allocation that will bite if the radio has taken the heap first. */
+    /* Internal RAM, not PSRAM: LVGL reads and writes every pixel of this many times
+     * per frame while blending, and PSRAM is the bus the panel is already streaming
+     * the frame buffer from. Not DMA — nothing but the CPU touches it. Got before the
+     * radio fragments the heap. */
     size_t buf_bytes = BUF_PX * sizeof(uint16_t);
-    void *b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    void *b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!b1 || !b2) { ESP_LOGE(TAG, "no DMA memory for %u B draw buffers", (unsigned)buf_bytes); return; }
-    lv_display_set_buffers(disp, b1, b2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    void *buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf) { ESP_LOGE(TAG, "no internal memory for a %u B draw buffer", (unsigned)buf_bytes); return; }
+    lv_display_set_buffers(disp, buf, NULL, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flush_cb);
 
-    esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = on_trans_done };
-    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io, &cbs, disp));
+    /* After the panel: TP_RST is the panel's reset line, and st7701_start pulsed it. */
+    if (touch_init() == ESP_OK) {
+        lv_indev_t *tp = lv_indev_create();
+        lv_indev_set_type(tp, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(tp, touch_cb);
+    }
 
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     /* Before the face is built, so the character a design asks for is already
      * available when the stored design is restored a moment later. */
     face_catalogue_mount();
-    face_view_create(scr);
+#if CONFIG_BUDDY_GALLERY
+    /* The photos have the screen; the face is built hidden behind them, so the voice
+     * turn and directives that drive it run unchanged. Without a usable pack this is
+     * scr, and the kit is the face alone. */
+    face_view_create(gallery_create(scr), CONFIG_BUDDY_FACE_SCALE_PCT);
+#else
+    face_view_create(scr, CONFIG_BUDDY_FACE_SCALE_PCT);
+#endif
     lv_timer_create(face_timer, 16, NULL);          /* ~60 fps */
-    ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA", (unsigned)buf_bytes);
+    ESP_LOGI(TAG, "draw buffer: 1 x %u B internal; frame buffer in PSRAM", (unsigned)buf_bytes);
     mem_report("face up");
 
 #if CONFIG_BUDDY_AUDIO
@@ -244,8 +232,8 @@ void app_main(void)
 #endif
 
 #if CONFIG_BUDDY_NET
-    /* Deliberately after the face. The panel buffers are DMA-capable internal memory
-     * and must be got before the radio fragments the heap — the opposite order is
+    /* Deliberately after the face. The draw buffer and the panel's bounce buffers are
+     * internal memory and must be got before the radio fragments the heap — the opposite order is
      * how the robokit ended up with BLE unable to start. */
     net_start();
 #endif

@@ -8,7 +8,7 @@ typedef void (*sim_render_cb)(uint32_t elapsed_ms);
 /** What this face would cost the device. The static half is measured once at
  *  startup; the live half (LVGL heap, frame time) is read per request. */
 typedef struct {
-    size_t draw_buffer_bytes;   /* RAM: LVGL's two partial buffers */
+    size_t draw_buffer_bytes;   /* RAM: LVGL's partial draw buffer */
     size_t sprite_bytes;        /* flash/.rodata: the baked catalogue, not RAM */
     int    buf_px;              /* pixels per draw buffer */
 } sim_stats_t;

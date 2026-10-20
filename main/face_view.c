@@ -17,6 +17,11 @@
  * that its *centre* lands where the composition puts it. Because a rotation or a
  * scale about an image's own centre leaves that centre fixed, positioning the centre
  * is exact rather than an approximation.
+ *
+ * The same trick puts a face baked at 240 px on a 480 px panel: the display scale is
+ * one more factor in each sprite's own transform, never a transform on s_root — a
+ * 480x480 layer would be 460 KB. Every sprite is then drawn through LVGL's transform
+ * path even at rest, which is the cost of not re-baking the artwork at 4x the flash.
  */
 #include "face_view.h"
 #include "face_motion.h"
@@ -29,6 +34,7 @@ static const char *TAG = "face";
 
 static lv_obj_t *s_root;                      /* a plain container: never transformed */
 static lv_obj_t *s_bg;
+static float s_scale = 1.0f;                  /* baked pixels -> screen pixels */
 static lv_obj_t *s_layer[FACE_LAYER_COUNT];   /* 1..5; [0] is the whole head */
 static int s_state;
 static int16_t s_shown[FACE_LAYER_COUNT];
@@ -128,11 +134,16 @@ static void wear_character(const face_character_t *c)
     s_parts_dirty = true;
 }
 
-void face_view_create(lv_obj_t *parent)
+void face_view_create(lv_obj_t *parent, int scale_pct)
 {
+    if (scale_pct < 25) scale_pct = 25;
+    if (scale_pct > 400) scale_pct = 400;
+    s_scale = scale_pct / 100.0f;
+
     s_root = lv_obj_create(parent);
     lv_obj_remove_style_all(s_root);
-    lv_obj_set_size(s_root, face_bg.header.w, face_bg.header.h);
+    lv_obj_set_size(s_root, (int32_t)lroundf(face_bg.header.w * s_scale),
+                    (int32_t)lroundf(face_bg.header.h * s_scale));
     lv_obj_center(s_root);
     lv_obj_remove_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -228,11 +239,18 @@ static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t 
     float rx = FCX + (dx * cosf(a) - dy * sinf(a)) * sx + head->x * UNIT;
     float ry = FCY + (dx * sinf(a) + dy * cosf(a)) * sy + head->y * UNIT;
 
+    /* Everything above is in baked pixels. The display scale is applied last, to the
+     * centre and to the image's own scale alike, so it is a zoom of the whole
+     * composition rather than something the motion has to know about. */
+    const float S = s_scale;
+    rx *= S;
+    ry *= S;
+
     /* A transform about the image's own centre leaves that centre where it is, so
      * putting the centre in the right place is all the positioning needed. */
     lv_image_set_pivot(obj, w / 2, h / 2);
-    lv_image_set_scale_x(obj, (int32_t)(sx * own->scale * 256.0f));
-    lv_image_set_scale_y(obj, (int32_t)(sy * own->scale * own->scale_y * 256.0f));
+    lv_image_set_scale_x(obj, (int32_t)(S * sx * own->scale * 256.0f));
+    lv_image_set_scale_y(obj, (int32_t)(S * sy * own->scale * own->scale_y * 256.0f));
     lv_image_set_rotation(obj, (int32_t)((head->rotation + own->rotation) * 10.0f));
     lv_obj_set_pos(obj, (int32_t)lroundf(rx - w / 2.0f), (int32_t)lroundf(ry - h / 2.0f));
     lv_obj_set_style_opa(obj, (lv_opa_t)(head->opacity * own->opacity * 255.0f), 0);

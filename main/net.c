@@ -307,9 +307,12 @@ typedef enum { JOIN_OK, JOIN_WRONG_PASSWORD, JOIN_NOT_FOUND, JOIN_OTHER } join_t
  * to associate cold, and a shorter wait turned a slow network into "wrong password". */
 static join_t wifi_try(const char *ssid, const char *pass, int ms)
 {
+    /* Neither field needs a terminator: a 32-character SSID and a 64-character hex PSK
+     * fill them exactly, and stopping one byte short turned those into a network that
+     * could never be joined. The zeroed struct terminates anything shorter. */
     wifi_config_t wc = { 0 };
-    strncpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid) - 1);
-    strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
+    memcpy(wc.sta.ssid, ssid, strnlen(ssid, sizeof(wc.sta.ssid)));
+    memcpy(wc.sta.password, pass, strnlen(pass, sizeof(wc.sta.password)));
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     s_last_reason = 0;
     s_autoreconnect = false;
@@ -554,24 +557,41 @@ static void run_setup(void)
 
 #if CONFIG_BUDDY_BOOT_RESET
 /* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
- * gesture our other kits use, on the one button every S3 board has. */
-static void boot_button_task(void *arg)
+ * gesture our other kits use, on the one button every S3 board has.
+ *
+ * It used to be a task polling BOOT for as long as the kit ran. It cannot be now: GPIO 0
+ * is DB17, the top bit of red, and configuring it as an input takes it off the RGB bus.
+ * So BOOT is read once, before the panel starts — and the only way to be holding it
+ * then is to have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
+ * ROM's download mode and never reaches here. The gesture is therefore: while the kit
+ * sleeps, press BOOT and keep holding. (Strapping pins are latched on a chip reset, not
+ * on a wake from deep sleep, so a held BOOT does not send the wake to the bootloader —
+ * per the TRM; to be confirmed on the board along with the wake itself.) */
+void net_boot_reset_check(void)
 {
-    (void)arg;
     gpio_config_t in = { .pin_bit_mask = 1ULL << GPIO_NUM_0, .mode = GPIO_MODE_INPUT,
                          .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&in);
-    int held = 0;
-    for (;;) {
+    if (gpio_get_level(GPIO_NUM_0) != 0) return;
+
+    ESP_LOGW(TAG, "BOOT held: keep holding for setup (5 s)");
+    for (int held = 0; held < 50; held++) {
         vTaskDelay(pdMS_TO_TICKS(100));
-        held = gpio_get_level(GPIO_NUM_0) == 0 ? held + 1 : 0;
-        if (held == 10) ESP_LOGW(TAG, "BOOT held: keep holding for setup (5 s)");
-        if (held == 50) {
-            prov_factory_reset();
-            vTaskDelay(pdMS_TO_TICKS(200));
-            esp_restart();
+        if (gpio_get_level(GPIO_NUM_0) != 0) {
+            ESP_LOGI(TAG, "BOOT released: carrying on");
+            return;
         }
     }
+    /* net_start() has not run, so NVS is not mounted yet. A second init later is a no-op. */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err == ESP_OK) prov_factory_reset();
+    else ESP_LOGE(TAG, "NVS would not mount (%s): nothing to erase", esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
 }
 #endif
 
@@ -602,8 +622,8 @@ static void net_task(void *arg)
         static wifi_ap_record_t aps[20];
         wifi_scan(aps, 20, p->ssid);
         wifi_config_t wc = { 0 };
-        strncpy((char *)wc.sta.ssid, p->ssid, sizeof(wc.sta.ssid) - 1);
-        strncpy((char *)wc.sta.password, p->password, sizeof(wc.sta.password) - 1);
+        memcpy(wc.sta.ssid, p->ssid, strnlen(p->ssid, sizeof(wc.sta.ssid)));
+        memcpy(wc.sta.password, p->password, strnlen(p->password, sizeof(wc.sta.password)));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
         /* Stored credentials that will not connect: keep trying. A kit switched on
          * before its router must come up on its own; re-setup is BOOT's job. */
@@ -693,7 +713,4 @@ void net_start(void)
      * rig to be wrong. */
     /* 6 KB: setup parses the ~2.4 KB credentials message with cJSON on this stack. */
     xTaskCreate(net_task, "net", 6144, NULL, 5, NULL);
-#if CONFIG_BUDDY_BOOT_RESET
-    xTaskCreate(boot_button_task, "boot_btn", 2560, NULL, 2, NULL);
-#endif
 }

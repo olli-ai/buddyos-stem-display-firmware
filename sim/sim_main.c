@@ -3,11 +3,11 @@
  *
  * There is no panel on this desk, and a picture of the face is the only thing that
  * can say whether the translation worked. So LVGL is built for the host, given a
- * plain memory buffer instead of a GC9A01, and asked to render the same
+ * plain memory buffer instead of the ST7701S, and asked to render the same
  * face_view.c / face_motion.c / face_assets.c the firmware runs. Frames come out as
  * PPM files that can be looked at.
  *
- * What this does NOT cover: the SPI bus, the panel driver, and anything about timing
+ * What this does NOT cover: the RGB bus, the panel driver, and anything about timing
  * on real silicon. Everything above that line is the real code.
  */
 #include "lvgl.h"
@@ -19,30 +19,29 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define W 240
-#define H 240
+#define W 480
+#define H 480
 
-/* The "panel": what a GC9A01 would be holding. LVGL never draws into this — the
- * flush callback pushes into it, exactly as the SPI driver would. */
+/* The "panel": the frame buffer the ST7701S is streamed from. LVGL never draws into this — the
+ * flush callback pushes into it, exactly as draw_bitmap does on the device. */
 static uint16_t fb[W * H];
 
 /* What LVGL actually draws into, and the number that matters.
  *
- * main.c gives the device two partial buffers of a tenth of the screen. The first
+ * main.c gives the device one partial buffer of a twentieth of the screen. The first
  * version of this simulator handed LVGL one full-screen buffer in DIRECT mode, which
  * is 115 KB and five times what the device has — so it was not exercising the device's
  * draw path at all. Partial rendering redraws each dirty area in chunks, and chunked
  * drawing of transformed images is precisely where LVGL behaves differently. Matching
  * the device here is the whole point of a simulator. */
-#define BUF_PX (W * H / 10)
+#define BUF_PX (W * H / 20)
 static uint16_t buf1[BUF_PX];
-static uint16_t buf2[BUF_PX];
 
 static uint32_t sim_ms;
 
 static uint32_t tick_cb(void) { return sim_ms; }
 
-/* Stand in for the SPI driver: copy the rendered area into the panel's memory. */
+/* Stand in for draw_bitmap: copy the rendered area into the panel's memory. */
 static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
     const uint16_t *src = (const uint16_t *)px;
@@ -154,13 +153,14 @@ int main(int argc, char **argv)
     lv_tick_set_cb(tick_cb);
 
     lv_display_t *d = s_disp = lv_display_create(W, H);
-    lv_display_set_buffers(d, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(d, buf1, NULL, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(d, flush_cb);
 
     lv_obj_t *scr = lv_display_get_screen_active(d);
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    face_view_create(scr);
+    /* FACE_SCALE=100 draws the art at its baked size; the device default is 200. */
+    face_view_create(scr, getenv("FACE_SCALE") ? atoi(getenv("FACE_SCALE")) : 200);
     load_fixture(getenv("FACE_PCM") ? getenv("FACE_PCM") : "tools/lipsync-fixture.pcm");
 
     /* FACE_BODY=sky renders the Buddy in a chosen body colour, the way a design
@@ -183,15 +183,15 @@ int main(int argc, char **argv)
     size_t sprite_bytes = face_bg.data_size;
     for (int i = 0; i < face_sprite_count; i++)
         if (face_sprites[i].img) sprite_bytes += face_sprites[i].img->data_size;
-    printf("draw buffers : 2 x %d px RGB565 = %zu B (RAM, as main.c configures)\n",
-           BUF_PX, sizeof(buf1) + sizeof(buf2));
+    printf("draw buffer  : 1 x %d px RGB565 = %zu B (RAM, as main.c configures)\n",
+           BUF_PX, sizeof(buf1));
     printf("lvgl heap    : %u B total, %u B used after setup\n",
            (unsigned)m.total_size, (unsigned)(m.total_size - m.free_size));
     printf("sprites      : %zu B (flash/.rodata, not RAM)\n", sprite_bytes);
     fflush(stdout);
 
     if (serve) {
-        sim_stats_t st = { .draw_buffer_bytes = sizeof(buf1) + sizeof(buf2),
+        sim_stats_t st = { .draw_buffer_bytes = sizeof(buf1),
                            .sprite_bytes = sprite_bytes, .buf_px = BUF_PX };
         return sim_serve(port, fb, sizeof(fb), render_at, &st);
     }

@@ -50,15 +50,18 @@ Everything here is a common module and a breadboard. No PCB, no reflow, no custo
 | Part | What to get | Notes |
 | --- | --- | --- |
 | MCU | **ESP32-S3-WROOM-1-N16R8** devkit — 16 MB flash, 8 MB PSRAM | **Not the N8R2.** See below. |
-| Display | **GC9A01** 1.28" 240×240 round TFT, SPI | The bring-up module has no backlight pin; one that exposes it is better. |
+| Display | **HD21001C40** 2.1" 480×480 round IPS, ST7701S, 16-bit RGB + SPI init | Backlight hardwired on. Needs the octal-PSRAM N16R8 for its frame buffer. |
+| Touch | **HCY-CTP00021-A0** capacitive, I²C | Shares its reset with the panel. |
 | Microphone | **INMP441** I²S MEMS breakout | The same part the Robot Kit uses. |
 | Amplifier | **MAX98357A** I²S breakout | |
 | Speaker | 4 Ω, 2–3 W, small | |
 | Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
 
-**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) runs the face fine, but its
-2 MB app slots cannot hold the voice path *and* BLE setup together; the build fails at link
-time. The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 2.14 MB.
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) cannot drive this panel: an
+RGB panel is refreshed from a 460 KB frame buffer in PSRAM, continuously, and quad PSRAM
+at 80 MHz does not have the bandwidth to spare. Its 2 MB app slots also cannot hold the
+voice path *and* BLE setup together; the build fails at link time.
+The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 2.14 MB.
 
 **Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
 the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
@@ -68,36 +71,53 @@ your board behaves strangely the moment audio starts, this is why.
 ### Wiring
 
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
-the file is right. As wired on the N16R8 bench board:
+the file is right. As wired on the N16R8 bench board with the HD21001C40 panel:
 
-| Signal | GPIO | Module pin |
+| Signal | GPIO | Panel / module pin |
 | --- | --- | --- |
-| **GC9A01** SCLK | 15 | `SCL` |
-| MOSI | 16 | `SDA` |
-| DC | 17 | `DC` |
-| CS | 18 | `CS` |
-| RST | 8 | `RST` |
-| **MAX98357A** SD | 13 | shutdown — high enables, low mutes |
-| GAIN | 12 | see `audio_set_gain()` |
-| DIN | 11 | |
-| BCLK | 10 | |
-| LRC | 9 | |
-| **INMP441** SD | 4 | the mic's data *out*, an input to us |
-| SCK | 5 | |
-| WS | 6 | |
-| L/R | 7 | held low = left channel |
+| **ST7701S** SPI CS | 42 | `CS`, 10 k pull-up to 3V3 |
+| SPI SCK | 1 | `SCK` — shared with DB1 |
+| SPI SDA | 2 | `SDA` — shared with DB2 |
+| RESET | 41 | `RESET` **and** `TP_RST` |
+| PCLK | 21 | |
+| DE | 38 | |
+| VSYNC | 39 | |
+| HSYNC | 40 | |
+| DB1–DB5 (blue) | 1, 2, 3, 8, 9 | DB0 to GND |
+| DB6–DB11 (green) | 10, 11, 12, 13, 14, 15 | |
+| DB13–DB17 (red) | 16, 17, 18, 46, 0 | DB12 to GND |
+| **HCY-CTP00021-A0** SDA | 47 | 4.7 k pull-up |
+| SCL | 48 | 4.7 k pull-up |
+| **I²S** BCLK | 5 | MAX98357A `BCLK` **and** INMP441 `SCK` |
+| WS | 6 | MAX98357A `LRC` **and** INMP441 `WS` |
+| MAX98357A DIN | 7 | |
+| INMP441 SD | 4 | the mic's data *out*, an input to us |
 
-Plus 3V3 and GND to the panel and the mic, and **5 V** to the amplifier.
+Hardwired, not driven: the panel backlight (LEDA to 5 V, LEDK1/2 to GND through a
+resistor each — **it cannot be dimmed or switched off**; sleep blanks the panel with
+DISPOFF/SLPIN instead), the amplifier's `SD` (100 k to VIN: on, left channel), its `GAIN`
+(floating: 9 dB) and the mic's `L/R` (GND: left). VCI, IOVCC and TP_VCI are 3V3; the
+amplifier's VIN is **5 V**.
 
-These pins were chosen around what the S3 reserves on this module — octal PSRAM (35–37),
-native USB (19/20), flash (26–32) and the strapping pins (0, 3, 45, 46). **GPIO 3 especially:**
-it is sampled at reset, and an I²S word clock on it was the first suspect when an earlier
-board would not boot cleanly.
+The amp and the mic share BCLK and WS, so they are one I²S controller in full duplex
+(`main/audio.c`), not two.
 
-The original N8R2 bench board was wired differently (panel SCK 14, MOSI 10, DC 11, CS 12,
-RST 13; amp SD 5, DIN 4, BCLK 6, LRC 7; mic SD 17, SCK 16, WS 9, LR 18). Those numbers appear
-in older notes and in the header's history comment — they will not work with this build
-without editing `board_pins.h`.
+This panel takes almost every pin the S3 has. Three consequences, all deliberate:
+
+- **GPIO 0, 3 and 46 are strapping pins and carry panel data.** That is why DB0 and DB12 —
+  the least significant bits of blue and red — are tied to GND rather than given pins.
+  The panel is idle at reset, so the straps read their pull resistors as usual.
+- **BOOT (GPIO 0) is DB17.** While the panel runs it is an LCD output and cannot be read.
+  It still wakes the kit from sleep (the panel is dark by then) and is read once at boot
+  for the factory reset — see [Going to sleep](#going-to-sleep-and-waking-up). **Do not
+  press BOOT while the face is showing:** it shorts a driven output to GND. Harmless for
+  a moment, and the top bit of red flickers, but it is not a button while awake.
+- **SCK and SDA double as DB1 and DB2.** The ST7701S is set up over SPI before the RGB
+  bus starts; `st7701_set_on()` borrows the two pins back for DISPOFF/SLPIN with CS held
+  high the rest of the time, so the panel ignores the pixel data crossing them.
+
+The GC9A01 bench board before this one used SPI on 15–18/8, a muted, gain-switched amp on
+9–13 and the mic on 4–7. Those numbers are in older notes and will not work with this build.
 
 ### Flash it
 
@@ -206,15 +226,47 @@ selects download mode. A press-and-release to wake should be clear of the latch,
 nobody has checked. It is a minute to test: let the kit sleep, press BOOT, and see whether
 it boots or lands in the bootloader.
 
-**If it misbehaves, use GPIO 21.** The RTC range is 0–21 and most of it is spoken for here
-— 4–13 and 15–18 are the mic, amp and panel, 0 and 3 are strapping pins, 19/20 are native
-USB — which leaves **1, 2, 14 and 21**. 21 is the pick: 14 sits between the amp and panel
-blocks and is the pin you would want back for a peripheral, while 1 and 2 are neighbours of
-strapping pin 3, where a jumper one position over fails to boot in a way that looks like
-nothing at all. Nothing adjoins 21.
+**There is no fallback pin any more.** On the GC9A01 board GPIO 21 was the spare to move
+to if BOOT misbehaved. With the ST7701S every RTC GPIO is spoken for — 0–18 by the panel
+and the audio, 19/20 by native USB, 21 by PCLK — and BOOT works at all only because
+`sleep_now()` blanks the panel and takes GPIO 0 back from the LCD peripheral (it is DB17)
+before arming `ext0`. If BOOT turns out not to work as a wake pin, the fix is a different
+panel pin-out that frees an RTC GPIO, not a different number in `menuconfig`.
 
-It costs a button and a pull-up to wire, where BOOT is already on the board — so test
-GPIO 0 first.
+### Photos instead of the face
+
+`CONFIG_BUDDY_GALLERY` (off by default) gives the screen to your photos, one page each,
+with its name and a row of page dots. Swipe left and right. The face is still built,
+hidden, so the voice turn, lip-sync and directives run exactly as before — only nothing of
+it is drawn. Without a usable pack the kit is the face alone.
+
+```
+gallery/01-cesc_fabregas.jpg         -> "Cesc Fabregas"
+gallery/02-raphael_varane.jpg        -> "Raphael Varane"
+```
+
+Put photos in `gallery/` (any size; JPEG, PNG, BMP or GIF; the leading number only sets
+the order), then run `tools/bake_gallery.ps1` (Windows PowerShell, nothing to install). It
+turns each one upright, crops it square (keeping more of a portrait's top, where the face
+is), sizes it to 480×480 and re-encodes it as a baseline JPEG, which is the only kind the
+device's decoder reads. `-Demo` packs five named placeholder cards instead, to try the
+swipe before choosing any photos.
+
+The pack is embedded in the app: 40–90 KB a photo, against ~1 MB free in the 3 MB slot.
+`gallery/` is gitignored, because it is usually other people's pictures. A decoded photo
+is 460 KB of PSRAM, so only the page showing and its two neighbours are kept. Measured:
+**122 ms** to decode one, with PSRAM at 80 MHz, and that happens after a swipe settles,
+never during one.
+
+**Swiping needs the 16 KB main stack** (`sdkconfig.defaults`). LVGL draws on the main
+task, and its image path — `lv_refr` → `lv_draw_image` → `lv_image_decoder_get_info`,
+with an interrupt frame on top — measured ~8.9 KB on the board. At the old 6144 it ran off
+the end of the stack into the heap beside it: corrupt TLSF headers and task lists, which
+showed up as a reset on the second swipe and, once Wi-Fi was allocating in the damaged
+region, as a screen of half-drawn frames stacked a few dozen pixels apart. The stack's
+high-water mark never said so, because a deep frame does not have to write every byte it
+skips over. Proven by moving LVGL to a 16 KB task: forty seconds of automatic swiping, no
+corruption, 7.4 KB of the stack still untouched.
 
 ### Try it before you buy anything
 
@@ -260,8 +312,11 @@ is the complete implementation), so the website drives it unchanged:
 `gateway` is new with this kit: the stem-gateway host its voice socket dials
 (`wss://<gateway>/v1/stem/voice/stream`), sent by stem-fe from
 `VITE_STEM_DEVICE_GATEWAY_HOST`. Setup credentials always win over the bench ones in
-`sdkconfig`, which are used only when nothing was provisioned. **Hold BOOT for 5 s**
-to erase the setup and come back up advertising, even on a bench build.
+`sdkconfig`, which are used only when nothing was provisioned. **Hold BOOT for 5 s** to
+erase the setup and come back up advertising, even on a bench build. BOOT is a panel data
+line on this board, so it is read only at boot: let the kit sleep, then press BOOT and
+**keep holding** — it wakes, sees the button still down, and resets after 5 s. (Holding
+BOOT through a cold reset lands in the ROM bootloader instead.)
 
 ### Flashing the N16R8 board
 

@@ -6,7 +6,13 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
 CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+# LVGL runs on the main task, and drawing an image goes deep: lv_refr -> lv_draw_image ->
+# lv_image_decoder_get_info, plus an interrupt frame on top, measured at ~8.9 KB on the
+# board. At 6144 the gallery overflowed into the heap next to the stack and corrupted
+# TLSF headers and task lists: the swipe-back resets and the screen of stacked frames.
+# The high-water mark did not show it, because a deep frame need not touch every byte.
+# 16 KB is what the fix was proven at.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # LVGL. RGB565 to match the panel; ARGB8888 sprites are decoded to it on the fly.
 CONFIG_LV_COLOR_DEPTH_16=y
@@ -79,3 +85,10 @@ CONFIG_BT_NIMBLE_GATT_MAX_PROCS=4
 # The host's allocations to PSRAM, of which this board has 8 MB going spare:
 # internal RAM is what TLS and DMA are short of, so move what can be moved.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# ST7701S RGB panel. Its interrupt refills the bounce buffers and must keep running
+# while the flash is busy, and if it ever does fall behind, the frame restarts at the
+# next VSYNC rather than drifting — a picture shifted sideways forever is the failure
+# without it. The board needs the octal N16R8 module: see sdkconfig.defaults.n16r8.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

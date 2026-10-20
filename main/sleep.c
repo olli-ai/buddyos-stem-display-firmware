@@ -6,6 +6,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -51,6 +52,19 @@ void sleep_now(const char *reason)
     for (int waited = 0; voice_active() && waited < 30000; waited += 250)
         vTaskDelay(pdMS_TO_TICKS(250));
 
+    const gpio_num_t pin = (gpio_num_t)CONFIG_BUDDY_SLEEP_WAKE_GPIO;
+
+    /* Checked before anything is torn down, because past the next few lines the wake
+     * pin may no longer be a panel data line and there is no putting it back. Only
+     * reachable if somebody sets the wake pin outside GPIO 0-21: ext0 needs an RTC
+     * GPIO. Staying awake is a far better failure than sleeping with no way back. */
+    if (!esp_sleep_is_valid_wakeup_gpio(pin)) {
+        ESP_LOGE(TAG, "GPIO %d cannot wake from deep sleep — staying awake. "
+                      "CONFIG_BUDDY_SLEEP_WAKE_GPIO must be an RTC GPIO, 0-21.", (int)pin);
+        sleep_note_activity();
+        return;
+    }
+
     ESP_LOGI(TAG, "going to sleep (%s)", reason);
     show_asleep_face();
 
@@ -62,7 +76,10 @@ void sleep_now(const char *reason)
 
     display_set_on(false);
 
-    const gpio_num_t pin = (gpio_num_t)CONFIG_BUDDY_SLEEP_WAKE_GPIO;
+    /* BOOT (GPIO 0) is also DB17 of the panel bus, driven by the LCD peripheral and
+     * unreadable while it is. The panel is dark now, so take the pin back: input with
+     * its pull-up, ready for ext0. Harmless for a wake pin the panel does not use. */
+    gpio_reset_pin(pin);
 
     /* Wake on the button going LOW (it idles high through its pull-up). If it is still
      * held from whatever triggered this, sleeping now would wake instantly — so wait for
@@ -72,14 +89,13 @@ void sleep_now(const char *reason)
 
     esp_err_t err = esp_sleep_enable_ext0_wakeup(pin, 0);
     if (err != ESP_OK) {
-        /* Only reachable if somebody sets the wake pin outside GPIO 0-21: ext0 needs an
-         * RTC GPIO. Staying awake is a far better failure than sleeping with no way back. */
-        ESP_LOGE(TAG, "GPIO %d cannot wake from deep sleep (%s) — staying awake. "
-                      "CONFIG_BUDDY_SLEEP_WAKE_GPIO must be an RTC GPIO, 0-21.",
+        /* The pin was checked above, so this is not supposed to happen. The panel has
+         * lost a data line and cannot be given it back from here: a restart is the
+         * clean way to stay awake. */
+        ESP_LOGE(TAG, "ext0 on GPIO %d refused (%s) — restarting rather than sleeping blind",
                  (int)pin, esp_err_to_name(err));
-        display_set_on(true);
-        sleep_note_activity();
-        return;
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_restart();
     }
 
     ESP_LOGI(TAG, "deep sleep now; press GPIO %d to wake", (int)pin);

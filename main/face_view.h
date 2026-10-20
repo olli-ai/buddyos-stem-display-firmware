@@ -7,8 +7,9 @@
  *  the catalogue rather than in the baked sprite array. */
 #define FACE_PART_ARTWORK (-2)
 
-/** Build the face on `parent` and show `state`. */
-void face_view_create(lv_obj_t *parent);
+/** Build the face on `parent`, drawn at `scale_pct` of its baked size (200 puts a
+ *  240 px face on a 480 px panel), and show state 0. */
+void face_view_create(lv_obj_t *parent, int scale_pct);
 void face_view_set_state(int state);
 /** Which state is showing. For callers that did not set it themselves. */
 int face_view_state(void);

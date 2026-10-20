@@ -6,10 +6,11 @@
 /**
  * The ears and the mouth: an INMP441 microphone and a MAX98357A amplifier, both I²S.
  *
- * Two separate I²S controllers rather than one shared bus. They run at different
- * times and could share, but a full-duplex call needs capture and playback running
- * at once, and sharing one controller means one of them waits — which is heard as a
- * gap rather than seen as a bug.
+ * One I²S controller in full duplex: the two parts share a bit clock and a word clock
+ * on this board, so capture and playback are the RX and TX halves of the same
+ * controller and run at the same time without either waiting. The shared clock forces
+ * one slot width on both, 32 bits, which the microphone needs; audio.c does the
+ * widening and narrowing so callers still see 16-bit samples.
  *
  * Everything here is 16 kHz mono, which is what the voice path wants end to end:
  * Opus encodes it directly, and the one place a higher rate would help — music — is
@@ -28,16 +29,9 @@ size_t audio_read(int16_t *samples, size_t count);
 /** Play mono 16-bit PCM. Blocks until the buffer is handed to the DMA engine. */
 size_t audio_write(const int16_t *samples, size_t count);
 
-typedef enum {
-    AUDIO_GAIN_QUIET,   /* 9 dB: GAIN floating */
-    AUDIO_GAIN_LOUD,    /* 12 dB: GAIN held low */
-} audio_gain_t;
-
-/** Amplifier gain, set through the MAX98357A's GAIN pin. */
-void audio_set_gain(audio_gain_t gain);
-
 /** Power the amplifier. Off between utterances: the MAX98357A draws current and
- *  hisses faintly with nothing to play, which on a device beside a bed is noticed. */
+ *  hisses faintly with nothing to play, which on a device beside a bed is noticed.
+ *  A no-op on the current board, whose SD pin is strapped on; see audio.c. */
 void audio_speaker_enable(bool on);
 
 /**
