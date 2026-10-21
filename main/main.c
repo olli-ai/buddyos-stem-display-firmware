@@ -22,6 +22,7 @@
 #include "st7701.h"
 #include "touch.h"
 #include "gallery.h"
+#include "status.h"
 #include "mem_report.h"
 #include "net.h"
 #include "sleep.h"
@@ -115,6 +116,7 @@ void app_main(void)
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     gallery_create(scr);
+    status_create(scr);                  /* after the gallery: drawn above it */
     ESP_LOGI(TAG, "draw buffer: 1 x %u B internal; frame buffer in PSRAM", (unsigned)buf_bytes);
     mem_report("gallery up");
 

@@ -4,6 +4,7 @@
 
 #if CONFIG_BUDDY_VOICE
 #include "audio.h"
+#include "status.h"
 #include "generated/voice_upsampler.h"
 #include "esp_websocket_client.h"
 #include "esp_opus_enc.h"
@@ -157,6 +158,11 @@ static void on_status(const char *st)
     if (!strcmp(st, "speaking_started")) s_speaking = true;
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
              !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
+    if (!strcmp(st, "speaking_started")) status_set(STATUS_SPEAKING);
+    else if (!strcmp(st, "processing") || !strcmp(st, "thinking")) status_set(STATUS_THINKING);
+    else if (!strcmp(st, "error")) status_set(STATUS_ERROR);
+    else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
+             !strcmp(st, "interrupted")) status_set(STATUS_LISTENING);
 #if CONFIG_BUDDY_WAKE_WORD
     s_last_activity_ms = now_ms();
 #endif
@@ -177,6 +183,11 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = false;
         s_speaking = false;
         audio_speaker_enable(false);
+#if CONFIG_BUDDY_WAKE_WORD
+        if (s_phase != PHASE_IDLE) status_set(STATUS_CONNECTING);
+#else
+        status_set(STATUS_CONNECTING);   /* it reconnects on its own */
+#endif
         ESP_LOGW(TAG, "disconnected");
         break;
     case WEBSOCKET_EVENT_DATA:
@@ -283,6 +294,7 @@ static void barge_in(uint32_t now)
 static void session_begin(uint32_t now)
 {
     ESP_LOGI(TAG, "wake word: opening a conversation");
+    status_set(STATUS_CONNECTING);
     sleep_note_activity();      /* being talked to is the clearest activity there is */
     s_phase = PHASE_OPENING;
     s_opened_ms = s_last_activity_ms = now;
@@ -312,6 +324,7 @@ static void session_end(const char *why)
      * ended. WakeNet runs throughout a conversation now, so there is nothing stale
      * to forget anyway. */
     s_phase = PHASE_IDLE;
+    status_set(STATUS_IDLE);
 }
 
 static bool wake_init(void)
@@ -611,10 +624,12 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
 
 #if CONFIG_BUDDY_WAKE_WORD
     ESP_LOGI(TAG, "listening for the wake word; will talk to wss://%s" VOICE_PATH " as %s", gateway, serial);
+    status_set(STATUS_IDLE);
     return true;
 #else
     esp_wifi_set_ps(WIFI_PS_NONE);       /* always in a conversation: see session_begin */
     ESP_LOGI(TAG, "connecting to wss://%s" VOICE_PATH " as %s", gateway, serial);
+    status_set(STATUS_CONNECTING);
     return esp_websocket_client_start(s_ws) == ESP_OK;
 #endif
 }

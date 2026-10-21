@@ -1,4 +1,4 @@
-set(srcs "main.c" "gallery.c" "audio.c" "voice.c"
+set(srcs "main.c" "gallery.c" "status.c" "audio.c" "voice.c"
          "st7701.c" "touch.c"
          "mem_report.c" "net.c" "prov.c" "sleep.c")
 
