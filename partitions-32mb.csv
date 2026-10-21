@@ -1,0 +1,34 @@
+# The Waveshare ESP32-P4 board (32 MB flash): the face, baked for its own panel.
+#
+# Why this table exists rather than partitions-16mb.csv. The face is vector art
+# rasterised offline into ARGB8888 sprites, so its cost is area: the 240x240 bake the
+# GC9A01 used is 465 KB, and the same drawing at this panel's 720x720 is about 4.1 MB.
+# That does not fit a 3 MB app slot beside voice, the wake word and BLE setup — and
+# upscaling the small bake 3x on a 4" screen is exactly the softness a vector pipeline
+# exists to avoid. 6.5 MB slots carry the art embedded, which keeps the sprite array
+# an ordinary C object the linker places and the renderer indexes.
+#
+# EVERYTHING STAYS UNDER 16 MB, and that is not an accident. A first cut used 8 MB
+# slots and pushed `model` to 0x1612000, past the 16 MB line. esptool wrote it there
+# and verified the hash — it addresses flash directly — but the runtime reads that
+# partition through the flash cache, and what came back was garbage: srmodel_load()
+# read a nonsense model count, its mallocs failed, and it stored through the NULL at
+# model_path.c:138. A boot loop every 22 s, with MTVAL 0x00000000 naming the cause.
+# So the top half of this chip is unused for now; proving out >16 MB mapping is its
+# own job, and not one to do while the face is being brought up.
+#
+# The cost, stated plainly: an OTA now moves ~6 MB instead of ~2.3 MB, because the art
+# ships inside the firmware, and a slot has ~11% headroom rather than a third. ADR
+# 0009's `faces` partition is the answer to both when they start to matter — it is
+# still here, and still unread by this build.
+#
+# `model` is found by name, never by offset, so it may move freely.
+#
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+phy_init,   data, phy,      0xf000,   0x1000
+ota_0,      app,  ota_0,    0x10000,  0x680000
+ota_1,      app,  ota_1,    ,         0x680000
+otadata,    data, ota,      ,         0x2000
+faces,      data, spiffs,   ,         0x180000
+model,      data, spiffs,   ,         0x80000
