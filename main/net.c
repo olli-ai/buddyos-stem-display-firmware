@@ -18,6 +18,7 @@
 #include "sleep.h"
 #include "voice.h"
 #include "buddy_ble.h"
+#include "setup_ui.h"
 #include "board_pins.h"
 #include <stdlib.h>
 #include <string.h>
@@ -169,12 +170,15 @@ static bool handle_activate_status(const char *data, int len)
             ESP_LOGI(TAG, "activation confirmed by the gateway");
             prov()->activated = true;
             if (!prov()->from_bench) prov_save();
+            setup_ui_set(SETUP_UI_DONE);     /* ignored unless a setup is on screen */
         } else {
             /* The gateway refuses a serial another account already owns: that owner
              * has to release it first. Nothing this kit can do about it but say so. */
             const cJSON *reason = cJSON_GetObjectItem(j, "reason");
             ESP_LOGE(TAG, "activation refused: %s",
                      cJSON_IsString(reason) ? reason->valuestring : "no reason given");
+            setup_ui_detail("Already registered to another account");
+            setup_ui_set(SETUP_UI_FAILED);
         }
     }
     cJSON_Delete(j);
@@ -368,6 +372,14 @@ static char *s_setup_result;             /* the verdict, until a central takes i
 /* The NimBLE host task hands messages over and returns: anything that blocks — a
  * scan is ~4 s — must not run on it, or the notification carrying the answer can
  * never be sent. Learned the hard way on an earlier kit. */
+/* A phone or a browser has linked. Only the screen cares: the GATT contract has
+ * nothing to say about it, and the rest of setup is driven by what arrives next. */
+static void on_ble_connect(void *user)
+{
+    (void)user;
+    setup_ui_set(SETUP_UI_LINKED);
+}
+
 static void on_ble_data(const char *json, void *user)
 {
     (void)user;
@@ -471,7 +483,9 @@ static bool handle_setup_message(const char *json)
         vTaskDelay(pdMS_TO_TICKS(500));
         buddy_ble_enable();
     } else if (cJSON_GetObjectItem(params, "scan_wifi")) {
+        setup_ui_set(SETUP_UI_SCANNING);
         ble_send_wifi_list();
+        setup_ui_set(SETUP_UI_LINKED);    /* the app has the list; the choice is theirs */
     } else if (ssid && ssid[0]) {
         prov_t *p = prov();
         const char *pass = str_of(params, "password");
@@ -493,6 +507,8 @@ static bool handle_setup_message(const char *json)
         if (!gw || !gw[0]) ESP_LOGW(TAG, "setup sent no gateway; using %s", p->gateway);
 
         ESP_LOGI(TAG, "joining '%s' (env %s, gateway %s)", p->ssid, p->env, p->gateway);
+        setup_ui_detail(p->ssid);
+        setup_ui_set(SETUP_UI_JOINING);
         join_t r = wifi_try(p->ssid, p->password, 30000);
         if (r == JOIN_OK) {
             /* Saved only now: a mistyped password is not worth keeping. */
@@ -504,12 +520,22 @@ static bool handle_setup_message(const char *json)
             deliver_setup_result(5);
             /* The chunks were accepted for transmission, not yet sent. */
             vTaskDelay(pdMS_TO_TICKS(500));
+            /* Not "Ready": Wi-Fi is the app's last piece of news, but the kit is not
+             * set up until the gateway has made its row — which is the wait stem-fe
+             * spends polling, and the one nobody could see until this screen. */
+            setup_ui_set(SETUP_UI_REGISTERING);
             done = true;
         } else {
             /* The app shows a different screen per cause, so give it the cause. */
             const char *code = r == JOIN_WRONG_PASSWORD ? "10002"
                              : r == JOIN_NOT_FOUND      ? "10004" : "10006";
             ESP_LOGW(TAG, "setup join failed (code %s, last reason %d)", code, s_last_reason);
+            /* The same three causes the app branches on, in words, because the person
+             * who has to fix it is the one looking at the kit. */
+            setup_ui_detail(r == JOIN_WRONG_PASSWORD ? "Wrong Wi-Fi password"
+                          : r == JOIN_NOT_FOUND      ? "That network is not in range"
+                                                     : "Could not join that network");
+            setup_ui_set(SETUP_UI_FAILED);
             ble_reply("wifi_connection", "failed", code);
         }
     } else {
@@ -523,13 +549,14 @@ static bool handle_setup_message(const char *json)
 static void run_setup(void)
 {
     s_ble_msgs = xQueueCreate(2, sizeof(char *));
-    buddy_ble_init(prov_serial(), on_ble_data, NULL, NULL);
+    buddy_ble_init(prov_serial(), on_ble_data, on_ble_connect, NULL);
     if (buddy_ble_enable() != ESP_OK) {
         ESP_LOGE(TAG, "BLE would not start; this kit cannot be set up (reboot to retry)");
         vTaskDelay(portMAX_DELAY);
     }
     mem_report("ble setup");
     ESP_LOGI(TAG, "waiting to be set up: advertising as %s", prov_serial());
+    setup_ui_set(SETUP_UI_WAITING);   /* and on the glass, for whoever is holding it */
     for (;;) {
         char *msg = NULL;
         xQueueReceive(s_ble_msgs, &msg, portMAX_DELAY);

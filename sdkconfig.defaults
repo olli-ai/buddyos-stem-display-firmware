@@ -26,6 +26,9 @@ CONFIG_LV_USE_PERF_MONITOR=n
 CONFIG_LV_USE_TJPGD=y
 # The status pill (main/status.c): 14 px is unreadable on a 720 px panel at arm's length.
 CONFIG_LV_FONT_MONTSERRAT_20=y
+# The setup screen's serial number, which a parent reads off the glass and picks
+# out of a list on their phone. 20 is a caption; this is the thing being read.
+CONFIG_LV_FONT_MONTSERRAT_28=y
 
 # ESP32-S3-WROOM-1-N8R2: 8 MB quad flash, 2 MB **quad** PSRAM. (The R8 variant is
 # octal and takes GPIO 35-37; R2 does not, so the panel pins are clear either way.)

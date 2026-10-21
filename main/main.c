@@ -39,6 +39,7 @@
 #include "touch.h"
 #include "gallery.h"
 #include "status.h"
+#include "setup_ui.h"
 #include "mem_report.h"
 #include "net.h"
 #include "sleep.h"
@@ -138,6 +139,11 @@ void app_main(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     gallery_create(scr);
     status_create(scr);                  /* after the gallery: drawn above it */
+#if CONFIG_BUDDY_NET
+    /* Last of the three, and before net_start() below: a kit that has never been set
+     * up calls setup_ui_set() from the net task the moment that task starts. */
+    setup_ui_create(scr);
+#endif
     ESP_LOGI(TAG, "draw buffer: 1 x %u B internal; frame buffer in PSRAM", (unsigned)buf_bytes);
     mem_report("gallery up");
 

@@ -1,5 +1,5 @@
 set(srcs "main.c" "board_i2c.c" "gallery.c" "status.c" "lipsync.c" "generated/visemes.c" "voice.c" "touch.c"
-         "mem_report.c" "net.c" "prov.c" "sleep.c")
+         "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c")
 set(reqs lvgl esp_lcd driver esp_timer
          esp_wifi esp_netif esp_event nvs_flash mqtt esp-tls json
          esp_websocket_client esp_audio_codec mbedtls esp-sr buddy_ble esp_app_format)

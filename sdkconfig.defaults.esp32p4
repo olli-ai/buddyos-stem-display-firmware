@@ -42,6 +42,8 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 # its own, so there is no bounce-buffer ISR to keep in IRAM as the S3's RGB panel needed.
 # LVGL gets more room here: internal RAM is 768 KB and the screen is 2.25x the pixels.
 CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# 720x720, not 480x480: the serial gets the bigger face and the rest moves up one.
+CONFIG_LV_FONT_MONTSERRAT_48=y
 
 # ---- Wi-Fi and BLE: the ESP32-C6 beside the P4 -------------------------------------
 # The P4 has no radio. esp_wifi_remote presents the C6's Wi-Fi as the ordinary esp_wifi
