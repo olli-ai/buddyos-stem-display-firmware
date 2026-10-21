@@ -521,6 +521,21 @@ static bool wake_init(void)
     afe_config_t *cfg = afe_config_init(fmt, models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (!cfg) { ESP_LOGE(TAG, "afe: no config for \"%s\"", fmt); return false; }
     cfg->aec_init = true;
+    /* Full duplex, not speech recognition. afe_config_init()'s AFE_TYPE_SR picks
+     * AEC_MODE_SR_HIGH_PERF, which is tuned for one job: hear the wake word over the
+     * speaker. It has no reason to leave audio clean enough for a listener at the far
+     * end, and the board says so in its own log line — AEC(SR_HIGH_PERF, NLP_OFF).
+     * What the linear filter leaves behind is the Buddy's own voice, and the cloud's
+     * speech detector takes it for the child. The FD modes exist for exactly this,
+     * and NLP is the stage that suppresses the residue.
+     *
+     * Two costs to measure on the board rather than assume. FD is the more expensive
+     * filter, and it runs on core 1 beside the mic task, which has overrun before.
+     * And NLP suppresses whoever is quieter during playback — the child as well as
+     * the speaker — which is the signal barge-in depends on. If the speaker still
+     * leaks, VERYAGGR; if the child stops being heard mid-reply, NORMAL. */
+    cfg->aec_mode = AEC_MODE_FD_HIGH_PERF;
+    cfg->aec_nlp_level = AEC_NLP_LEVEL_AGGR;
     cfg->wakenet_init = true;
     cfg->wakenet_mode = CONFIG_BUDDY_WAKE_THRESHOLD_MODE ? DET_MODE_95 : DET_MODE_90;
     cfg->vad_init = false;               /* the session's own level gate decides "quiet" */
