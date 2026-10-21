@@ -37,7 +37,12 @@
 #define panel_set_on    st7701_set_on
 #endif
 #include "touch.h"
+#if CONFIG_BUDDY_SCREEN_FACE
+#include "face_view.h"
+#include "face_catalogue.h"
+#else
 #include "gallery.h"
+#endif
 #include "status.h"
 #include "setup_ui.h"
 #include "mem_report.h"
@@ -99,6 +104,30 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
 
 static uint32_t tick_cb(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+#if CONFIG_BUDDY_SCREEN_FACE
+/* How long an unattached board shows each state before moving on. */
+#define STATE_MS 6000
+
+/* The face's own clock. The demo cycle exists only so a board nobody is talking to
+ * shows what it can do; the moment a conversation drives the face — or a directive
+ * does — it stands aside rather than talking over whoever is in charge. */
+static void face_timer(lv_timer_t *t)
+{
+    (void)t;
+    static int64_t origin;
+    static int state = -1;
+    if (origin == 0) origin = esp_timer_get_time();
+    uint32_t ms = (uint32_t)((esp_timer_get_time() - origin) / 1000);
+    if (!face_view_is_driven()) {
+        int want = (int)((ms / STATE_MS) % (uint32_t)face_state_count);
+        if (want != state) { state = want; face_view_set_state(state); }
+    } else {
+        state = face_view_state();
+    }
+    face_view_tick(ms);
+}
+#endif
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "BuddyOS STEM display — " PANEL_NAME " %dx%d", LCD_W, LCD_H);
@@ -137,8 +166,16 @@ void app_main(void)
 
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+#if CONFIG_BUDDY_SCREEN_FACE
+    /* The artwork partition first: a character the child designed lives there, and
+     * face_view_create() asks for it while building. Absent, the baked face shows. */
+    face_catalogue_mount();
+    face_view_create(scr);
+    lv_timer_create(face_timer, 16, NULL);          /* ~60 fps */
+#else
     gallery_create(scr);
-    status_create(scr);                  /* after the gallery: drawn above it */
+#endif
+    status_create(scr);                  /* after the screen: drawn above it */
 #if CONFIG_BUDDY_NET
     /* Last of the three, and before net_start() below: a kit that has never been set
      * up calls setup_ui_set() from the net task the moment that task starts. */

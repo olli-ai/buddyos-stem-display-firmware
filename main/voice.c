@@ -4,7 +4,12 @@
 
 #if CONFIG_BUDDY_VOICE
 #include "audio.h"
+#if CONFIG_BUDDY_SCREEN_FACE
+#include "face_lipsync.h"
+#include "face_view.h"
+#else
 #include "lipsync.h"
+#endif
 #include "status.h"
 #include "generated/voice_upsampler.h"
 #include "esp_websocket_client.h"
@@ -39,6 +44,38 @@
 #include <string.h>
 
 static const char *TAG = "voice";
+
+/* The mouth, whichever screen owns it. The face classifier answers with a sprite to
+ * draw and the view takes it — only the mouth, so the eyes and brows go on blinking
+ * and tilting through a reply. The gallery's answers with a viseme class, which a
+ * photograph can only approximate by dropping its jaw, and reads it back itself. */
+#if CONFIG_BUDDY_SCREEN_FACE
+static inline void mouth_start(void) { face_lipsync_start(); }
+static inline void mouth_stop(void) { face_lipsync_stop(); face_view_set_live_mouth(-1); }
+static inline void mouth_feed(const int16_t *pcm, size_t n) { face_view_set_live_mouth(face_lipsync_feed(pcm, n)); }
+#else
+static inline void mouth_start(void) { }
+static inline void mouth_stop(void) { lipsync_stop(); }
+static inline void mouth_feed(const int16_t *pcm, size_t n) { lipsync_feed(pcm, n); }
+#endif
+
+/* omni's vocabulary onto the face's. The face is the state display: a child reads a
+ * Buddy that is plainly listening, or plainly thinking, long before they read a word
+ * in a pill — and this is why the face has states at all. The pill stays for the
+ * words, and for the gallery build, which has no face to put them on.
+ *
+ * face_view_request_state() only records; the render tick applies it. It also marks
+ * the face driven, which stops the demo cycle for good — right, because from the
+ * first conversation onwards something real has an opinion about the face. */
+#if CONFIG_BUDDY_SCREEN_FACE
+static void show_state(const char *name)
+{
+    for (int i = 0; i < face_state_count; i++)
+        if (!strcmp(face_states[i].name, name)) { face_view_request_state(i); return; }
+}
+#else
+static inline void show_state(const char *name) { (void)name; }
+#endif
 
 /* The gateway's certificate is Let's Encrypt's, chained to ISRG Root X1 — not the
  * Amazon root the broker uses. Checked with openssl before this was written, and the
@@ -196,7 +233,7 @@ static void on_status(const char *st)
         s_flushes++;
         s_speaking = false;
         xQueueReset(s_down);
-        lipsync_stop();                  /* the photo stops talking with the speaker */
+        mouth_stop();                    /* the mouth shuts with the speaker */
     } else if (!strcmp(st, "speaking_started")) {
         s_flushing = false;              /* a new reply: what arrives now is current */
     }
@@ -204,12 +241,12 @@ static void on_status(const char *st)
     if (!strcmp(st, "speaking_started")) s_speaking = true;
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
              !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
-    if (!strcmp(st, "interrupted")) lipsync_stop();
-    if (!strcmp(st, "speaking_started")) status_set(STATUS_SPEAKING);
-    else if (!strcmp(st, "processing") || !strcmp(st, "thinking")) status_set(STATUS_THINKING);
-    else if (!strcmp(st, "error")) status_set(STATUS_ERROR);
+    if (!strcmp(st, "interrupted")) mouth_stop();
+    if (!strcmp(st, "speaking_started")) { status_set(STATUS_SPEAKING); show_state("speaking"); }
+    else if (!strcmp(st, "processing") || !strcmp(st, "thinking")) { status_set(STATUS_THINKING); show_state("thinking"); }
+    else if (!strcmp(st, "error")) { status_set(STATUS_ERROR); show_state("error"); }
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
-             !strcmp(st, "interrupted")) status_set(STATUS_LISTENING);
+             !strcmp(st, "interrupted")) { status_set(STATUS_LISTENING); show_state("listening"); }
 #if CONFIG_BUDDY_WAKE_WORD
     s_last_activity_ms = now_ms();
 #endif
@@ -344,13 +381,14 @@ static void barge_in(uint32_t now)
     s_barged_ms = now;
     s_speaking = false;
     xQueueReset(s_down);
-    lipsync_stop();                      /* the photo stops talking with the speaker */
+    mouth_stop();                        /* the mouth shuts with the speaker */
 }
 
 static void session_begin(uint32_t now)
 {
     ESP_LOGI(TAG, "wake word: opening a conversation");
     status_set(STATUS_CONNECTING);
+    show_state("busy");                  /* heard, and working on it */
     sleep_note_activity();      /* being talked to is the clearest activity there is */
     s_phase = PHASE_OPENING;
     s_opened_ms = s_last_activity_ms = now;
@@ -374,7 +412,7 @@ static void session_end(const char *why)
     s_speaking = false;
     s_flushing = false;
     xQueueReset(s_down);
-    lipsync_stop();                      /* the photo stops talking with the speaker */
+    mouth_stop();                        /* the mouth shuts with the speaker */
     audio_speaker_enable(false);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     /* Not s_wn->clean(): in ESP-SR 2.1.2 it faults inside WakeNet9's quantised model
@@ -383,6 +421,7 @@ static void session_end(const char *why)
      * to forget anyway. */
     s_phase = PHASE_IDLE;
     status_set(STATUS_IDLE);
+    show_state("idle");
 }
 
 #if CONFIG_BUDDY_AEC
@@ -753,6 +792,7 @@ static void down_task(void *arg)
 {
     (void)arg;
     static pkt_t p;
+    bool was_speaking = false;           /* owned by this task: lip-sync state is its own */
     EXT_RAM_BSS_ATTR static int16_t pcm[960];   /* up to 60 ms at 16 kHz; PSRAM, like the stack */
     uint64_t us_dec = 0;                 /* decode total, for the log */
     bool refill = true;                  /* start with a cushion, not a single packet */
@@ -790,9 +830,15 @@ static void down_task(void *arg)
         if (esp_opus_dec_decode(s_dec, &raw, &fo, &info) != ESP_AUDIO_ERR_OK) continue;
         us_dec += esp_timer_get_time() - t0;
         size_t ns = fo.decoded_size / sizeof(int16_t);
-        /* The photos' mouths hear exactly what the speaker is about to: this PCM,
-         * never the microphone and never omni's text. */
-        lipsync_feed(pcm, ns);
+        /* The mouth hears exactly what the speaker is about to: this PCM, never the
+         * microphone and never omni's text. Fed only while the Buddy is speaking, so
+         * silence between turns gives the mouth back to the authored motion rather
+         * than holding it shut. */
+        bool sp = s_speaking;
+        if (sp && !was_speaking) mouth_start();
+        if (!sp && was_speaking) mouth_stop();
+        if (sp) mouth_feed(pcm, ns);
+        was_speaking = sp;
         audio_write(pcm, ns);
     }
 }
@@ -877,6 +923,9 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
 #if CONFIG_BUDDY_WAKE_WORD
     ESP_LOGI(TAG, "listening for the wake word; will talk to wss://%s" VOICE_PATH " as %s", gateway, serial);
     status_set(STATUS_IDLE);
+    /* From here the face belongs to the conversation, not to the demo cycle. A kit
+     * that never gets online keeps cycling, which is the point of that cycle. */
+    show_state("idle");
     return true;
 #else
     esp_wifi_set_ps(WIFI_PS_NONE);       /* always in a conversation: see session_begin */

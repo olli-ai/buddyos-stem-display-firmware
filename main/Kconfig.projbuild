@@ -140,6 +140,33 @@ config BUDDY_BOOT_RESET
         is: while the kit SLEEPS, press BOOT and keep holding for 5 s. An awake kit
         has to sleep first (a device.sleep directive, or the idle timer).
 
+config BUDDY_BOOT_BUTTON_SETUP
+    bool "Press BOOT while running to set the kit up again"
+    depends on BUDDY_NET && IDF_TARGET_ESP32P4
+    default y
+    help
+        The boot-time gesture above cannot be reached on this board, so this is the
+        one that works here: while the kit runs, hold BOOT, then let go.
+
+        BUDDY_BOOT_RESET reads the pin once, as the first thing app_main does, which
+        means something must already be holding it down by then. On the S3 that is a
+        press that woke the kit from sleep. The P4's BOOT is GPIO 35: not an LP GPIO,
+        so it cannot wake the chip, and holding it through a reset lands in the ROM's
+        download mode rather than in the firmware. No sequence reaches the check.
+
+        GPIO 35 is BOOT and nothing else on this board, so unlike the S3's GPIO 0 —
+        which is a panel data line while the display runs — it is safe to read at
+        any time.
+
+config BUDDY_BOOT_BUTTON_MS
+    int "...how long BOOT must be held, ms"
+    depends on BUDDY_BOOT_BUTTON_SETUP
+    range 500 10000
+    default 2000
+    help
+        Long enough that a knock cannot wipe a kit, short enough to count out loud.
+        The erase happens on RELEASE, so letting go early is how you change your mind.
+
 config BUDDY_MQTT_AWS_ROOT
     bool "Verify the broker with the embedded Amazon Root CA 1"
     depends on BUDDY_NET
@@ -148,6 +175,30 @@ config BUDDY_MQTT_AWS_ROOT
         The product broker sits behind an AWS certificate, and one root is 1.2 KB
         against the full bundle's 65 KB. Turn this off to reach a broker with some
         other publicly-trusted certificate, which costs the whole bundle.
+
+choice BUDDY_SCREEN
+    prompt "What the panel shows"
+    default BUDDY_SCREEN_FACE
+    help
+        The face is the product; the gallery is the football demo. They are exclusive
+        because each wants the whole panel, and because only one of them can own the
+        mouth that lip-sync drives.
+
+config BUDDY_SCREEN_FACE
+    bool "The Buddy's face"
+    help
+        Sprites composited per layer - face, brows, eyes, mouth - with eyes and brows
+        animating from the authored motion while the mouth follows the audio being
+        spoken. Costs what the artwork costs: ARGB8888 baked at the panel's own size,
+        about 4 MB at 720x720, which is why the P4 carries a 32 MB partition table.
+
+config BUDDY_SCREEN_GALLERY
+    bool "A photo gallery"
+    help
+        Photos swiped through by touch, each able to drop its jaw if gallery/mouths.csv
+        says where its mouth is. No eyes: a photograph's cannot move.
+
+endchoice
 
 config BUDDY_AUDIO
     bool "Bring up the microphone and amplifier"

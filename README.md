@@ -336,6 +336,34 @@ over `sdkconfig.defaults` by itself:
 
 The C6 must run esp_hosted's slave firmware; Waveshare ships it so.
 
+This board uses `partitions-32mb.csv` and 32 MB of flash, because the face is baked for
+its own panel and that costs what the pixels cost — see below. Everything in that table
+stays under 16 MB: a first cut pushed `model` past that line, esptool wrote and verified
+it there, and the firmware then read the partition back as garbage through the flash
+cache and boot-looped inside ESP-SR's model loader. Proving out >16 MB mapping is its
+own job; until someone does it, the top half of the chip is unused.
+
+### Re-baking the face for a panel
+
+`main/generated/face_assets.c` is committed, so the firmware builds without the baker —
+but it is baked for one size, and that size is `SIZE` in `tools/bake_face.ts`: **720**
+for this board's JD9365, 240 for the old GC9A01. The art is vector, so changing it
+re-rasterises rather than upscales. The cost is area, in ARGB8888: 465 KB at 240, about
+4.1 MB at 720, which is the whole reason for the 32 MB table above.
+
+`tools/bake_face.ts` is deliberately untracked (it imports from `../buddyos-stem-fe` and
+cannot compile without it), so if you have it, edit `SIZE` and run:
+
+    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_face.ts \
+        --bundle --platform=node --format=cjs --outfile=/tmp/bake.cjs \
+        --loader:.webp=text --loader:.png=text \
+    && MASCOT_SRC=$PWD/src/assets/mascots/sprout.webp \
+       node /tmp/bake.cjs ../buddyos-stem-display-firmware/main/generated
+
+`MASCOT_SRC` is not optional, whatever the comment in the file says: the command above
+bundles to CJS, where `import.meta.url` is `undefined`, so the relative path the baker
+would otherwise derive throws `ERR_INVALID_URL`. Needs `rsvg-convert` and `magick`.
+
 ### Echo cancellation and the microphone slots
 
 The ES7210 hands the P4 four TDM slots. `BUDDY_AFE_INPUT_FORMAT` says what each one is,
