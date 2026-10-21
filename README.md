@@ -357,6 +357,16 @@ Buddy is talking, and the microphone stays open during replies. `BUDDY_AEC_KEEP_
 puts the old behaviour back — mic muted while the Buddy speaks — if the cancellation
 turns out not to be enough for the gateway's speech detector.
 
+An open microphone is also what lets the child interrupt **without** the wake word: the
+cloud hears them over the reply and stops on its own, then sends a `flush_audio` status.
+The kit empties its playback queue on that, because the cloud cannot — half a second of
+the abandoned sentence is already here, queued and in the codec's DMA, and playing it
+out would sound exactly like not having been heard. Saying "Jarvis" still works and is
+still faster, since it needs no round trip. Whether the cloud interrupts itself at all
+depends on the persona: `profile_settings.interruption` must not be `none`, and the
+`vad_processor` plugin gives the quick path (a quarter second of speech); without it the
+decision waits for transcribed words.
+
 **What bring-up found** (2026-10-21, one board, P4 silicon v3.2):
 
 - **Ran on the board as written:**

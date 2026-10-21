@@ -11,6 +11,15 @@
  * is exactly what omni's proto asks for and what the gateway relays unchanged. omni's
  * conversation state arrives as JSON text frames: listening, thinking, speaking.
  *
+ * Interruption works two ways, and the kit needs both. Saying the wake word over a
+ * reply sends omni `{"type":"interrupt"}` and empties the playback queue on the spot —
+ * the fast path, no round trip. omni also interrupts itself when its own speech
+ * detection hears the child, which needs no wake word but only works while the
+ * microphone is open during playback (CONFIG_BUDDY_AEC); it announces that with a
+ * `flush_audio` status, and the queue is emptied on that exactly as it is on the wake
+ * word. Without honouring it the Buddy talks over the child for most of a second
+ * after omni has stopped.
+ *
  * Needs Wi-Fi up. With CONFIG_BUDDY_WAKE_WORD (the default) nothing is sent until
  * WakeNet hears the wake word on the device; the conversation then runs until
  * CONFIG_BUDDY_VOICE_IDLE_S of quiet and the socket closes again. Without it, the

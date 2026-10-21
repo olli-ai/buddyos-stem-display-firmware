@@ -92,6 +92,13 @@ typedef struct { uint16_t gen; uint32_t frame; int16_t pcm[IN_SAMPLES]; } pcm_fr
 static QueueHandle_t s_pcmq;
 static volatile uint32_t s_sent, s_up_dropped;
 
+static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+/* Milliseconds from `then` to `now`, signed. s_last_activity_ms is also written by the
+ * WebSocket task, so it can be a hair *newer* than the up task's `now` — an unsigned
+ * difference then wraps to 49 days and ends the conversation as "quiet" on the spot,
+ * which is exactly what the first barge-in test did the moment omni said "processing". */
+static inline int32_t since(uint32_t now, uint32_t then) { return (int32_t)(now - then); }
+
 #if CONFIG_BUDDY_WAKE_WORD
 /* A conversation, from the kit's side.
  *
@@ -128,12 +135,6 @@ static volatile uint32_t s_last_activity_ms;
 #define BARGE_MAX_MS 1500
 static volatile bool s_barged;
 static uint32_t s_barged_ms;
-static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
-/* Milliseconds from `then` to `now`, signed. s_last_activity_ms is also written by the
- * WebSocket task, so it can be a hair *newer* than the up task's `now` — an unsigned
- * difference then wraps to 49 days and ends the conversation as "quiet" on the spot,
- * which is exactly what the first barge-in test did the moment omni said "processing". */
-static inline int32_t since(uint32_t now, uint32_t then) { return (int32_t)(now - then); }
 
 #if !CONFIG_BUDDY_AEC
 static const esp_wn_iface_t *s_wn;
@@ -153,6 +154,27 @@ static volatile bool s_connected;
 static volatile bool s_speaking;
 static volatile uint32_t s_shed_silence, s_shed_old, s_underruns, s_late;
 
+/* omni's own barge-in, which needs no wake word. When its voice activity detection
+ * hears the child over the reply it stops mid-sentence and says so: "flush_audio"
+ * first, then "interrupted" a millisecond later.
+ *
+ * Only the kit can act on the first of those. omni can stop sending, but what it
+ * already sent is here — up to JB_DEPTH packets queued and another 120 ms inside the
+ * codec's DMA — so without this the Buddy talks over the child for most of a second
+ * after omni has fallen silent, which reads as not having been heard at all. The
+ * queue is emptied on flush_audio, and packets that were behind it in the socket are
+ * dropped for this long: omni cancels its own TTS task *after* sending flush_audio,
+ * so a few more packets of the abandoned reply can still be on their way.
+ *
+ * Counted, because a flush that never arrives and a flush that arrives and does
+ * nothing sound exactly alike from the other side of the room. Each flush also costs
+ * one underrun in the same log line — the queue it empties is the queue down_task
+ * then finds empty — so read the two together. */
+#define FLUSH_DROP_MS 300
+static volatile bool s_flushing;
+static volatile uint32_t s_flushed_ms;
+static volatile uint32_t s_flushes, s_flush_dropped;
+
 bool voice_active(void) { return s_connected; }
 
 /* omni's turn-taking, as it arrives. */
@@ -165,6 +187,20 @@ static void on_status(const char *st)
     if (s_barged && strcmp(st, "speaking_started")) s_barged = false;
     else if (s_barged) { ESP_LOGI(TAG, "omni: %s (before the interrupt; ignored)", st); return; }
 #endif
+    /* Everything in hand is the sentence omni abandoned: drop it rather than play it
+     * over the child. The face and the status are left to the "interrupted" right
+     * behind this, which is the status that means the turn is theirs. */
+    if (!strcmp(st, "flush_audio")) {
+        s_flushing = true;
+        s_flushed_ms = now_ms();
+        s_flushes++;
+        s_speaking = false;
+        xQueueReset(s_down);
+        lipsync_stop();                  /* the photo stops talking with the speaker */
+    } else if (!strcmp(st, "speaking_started")) {
+        s_flushing = false;              /* a new reply: what arrives now is current */
+    }
+
     if (!strcmp(st, "speaking_started")) s_speaking = true;
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
              !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
@@ -193,6 +229,7 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_connected = false;
         s_speaking = false;
+        s_flushing = false;
         audio_speaker_enable(false);
 #if CONFIG_BUDDY_WAKE_WORD
         if (s_phase != PHASE_IDLE) status_set(STATUS_CONNECTING);
@@ -209,6 +246,11 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
 #if CONFIG_BUDDY_WAKE_WORD
             if (s_barged) break;         /* the tail of an interrupted reply */
 #endif
+            /* The same tail, when omni interrupted itself rather than being told to. */
+            if (s_flushing) {
+                if (since(now_ms(), s_flushed_ms) <= FLUSH_DROP_MS) { s_flush_dropped++; break; }
+                s_flushing = false;
+            }
             UBaseType_t held = uxQueueMessagesWaiting(s_down);
             /* Running long: shed silence first. Silence is most of what omni sends
              * between turns, so this is where the slack comes from, and nothing the
@@ -330,6 +372,7 @@ static void session_end(const char *why)
     else esp_websocket_client_stop(s_ws);
     s_connected = false;
     s_speaking = false;
+    s_flushing = false;
     xQueueReset(s_down);
     lipsync_stop();                      /* the photo stops talking with the speaker */
     audio_speaker_enable(false);
@@ -717,9 +760,11 @@ static void down_task(void *arg)
             s_late++;                    /* waited for it; the DMA covered the wait */
         }
         if (++played % 500 == 0) {       /* every 10 s of playback */
-            ESP_LOGI(TAG, "down: held %u, shed %lu silence + %lu old, %lu waited-for, %lu underruns",
+            ESP_LOGI(TAG, "down: held %u, shed %lu silence + %lu old, %lu waited-for, %lu underruns, "
+                     "%lu flushes dropping %lu",
                      (unsigned)uxQueueMessagesWaiting(s_down), (unsigned long)s_shed_silence,
-                     (unsigned long)s_shed_old, (unsigned long)s_late, (unsigned long)s_underruns);
+                     (unsigned long)s_shed_old, (unsigned long)s_late, (unsigned long)s_underruns,
+                     (unsigned long)s_flushes, (unsigned long)s_flush_dropped);
             ESP_LOGI(TAG, "down: per 20 ms packet: opus decode %llu us", us_dec / 500);
             us_dec = 0;
         }
