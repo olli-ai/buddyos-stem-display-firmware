@@ -248,6 +248,36 @@ config BUDDY_WAKE_WORD
         BUDDY_VOICE_IDLE_S of quiet. Off: the session opens at boot and never
         closes, which is how the pipeline was first brought up.
 
+config BUDDY_UPLINK_GAIN_DB
+    int "Digital gain on the audio sent to the cloud, dB"
+    depends on BUDDY_VOICE
+    range 0 24
+    default 0
+    help
+        Applied to the microphone AFTER the front end and BEFORE the Opus encoder, so
+        it lifts only what the cloud hears. WakeNet is not affected: it runs inside
+        the AFE, upstream of this.
+
+        It exists because this kit is quiet. Measured on the bench, speech at
+        conversational distance reaches the AFE at about -47 dBFS peak, where
+        voice.c's own note puts arm's length at -25, and a browser client arrives
+        near -20. Everything in the cloud is tuned for that: omni's speech detector
+        gates onsets on absolute loudness, so a kit 20 dB under simply never
+        registers as speaking and cannot interrupt a reply, however clean its audio.
+
+        Raising the ES7210's analogue gain is NOT the way to do this. Tried at 37 dB
+        on the bench, it lifted the playback reference slot some twenty times rather
+        than the microphones, and AEC then cancelled against an echo that was not
+        there and deafened the wake word entirely.
+
+        0 disables it, and 0 is the default BECAUSE the one thing it was built for
+        turned out not to need it. Raised to 18 dB on the bench, omni's ASR went on
+        transcribing the kit at 0.85 confidence exactly as it had before — the audio
+        was never too quiet for the cloud to hear — and Silero still never reported a
+        single speech onset in 114 seconds (vad_speech_active=False), so barge-in did
+        not move. Whatever stops that VAD firing is not level. Peaks sit ~30 dB below
+        full scale, so 18 does not clip if you do need it for something else.
+
 config BUDDY_VOICE_IDLE_S
     int "Seconds of quiet that end a conversation"
     depends on BUDDY_WAKE_WORD
