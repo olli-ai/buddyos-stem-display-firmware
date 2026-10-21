@@ -571,6 +571,51 @@ static void run_setup(void)
     mem_report("ble down");
 }
 
+#if CONFIG_BUDDY_BOOT_BUTTON_SETUP
+/* BOOT while the kit runs. See CONFIG_BUDDY_BOOT_BUTTON_SETUP for why this exists
+ * beside net_boot_reset_check(): on this board no sequence can be holding the pin
+ * down by the time that one reads it, so the only gesture that works is a running
+ * one. GPIO 35 is BOOT and nothing else here, so it is safe to poll with the panel
+ * up — which is exactly what the S3's GPIO 0 is not.
+ *
+ * Polled rather than interrupt-driven: 50 ms is far below anything a thumb can do,
+ * the counter is its own debounce, and an ISR that erases NVS is not a thing to
+ * want. */
+static void boot_button_task(void *arg)
+{
+    (void)arg;
+    gpio_config_t in = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT,
+                         .pull_up_en = GPIO_PULLUP_ENABLE };
+    gpio_config(&in);
+    const int need = CONFIG_BUDDY_BOOT_BUTTON_MS / 50;
+    int held = 0;
+    bool armed = false;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (gpio_get_level(PIN_BOOT) == 0) {          /* active low, pulled up */
+            if (held <= need) held++;
+            if (held == need && !armed) {
+                armed = true;
+                ESP_LOGW(TAG, "BOOT held %d ms: let go to set this kit up again",
+                         CONFIG_BUDDY_BOOT_BUTTON_MS);
+            }
+            continue;
+        }
+        if (armed) {
+            /* Erase and restart, rather than tearing a live session down in place:
+             * the setup path expects to own the radio from a clean boot, and NVS is
+             * read once at startup. */
+            ESP_LOGW(TAG, "BOOT released: erasing this kit's setup and restarting");
+            prov_factory_reset();
+            vTaskDelay(pdMS_TO_TICKS(200));           /* let the line leave the UART */
+            esp_restart();
+        }
+        held = 0;
+        armed = false;
+    }
+}
+#endif
+
 #if CONFIG_BUDDY_BOOT_RESET
 /* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
  * gesture our other kits use, on the one button every S3 board has.
@@ -722,4 +767,8 @@ void net_start(void)
      * rig to be wrong. */
     /* 6 KB: setup parses the ~2.4 KB credentials message with cJSON on this stack. */
     xTaskCreate(net_task, "net", 6144, NULL, 5, NULL);
+#if CONFIG_BUDDY_BOOT_BUTTON_SETUP
+    /* After nvs_flash_init() above: the gesture erases NVS, so it must be mounted. */
+    xTaskCreate(boot_button_task, "bootbtn", 2560, NULL, 3, NULL);
+#endif
 }
