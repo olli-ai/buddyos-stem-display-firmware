@@ -7,9 +7,17 @@
   cropped square, sized to 480x480 and re-encoded as a baseline JPEG — the only kind
   TJpgDec on the device reads, which is why a photo is never packed as it came.
 
+  -Side 720 bakes for the ESP32-P4 board's 720x720 panel, into gallery\gallery-720.bin.
+
   The caption is the file name: "01-cesc_fabregas.jpg" shows as "Cesc Fabregas".
   A leading number only sets the order. Accents are dropped, because the device's one
   font is ASCII.
+
+  A photo talks if gallery\mouths.csv says where its mouth is: one line per photo,
+  "stem,x,y,w,jaw", the file name without its extension and then fractions of the
+  square crop - the middle of the lips' seam, the mouth's width, and the seam down to
+  the chin. They are fractions so one line serves every -Side. The pack is then "GLR2",
+  whose entries carry those four in pixels; see gallery.c.
 
   Windows PowerShell 5.1 and System.Drawing; nothing to install.
 
@@ -21,14 +29,15 @@
 #>
 param(
     [string]$In = "gallery",
-    [string]$Out = "gallery\gallery.bin",
+    [string]$Out = "",
+    [ValidateSet(480, 720)][int]$Side = 480,   # the panel: 480 round (S3), 720 square (P4)
     [ValidateRange(30, 100)][int]$Quality = 85,
     [switch]$Demo
 )
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-$Side = 480          # the panel
+if (-not $Out) { $Out = if ($Side -eq 480) { "gallery\gallery.bin" } else { "gallery\gallery-$Side.bin" } }
 $NameLen = 24        # gallery.c NAME_LEN, terminator included
 $MaxPhotos = 64      # gallery.c MAX_PHOTOS
 $Budget = 1000000    # roughly what the 3 MB app slot has left
@@ -84,6 +93,7 @@ function Convert-Photo([string]$path) {
         $w = $img.Width; $h = $img.Height
         $s = [Math]::Min($w, $h)
         # A portrait keeps more of its top than its bottom: that is where the face is. Not
+        # (mouths.csv is measured on this crop: change it and the mouths must be re-measured.)
         # all of it, though: the glass is round and narrows to nothing at the top edge, so a
         # head cropped flush with it loses its hair to the circle.
         $x = [int](($w - $s) / 2)
@@ -122,6 +132,24 @@ function New-Card([string]$name, [int]$number, [System.Drawing.Color]$c1, [Syste
     return , $jpg
 }
 
+# stem -> @(x, y, w, jaw), fractions of the crop.
+$mouths = @{}
+$mouthFile = Join-Path $In "mouths.csv"
+if (-not $Demo -and (Test-Path $mouthFile)) {
+    foreach ($line in Get-Content $mouthFile) {
+        $f = $line.Trim() -split '\s*,\s*'
+        if ($f.Count -ne 5 -or $f[0] -eq 'stem' -or $f[0].StartsWith('#')) { continue }
+        $v = @($f[1..4] | ForEach-Object { [double]::Parse($_, [Globalization.CultureInfo]::InvariantCulture) })
+        if (@($v | Where-Object { $_ -lt 0 -or $_ -gt 1 }).Count) { Write-Warning "mouths.csv: $($f[0]) is not in 0..1; ignored"; continue }
+        $mouths[$f[0]] = $v
+    }
+}
+function Get-Mouth([string]$file) {
+    $m = $mouths[[IO.Path]::GetFileNameWithoutExtension($file)]
+    if (-not $m) { return @(0, 0, 0, 0) }
+    return @($m | ForEach-Object { [uint16][Math]::Round($_ * $Side) })
+}
+
 $items = New-Object System.Collections.ArrayList
 if ($Demo) {
     $C = [System.Drawing.Color]
@@ -133,7 +161,7 @@ if ($Demo) {
         @("Haaland", 9,  $C::FromArgb(108, 171, 221), $C::FromArgb(28, 44, 91))
     )
     foreach ($c in $cards) {
-        [void]$items.Add(@{ Name = $c[0]; Jpg = (New-Card $c[0] $c[1] $c[2] $c[3]) })
+        [void]$items.Add(@{ Name = $c[0]; Jpg = (New-Card $c[0] $c[1] $c[2] $c[3]); Mouth = @(0, 0, 0, 0) })
     }
 } else {
     if (-not (Test-Path $In)) { New-Item -ItemType Directory $In | Out-Null }
@@ -143,7 +171,7 @@ if ($Demo) {
     foreach ($f in $files) {
         if ($items.Count -ge $MaxPhotos) { Write-Warning "only the first $MaxPhotos are packed"; break }
         try {
-            [void]$items.Add(@{ Name = (Get-Caption $f.Name); Jpg = (Convert-Photo $f.FullName) })
+            [void]$items.Add(@{ Name = (Get-Caption $f.Name); Jpg = (Convert-Photo $f.FullName); Mouth = (Get-Mouth $f.Name) })
         } catch {
             Write-Warning "$($f.Name): skipped ($($_.Exception.Message))"
         }
@@ -155,9 +183,9 @@ if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory $outDi
 $fs = [IO.File]::Create((Join-Path (Get-Location) $Out))
 $bw = New-Object IO.BinaryWriter $fs
 try {
-    $bw.Write([Text.Encoding]::ASCII.GetBytes("GLRY"))
+    $bw.Write([Text.Encoding]::ASCII.GetBytes("GLR2"))
     $bw.Write([uint32]$items.Count)
-    $off = 8 + $items.Count * (8 + $NameLen)
+    $off = 8 + $items.Count * (8 + $NameLen + 8)
     foreach ($it in $items) {
         $bw.Write([uint32]$off)
         $bw.Write([uint32]$it.Jpg.Length)
@@ -165,12 +193,16 @@ try {
         $nb = [Text.Encoding]::ASCII.GetBytes($it.Name)
         [Array]::Copy($nb, $name, [Math]::Min($nb.Length, $NameLen - 1))
         $bw.Write($name)
+        foreach ($m in $it.Mouth) { $bw.Write([uint16]$m) }
         $off += $it.Jpg.Length
     }
     foreach ($it in $items) { $bw.Write($it.Jpg) }
 } finally { $bw.Close() }
 
-foreach ($it in $items) { "{0,-24} {1,7:N0} B" -f $it.Name, $it.Jpg.Length }
+foreach ($it in $items) {
+    $talk = if ($it.Mouth[2]) { "mouth at {0},{1} w {2} jaw {3}" -f $it.Mouth[0], $it.Mouth[1], $it.Mouth[2], $it.Mouth[3] } else { "" }
+    "{0,-24} {1,7:N0} B  {2}" -f $it.Name, $it.Jpg.Length, $talk
+}
 $total = (Get-Item $Out).Length
 "{0} photos, {1:N0} B -> {2}" -f $items.Count, $total, $Out
 if ($total -gt $Budget) {

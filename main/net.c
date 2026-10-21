@@ -18,6 +18,7 @@
 #include "sleep.h"
 #include "voice.h"
 #include "buddy_ble.h"
+#include "board_pins.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -557,15 +558,15 @@ static void run_setup(void)
  * per the TRM; to be confirmed on the board along with the wake itself.) */
 void net_boot_reset_check(void)
 {
-    gpio_config_t in = { .pin_bit_mask = 1ULL << GPIO_NUM_0, .mode = GPIO_MODE_INPUT,
+    gpio_config_t in = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT,
                          .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&in);
-    if (gpio_get_level(GPIO_NUM_0) != 0) return;
+    if (gpio_get_level(PIN_BOOT) != 0) return;
 
     ESP_LOGW(TAG, "BOOT held: keep holding for setup (5 s)");
     for (int held = 0; held < 50; held++) {
         vTaskDelay(pdMS_TO_TICKS(100));
-        if (gpio_get_level(GPIO_NUM_0) != 0) {
+        if (gpio_get_level(PIN_BOOT) != 0) {
             ESP_LOGI(TAG, "BOOT released: carrying on");
             return;
         }

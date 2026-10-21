@@ -96,11 +96,20 @@ config BUDDY_SLEEP_IDLE_S
         what a classroom or a demo table wants.
 
 config BUDDY_SLEEP_WAKE_GPIO
-    int "GPIO that wakes the kit (RTC GPIO, 0-21)"
+    int "GPIO that wakes the kit (RTC GPIO; -1 on the P4 for RESET only)"
     depends on BUDDY_SLEEP
-    range 0 21
-    default 0
+    range 0 21 if !IDF_TARGET_ESP32P4
+    range -1 15 if IDF_TARGET_ESP32P4
+    default 0 if !IDF_TARGET_ESP32P4
+    default -1
     help
+        ESP32-P4: waking from deep sleep needs an LP GPIO (0-15), through ext1. The
+        Waveshare board's BOOT button is GPIO 35, which is not one, and nothing else
+        on the board is a button — so the default is -1, no wake pin, and the kit's
+        RESET button wakes it. Waking is a cold boot either way, so RESET loses
+        nothing a wake pin would have kept. Wire a button from an LP GPIO to GND and
+        name it here to have one.
+
         Must be an **RTC GPIO**: waking from deep sleep uses ext0, which the ESP32-S3
         supports only on GPIO 0-21 (SOC_RTCIO_PIN_COUNT is 22). GPIO 47 cannot do it
         at any speed.
@@ -219,5 +228,79 @@ config BUDDY_VOICE_TAP
         replayed to omni, so a speech recognition problem can be reproduced
         offline without anyone having to repeat themselves. Off in any build
         that ships.
+
+config BUDDY_SPEAKER_VOLUME
+    int "Speaker volume (ESP32-P4 board), percent"
+    depends on IDF_TARGET_ESP32P4
+    range 0 100
+    default 75
+    help
+        The ES8311's output volume. The S3 board's amplifier has no volume control;
+        this one does.
+
+config BUDDY_MIC_GAIN_DB
+    int "Microphone gain (ESP32-P4 board), dB"
+    depends on IDF_TARGET_ESP32P4
+    range 0 37
+    default 30
+    help
+        The ES7210's analogue gain on every microphone slot. A loopback slot ('R' in
+        BUDDY_AFE_INPUT_FORMAT) is left at 0 dB: it carries the codec's own output,
+        which is already full scale.
+
+config BUDDY_AFE_INPUT_FORMAT
+    string "ES7210 slot layout (ESP32-P4 board)"
+    depends on IDF_TARGET_ESP32P4
+    default "MRMN"
+    help
+        What each of the ES7210's four TDM slots carries, one letter each, in ESP-SR's
+        notation: M a microphone, R the playback loopback (the echo reference), N
+        nothing. The first M is the one audio_read() returns. If no slot is R, the
+        echo reference is made in software from what the firmware plays, delayed by
+        the I2S queue.
+
+        audio_selftest() prints each slot's level in silence and under a test tone.
+        A loopback slot reads near-digital silence until the tone and then far louder
+        than either microphone; a slot that never moves is N.
+
+config BUDDY_AEC
+    bool "Acoustic echo cancellation (ESP-SR AFE)"
+    depends on IDF_TARGET_ESP32P4 && BUDDY_WAKE_WORD
+    default y
+    help
+        Feed the microphones and the echo reference through ESP-SR's audio front end:
+        echo cancellation, then blind source separation across the two microphones,
+        then WakeNet. With it, the kit can hear "Jarvis" — and the child — while the
+        Buddy is talking, so the microphone is no longer muted during playback.
+        Off: the S3 behaviour, one microphone and half duplex.
+
+config BUDDY_AEC_KEEP_HALF_DUPLEX
+    bool "Still mute the upstream audio while the Buddy speaks"
+    depends on BUDDY_AEC
+    default n
+    help
+        Echo cancellation leaves a residue, and the cloud's own voice activity
+        detection may hear it as the child talking. If the Buddy keeps interrupting
+        itself, turn this on: the wake word still works during playback (barge-in),
+        but nothing is streamed until the Buddy is done.
+
+config BUDDY_LIPSYNC_LEAD_MS
+    int "Lip-sync: how far behind the codec the speaker is (ms)"
+    range 0 1000
+    default 100
+    help
+        The photos' mouths follow the Buddy's speech, classified as the PCM is
+        handed to the codec, and that PCM is heard a DMA queue later. Each mouth
+        shape is shown this long after it was classified. Too small and the mouth
+        moves before the sound; too large and after. Measure it on the board:
+        film the screen and the speaker together and count frames.
+
+config BUDDY_LIPSYNC_DEMO
+    bool "Lip-sync: babble without a voice session (bench only)"
+    default n
+    help
+        The current photo talks all the time, from a fixed pattern of mouth
+        shapes, so the jaw can be judged without starting a conversation. Off in
+        any build that ships.
 
 endmenu

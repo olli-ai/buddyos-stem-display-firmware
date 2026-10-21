@@ -1,12 +1,16 @@
 /*
  * BuddyOS STEM — display firmware, photo-gallery build.
  *
- * Photos fill a 2.1" 480x480 round ST7701S panel and are swiped through by touch
- * (gallery.c). Behind it the kit is unchanged: BLE Wi-Fi setup, MQTT to the gateway,
- * the "Jarvis" voice conversation and sleep. There is no Buddy face in this build.
+ * Photos fill the panel and are swiped through by touch (gallery.c). Behind it the kit
+ * is unchanged: BLE Wi-Fi setup, MQTT to the gateway, the "Jarvis" voice conversation
+ * and sleep. There is no Buddy face in this build.
+ *
+ * Two boards, chosen by the IDF target:
+ *  - ESP32-S3: a 2.1" 480x480 round ST7701S RGB panel (st7701.c), backlight hardwired.
+ *  - ESP32-P4: the Waveshare ESP32-P4-WIFI6-Touch-LCD-4C, a 4" 720x720 JD9365 on
+ *    MIPI-DSI (lcd_p4.c), with the radio on the ESP32-C6 beside it.
  *
  * Panel wiring lives in board_pins.h with everything else this firmware drives.
- * The backlight is hardwired on.
  *
  * Dependencies are vendored in components/ and the component manager is switched
  * off (see README): idf 5.2.2's resolver cannot parse a `&&` in a dependency
@@ -19,9 +23,22 @@
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "lvgl.h"
+#include "board_pins.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "driver/gpio.h"
+#include "lcd_p4.h"
+#define PANEL_NAME      "JD9365"
+#define panel_start     lcd_p4_start
+#define panel_set_on    lcd_p4_set_on
+#else
 #include "st7701.h"
+#define PANEL_NAME      "ST7701S"
+#define panel_start     st7701_start
+#define panel_set_on    st7701_set_on
+#endif
 #include "touch.h"
 #include "gallery.h"
+#include "status.h"
 #include "mem_report.h"
 #include "net.h"
 #include "sleep.h"
@@ -29,13 +46,14 @@
 
 static const char *TAG = "buddy-display";
 
-#define LCD_W  ST7701_W
-#define LCD_H  ST7701_H
+#define LCD_W  BOARD_LCD_W
+#define LCD_H  BOARD_LCD_H
 
-/* A twentieth of the screen, once: 24 lines, 23 KB of internal RAM — what the two
- * GC9A01 buffers cost before, on a screen with four times the pixels. One buffer, not
- * two: the flush below is a CPU copy into the frame buffer that has finished when it
- * returns, so there is never a transfer in flight for a second buffer to overlap. */
+/* A twentieth of the screen, once: on the S3 24 lines, 23 KB of internal RAM — what the
+ * two GC9A01 buffers cost before, on a screen with four times the pixels; on the P4 36
+ * lines, 52 KB. One buffer, not two: the flush below is a CPU copy into the frame
+ * buffer that has finished when it returns, so there is never a transfer in flight for
+ * a second buffer to overlap. */
 #define BUF_PX  (LCD_W * LCD_H / 20)
 
 static esp_lcd_panel_handle_t s_panel;
@@ -43,7 +61,7 @@ static esp_lcd_panel_handle_t s_panel;
 /* display.h — the panel's only public switch, so sleep.c need not know about esp_lcd. */
 void display_set_on(bool on)
 {
-    if (s_panel) st7701_set_on(on);
+    if (s_panel) panel_set_on(on);
 }
 
 static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
@@ -54,7 +72,9 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
      *
      * draw_bitmap on an RGB panel copies the area into the PSRAM frame buffer and
      * writes it back from the cache, and has finished when it returns — so the flush
-     * is ready here, not in a completion callback. */
+     * is ready here, not in a completion callback. The P4's MIPI-DSI DPI panel does the
+     * same (a CPU copy plus a cache write-back, as long as its DMA2D option is off), and
+     * so does MIPI's colour order: RGB565 straight from memory, no swap. */
     esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
     lv_display_flush_ready(d);
 }
@@ -80,16 +100,17 @@ static uint32_t tick_cb(void) { return (uint32_t)(esp_timer_get_time() / 1000); 
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "BuddyOS STEM display — ST7701S %dx%d", LCD_W, LCD_H);
+    ESP_LOGI(TAG, "BuddyOS STEM display — " PANEL_NAME " %dx%d", LCD_W, LCD_H);
     mem_report("boot");
 
 #if CONFIG_BUDDY_BOOT_RESET
-    /* Before the panel: BOOT is GPIO 0, which the panel is about to take as a data
-     * line, so this is the only moment it can be read. */
+    /* Before the panel: on the S3 BOOT is GPIO 0, which the panel is about to take as a
+     * data line, so this is the only moment it can be read. (The P4's BOOT, GPIO 35,
+     * is free all the time; the same moment does for both.) */
     net_boot_reset_check();
 #endif
 
-    if (st7701_start(&s_panel) != ESP_OK) return;
+    if (panel_start(&s_panel) != ESP_OK) return;
 
     lv_init();
     lv_tick_set_cb(tick_cb);
@@ -105,7 +126,8 @@ void app_main(void)
     lv_display_set_buffers(disp, buf, NULL, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flush_cb);
 
-    /* After the panel: TP_RST is the panel's reset line, and st7701_start pulsed it. */
+    /* After the panel: on the S3 TP_RST is the panel's reset line, and starting the
+     * panel pulsed it. */
     if (touch_init() == ESP_OK) {
         lv_indev_t *tp = lv_indev_create();
         lv_indev_set_type(tp, LV_INDEV_TYPE_POINTER);
@@ -115,6 +137,7 @@ void app_main(void)
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     gallery_create(scr);
+    status_create(scr);                  /* after the gallery: drawn above it */
     ESP_LOGI(TAG, "draw buffer: 1 x %u B internal; frame buffer in PSRAM", (unsigned)buf_bytes);
     mem_report("gallery up");
 

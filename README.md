@@ -308,6 +308,79 @@ five images** — app alone leaves the old table in place and the kit looks for 
 where it no longer is. The table still has the old `faces` partition; this build never
 reads it, and it stays so `model` does not move. The command is in [Flash it](#flash-it).
 
+## The Waveshare ESP32-P4 board
+
+The same firmware also builds for the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C**: an
+ESP32-P4 (rev 3, 32 MB PSRAM, 16 MB flash), a 4" 720×720 JD9365 MIPI-DSI panel, GT911
+touch, an ES8311 DAC with its amplifier, an ES7210 four-channel ADC with two microphones,
+and an **ESP32-C6** for Wi-Fi 6 and BLE. Nothing is wired by hand — every pin is the
+board's (`main/board_pins.h`, from Waveshare's BSP).
+
+What differs from the S3 kit:
+
+| | ESP32-S3 bench kit | ESP32-P4 board |
+| --- | --- | --- |
+| Panel | ST7701S RGB, `main/st7701.c` | JD9365 MIPI-DSI, `main/lcd_p4.c` |
+| Photos | `gallery/gallery.bin` (480) | `gallery/gallery-720.bin` — bake with `-Side 720` |
+| Audio | INMP441 + MAX98357A, `main/audio.c` | ES7210 + ES8311 through `esp_codec_dev`, `main/audio_p4.c` |
+| Wake word | WakeNet on the raw mic, half-duplex | ESP-SR AFE with **echo cancellation** (`BUDDY_AEC`) |
+| Wi-Fi, BLE | on-chip | the C6, over SDIO, via `esp_hosted` + `esp_wifi_remote` |
+| Wake from sleep | BOOT | **RESET** (BOOT is GPIO 35, not an LP GPIO) |
+
+Build — IDF 5.5, with `ESP_IDF_VERSION=5.5` in the environment (esp_wifi_remote's
+Kconfig picks its files by that variable; without it the Wi-Fi remote menu silently
+vanishes and esp_hosted falls back to SPI). IDF layers `sdkconfig.defaults.esp32p4`
+over `sdkconfig.defaults` by itself:
+
+    idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
+
+The C6 must run esp_hosted's slave firmware; Waveshare ships it so.
+
+### Echo cancellation and the microphone slots
+
+The ES7210 hands the P4 four TDM slots. `BUDDY_AFE_INPUT_FORMAT` says what each one is,
+in ESP-SR's letters — `M` microphone, `R` playback reference, `N` unused — and defaults
+to `MRMN`: mic, reference, mic, nothing, as Espressif's P4 boards wire it. If the board
+has **no** hardware reference (no `R` in the string), the firmware turns the first `N`
+into a software reference: every sample written to the speaker is also queued, aligned
+by the DMA depth, and fed to the AFE in that slot. A hardware loopback is better — it
+hears the amplifier, not the intention — so prove which one the board has before
+trusting either.
+
+`BUDDY_AUDIO_SELFTEST` is how: it prints each slot's level in silence, then plays a
+440 Hz tone and prints them again. The slot that rises most is the reference; it warns
+if that is not the one the format string calls `R`. Then it shows a live four-slot meter
+for ten seconds — talk at each microphone to find which slots they are.
+
+With AEC on, WakeNet listens to the AFE's cleaned output, so "Jarvis" works while the
+Buddy is talking, and the microphone stays open during replies. `BUDDY_AEC_KEEP_HALF_DUPLEX`
+puts the old behaviour back — mic muted while the Buddy speaks — if the cancellation
+turns out not to be enough for the gateway's speech detector.
+
+**What bring-up found** (2026-10-21, one board, P4 silicon v3.2):
+
+- **Ran on the board as written:**
+  - the JD9365 panel (ID `93 65 04`);
+  - the GT911 at `0x5D`;
+  - the C6's hosted firmware over SDIO;
+  - BLE setup through the C6;
+  - Wi-Fi and MQTT;
+  - the AFE pipeline (`AEC → BSS → WakeNet`, slots `MRMN`).
+- **The chip revision decides which ESP-SR links.** v3 changed the encoding of the P4's
+  vector (PIE) instructions:
+  - ESP-SR 2.1.2's P4 libraries were built for older chips. WakeNet's model load faulted
+    (`MCAUSE 0x1f` in `dl_esp32p4_memcpy`).
+  - The voice session starts once Wi-Fi is up, so the kit rebooted every time it got
+    online. From outside, that looked like setup failing.
+  - The fix was to move to ESP-SR 2.4.7 (`components/esp-sr/VENDORED.md`).
+- **The board has two USB-C ports:**
+  - one is the P4's own USB-Serial/JTAG;
+  - the other is a CH343 UART.
+  - Either one flashes and shows the log, and Windows gives them different COM numbers.
+- **Not yet measured:** whether "Jarvis" is heard over the Buddy's own voice, and how much
+  of the AEC claim survives a real room. With the AFE running, the internal heap's largest
+  free block is about 30 KB, so watch it when a session opens.
+
 ## Status
 
 **It runs on the bench board**: an ESP32-S3-WROOM-1-N16R8 driving the ST7701S 480×480

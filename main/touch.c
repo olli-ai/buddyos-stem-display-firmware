@@ -1,12 +1,11 @@
 /* The touch layer. See touch.h. */
 #include "touch.h"
 
+#include "board_i2c.h"
 #include "board_pins.h"
-#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "st7701.h"
 
 static const char *TAG = "touch";
 
@@ -17,7 +16,6 @@ typedef enum {
     TP_GT911,    /* 0x5D or 0x14 */
 } tp_type_t;
 
-static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 static tp_type_t s_type = TP_NONE;
 
@@ -40,28 +38,23 @@ static esp_err_t wr16(uint16_t reg, uint8_t val)
 
 esp_err_t touch_init(void)
 {
-    i2c_master_bus_config_t bc = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = PIN_TP_SDA,
-        .scl_io_num = PIN_TP_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,   /* the board has 4.7 k; this is belt and braces */
-    };
-    esp_err_t err = i2c_new_master_bus(&bc, &s_bus);
-    if (err != ESP_OK) return err;
+    i2c_master_bus_handle_t bus = board_i2c();
+    if (!bus) return ESP_FAIL;
 
-    /* A CST8xx sleeps within moments of reset and may not ACK a probe, so look a few
-     * times before concluding there is nothing there. */
+    /* Only the addresses a touch controller answers on. A full scan would do on the S3,
+     * where the touch layer is alone on the bus, but on the P4 the codecs share it and
+     * the ES8311 at 0x18 would be found first. A CST8xx sleeps within moments of reset
+     * and may not ACK a probe, so look a few times before concluding there is nothing. */
+    static const uint8_t addrs[] = { 0x15, 0x38, 0x5D, 0x14 };
     uint8_t found = 0;
     for (int attempt = 0; attempt < 5 && !found; attempt++) {
-        for (uint8_t a = 0x08; a < 0x78 && !found; a++)
-            if (i2c_master_probe(s_bus, a, 20) == ESP_OK) found = a;
+        for (size_t i = 0; i < sizeof(addrs) && !found; i++)
+            if (i2c_master_probe(bus, addrs[i], 20) == ESP_OK) found = addrs[i];
         if (!found) vTaskDelay(pdMS_TO_TICKS(100));
     }
     if (!found) {
-        ESP_LOGW(TAG, "nothing on SDA %d / SCL %d — check TP_VCI, TP_RST and the pull-ups. "
-                      "The gallery runs without touch.", PIN_TP_SDA, PIN_TP_SCL);
+        ESP_LOGW(TAG, "nothing on SDA %d / SCL %d — check the touch layer's supply, reset and "
+                      "the pull-ups. The gallery runs without touch.", PIN_I2C_SDA, PIN_I2C_SCL);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -70,7 +63,7 @@ esp_err_t touch_init(void)
         .device_address = found,
         .scl_speed_hz = 400000,
     };
-    err = i2c_master_bus_add_device(s_bus, &dc, &s_dev);
+    esp_err_t err = i2c_master_bus_add_device(bus, &dc, &s_dev);
     if (err != ESP_OK) return err;
 
     if (found == 0x5D || found == 0x14) {
@@ -111,7 +104,7 @@ bool touch_read(uint16_t *x, uint16_t *y)
         *x = ((d[1] & 0x0F) << 8) | d[2];
         *y = ((d[3] & 0x0F) << 8) | d[4];
         /* Never trust the wire: a coordinate off the glass is no touch at all. */
-        return *x < ST7701_W && *y < ST7701_H;
+        return *x < BOARD_LCD_W && *y < BOARD_LCD_H;
 
     case TP_GT911: {
         uint8_t st = 0;
@@ -120,7 +113,7 @@ bool touch_read(uint16_t *x, uint16_t *y)
         if (down && rd16(0x8150, d, 4) == ESP_OK) {
             *x = d[0] | (d[1] << 8);
             *y = d[2] | (d[3] << 8);
-            down = *x < ST7701_W && *y < ST7701_H;
+            down = *x < BOARD_LCD_W && *y < BOARD_LCD_H;
         } else {
             down = false;
         }

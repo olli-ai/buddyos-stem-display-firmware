@@ -4,6 +4,8 @@
 
 #if CONFIG_BUDDY_VOICE
 #include "audio.h"
+#include "lipsync.h"
+#include "status.h"
 #include "generated/voice_upsampler.h"
 #include "esp_websocket_client.h"
 #include "esp_opus_enc.h"
@@ -16,6 +18,11 @@
 #include "esp_wn_models.h"
 #include "model_path.h"
 #endif
+#if CONFIG_BUDDY_AEC
+#include "esp_afe_config.h"
+#include "esp_afe_sr_iface.h"
+#include "esp_afe_sr_models.h"
+#endif
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_attr.h"
@@ -26,6 +33,8 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/idf_additions.h"
+#include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -126,10 +135,12 @@ static inline uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1
  * which is exactly what the first barge-in test did the moment omni said "processing". */
 static inline int32_t since(uint32_t now, uint32_t then) { return (int32_t)(now - then); }
 
+#if !CONFIG_BUDDY_AEC
 static const esp_wn_iface_t *s_wn;
 static model_iface_data_t *s_wn_data;
 static int16_t *s_wn_buf;
 static int s_wn_chunk, s_wn_fill;
+#endif
 #endif
 
 static esp_websocket_client_handle_t s_ws;
@@ -157,6 +168,12 @@ static void on_status(const char *st)
     if (!strcmp(st, "speaking_started")) s_speaking = true;
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
              !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
+    if (!strcmp(st, "interrupted")) lipsync_stop();
+    if (!strcmp(st, "speaking_started")) status_set(STATUS_SPEAKING);
+    else if (!strcmp(st, "processing") || !strcmp(st, "thinking")) status_set(STATUS_THINKING);
+    else if (!strcmp(st, "error")) status_set(STATUS_ERROR);
+    else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
+             !strcmp(st, "interrupted")) status_set(STATUS_LISTENING);
 #if CONFIG_BUDDY_WAKE_WORD
     s_last_activity_ms = now_ms();
 #endif
@@ -177,6 +194,11 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = false;
         s_speaking = false;
         audio_speaker_enable(false);
+#if CONFIG_BUDDY_WAKE_WORD
+        if (s_phase != PHASE_IDLE) status_set(STATUS_CONNECTING);
+#else
+        status_set(STATUS_CONNECTING);   /* it reconnects on its own */
+#endif
         ESP_LOGW(TAG, "disconnected");
         break;
     case WEBSOCKET_EVENT_DATA:
@@ -237,6 +259,7 @@ static uint32_t frame_rms(const int16_t *x, int n)
     return r;
 }
 
+#if !CONFIG_BUDDY_AEC
 /* 20 ms of mic in; true once WakeNet has heard the word. WakeNet wants its own chunk
  * size (512 samples for WakeNet9), so frames are gathered until one is full. */
 static bool wake_feed(const int16_t *x, int n)
@@ -261,6 +284,7 @@ static bool wake_feed(const int16_t *x, int n)
     }
     return heard;
 }
+#endif
 
 static void session_end(const char *why);
 
@@ -278,11 +302,13 @@ static void barge_in(uint32_t now)
     s_barged_ms = now;
     s_speaking = false;
     xQueueReset(s_down);
+    lipsync_stop();                      /* the photo stops talking with the speaker */
 }
 
 static void session_begin(uint32_t now)
 {
     ESP_LOGI(TAG, "wake word: opening a conversation");
+    status_set(STATUS_CONNECTING);
     sleep_note_activity();      /* being talked to is the clearest activity there is */
     s_phase = PHASE_OPENING;
     s_opened_ms = s_last_activity_ms = now;
@@ -305,6 +331,7 @@ static void session_end(const char *why)
     s_connected = false;
     s_speaking = false;
     xQueueReset(s_down);
+    lipsync_stop();                      /* the photo stops talking with the speaker */
     audio_speaker_enable(false);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     /* Not s_wn->clean(): in ESP-SR 2.1.2 it faults inside WakeNet9's quantised model
@@ -312,8 +339,170 @@ static void session_end(const char *why)
      * ended. WakeNet runs throughout a conversation now, so there is nothing stale
      * to forget anyway. */
     s_phase = PHASE_IDLE;
+    status_set(STATUS_IDLE);
 }
 
+#if CONFIG_BUDDY_AEC
+/* Echo cancellation (the ESP32-P4 board). The microphones no longer go straight to
+ * WakeNet: every ES7210 slot goes into ESP-SR's audio front end, which takes the
+ * speaker's echo out of each microphone (AEC, against the reference slot), separates
+ * the two microphones into sources (BSS), runs WakeNet on each and hands back the one
+ * that heard the word. A feed task keeps it supplied; the mic task fetches from it in
+ * place of reading the microphone, re-cut into the 20 ms frames the rest of this file
+ * is built on.
+ *
+ * The reference is the ES7210's loopback slot when the board has one ('R' in
+ * BUDDY_AFE_INPUT_FORMAT). When it has not, the first unused slot carries a software
+ * reference instead — what audio_write() played, delayed by the I2S queue. */
+static const esp_afe_sr_iface_t *s_afe;
+static esp_afe_sr_data_t *s_afe_data;
+static int16_t *s_afe_out;
+static int s_afe_cap, s_afe_have, s_afe_pos;
+static int s_soft_ref = -1;
+
+/* The feed and fetch sides each log what they saw this often, idle or not: without it
+ * a wake word that never fires looks the same as a kit that is not listening. */
+#define AFE_STATS_MS 10000
+
+static void afe_out_stats(const afe_fetch_result_t *r)
+{
+    static uint32_t fetches, t_log;
+    static float vol_max = -200, free_min = 1;
+    static int states[3];
+    fetches++;
+    if (r->data_volume > vol_max) vol_max = r->data_volume;
+    if (r->ringbuff_free_pct < free_min) free_min = r->ringbuff_free_pct;
+    if (r->wakeup_state >= -1 && r->wakeup_state <= 1) states[r->wakeup_state + 1]++;   /* verified -1, none 0, detected 1 */
+    if (!t_log) t_log = now_ms();
+    if (since(now_ms(), t_log) < AFE_STATS_MS) return;
+    ESP_LOGI(TAG, "afe out: %lu fetches, loudest %.1f dB, ring free min %.0f%%, wakenet none/detected/verified %d/%d/%d",
+             (unsigned long)fetches, vol_max, free_min * 100, states[1], states[2], states[0]);
+    fetches = 0; vol_max = -200; free_min = 1;
+    memset(states, 0, sizeof(states));
+    t_log = now_ms();
+}
+
+static void feed_task(void *arg)
+{
+    (void)arg;
+    int chunk = s_afe->get_feed_chunksize(s_afe_data);
+    int16_t *slots = heap_caps_malloc(chunk * AUDIO_IN_SLOTS * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    int16_t *ref = heap_caps_malloc(chunk * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!slots || !ref) { ESP_LOGE(TAG, "afe feed: no memory"); vTaskDelete(NULL); }
+    /* What reaches the front end, slot by slot: a microphone that reads ~0 here is a
+     * codec or slot-order fault, and nothing downstream can hear the wake word. */
+    double sq[AUDIO_IN_SLOTS] = { 0 };
+    int peak[AUDIO_IN_SLOTS] = { 0 };
+    uint32_t n = 0, feeds = 0, t_log = now_ms();
+    for (;;) {
+        if (audio_read_slots(slots, chunk) != (size_t)chunk) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        if (s_soft_ref >= 0) {
+            audio_ref_read(ref, chunk);
+            for (int i = 0; i < chunk; i++) slots[i * AUDIO_IN_SLOTS + s_soft_ref] = ref[i];
+        }
+        for (int i = 0; i < chunk; i++)
+            for (int c = 0; c < AUDIO_IN_SLOTS; c++) {
+                int v = slots[i * AUDIO_IN_SLOTS + c];
+                sq[c] += (double)v * v;
+                if (abs(v) > peak[c]) peak[c] = abs(v);
+            }
+        n += chunk;
+        s_afe->feed(s_afe_data, slots);
+        feeds++;
+        if (since(now_ms(), t_log) >= AFE_STATS_MS) {
+            char line[96];
+            int at = 0;
+            for (int c = 0; c < AUDIO_IN_SLOTS; c++)
+                at += snprintf(line + at, sizeof(line) - at, " %c:%d/%d", CONFIG_BUDDY_AFE_INPUT_FORMAT[c],
+                               (int)sqrt(sq[c] / n), peak[c]);
+            ESP_LOGI(TAG, "afe in: %lu feeds, rms/peak%s", (unsigned long)feeds, line);
+            memset(sq, 0, sizeof(sq));
+            memset(peak, 0, sizeof(peak));
+            n = feeds = 0;
+            t_log = now_ms();
+        }
+    }
+}
+
+/* 20 ms of the cleaned-up microphone into `out`; true if WakeNet heard the word in it. */
+static bool mic_frame(int16_t *out)
+{
+    bool heard = false;
+    int k = 0;
+    while (k < IN_SAMPLES) {
+        if (s_afe_pos == s_afe_have) {
+            afe_fetch_result_t *r = s_afe->fetch(s_afe_data);
+            if (!r || r->ret_value == ESP_FAIL || !r->data || r->data_size <= 0) {
+                memset(out + k, 0, (IN_SAMPLES - k) * sizeof(int16_t));
+                vTaskDelay(pdMS_TO_TICKS(20));      /* never spin on a front end that is not there */
+                return heard;
+            }
+            if (r->wakeup_state == WAKENET_DETECTED) {
+                heard = true;
+                ESP_LOGI(TAG, "wake word heard (word %d, channel %d, %.1f dB)",
+                         r->wake_word_index, r->trigger_channel_id, r->data_volume);
+            }
+            afe_out_stats(r);
+            int n = r->data_size / (int)sizeof(int16_t);
+            if (n > s_afe_cap) n = s_afe_cap;
+            memcpy(s_afe_out, r->data, n * sizeof(int16_t));
+            s_afe_have = n;
+            s_afe_pos = 0;
+        }
+        int take = IN_SAMPLES - k < s_afe_have - s_afe_pos ? IN_SAMPLES - k : s_afe_have - s_afe_pos;
+        memcpy(out + k, s_afe_out + s_afe_pos, take * sizeof(int16_t));
+        k += take;
+        s_afe_pos += take;
+    }
+    return heard;
+}
+
+static bool wake_init(void)
+{
+    srmodel_list_t *models = esp_srmodel_init("model");
+    if (!models || !esp_srmodel_filter(models, ESP_WN_PREFIX, NULL)) {
+        ESP_LOGE(TAG, "no wake-word model in the `model` partition (flash srmodels.bin)");
+        return false;
+    }
+    char fmt[AUDIO_IN_SLOTS + 1];
+    strlcpy(fmt, CONFIG_BUDDY_AFE_INPUT_FORMAT, sizeof(fmt));
+    if (!strchr(fmt, 'R')) {
+        char *spare = strchr(fmt, 'N');
+        if (!spare) {
+            ESP_LOGE(TAG, "slot layout \"%s\" has no reference and no spare slot to carry one", fmt);
+            return false;
+        }
+        *spare = 'R';
+        s_soft_ref = (int)(spare - fmt);
+    }
+    afe_config_t *cfg = afe_config_init(fmt, models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    if (!cfg) { ESP_LOGE(TAG, "afe: no config for \"%s\"", fmt); return false; }
+    cfg->aec_init = true;
+    cfg->wakenet_init = true;
+    cfg->wakenet_mode = CONFIG_BUDDY_WAKE_THRESHOLD_MODE ? DET_MODE_95 : DET_MODE_90;
+    cfg->vad_init = false;               /* the session's own level gate decides "quiet" */
+    cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    cfg->afe_perferred_core = 1;         /* beside the mic task; the radio has core 0 */
+    cfg->afe_perferred_priority = 5;
+    cfg = afe_config_check(cfg);
+    s_afe = esp_afe_handle_from_config(cfg);
+    s_afe_data = s_afe ? s_afe->create_from_config(cfg) : NULL;
+    if (!s_afe_data) { ESP_LOGE(TAG, "afe would not start"); afe_config_free(cfg); return false; }
+    ESP_LOGI(TAG, "afe: slots \"%s\"%s, wake word model %s", fmt,
+             s_soft_ref >= 0 ? " (software reference)" : "", cfg->wakenet_model_name ? cfg->wakenet_model_name : "?");
+    afe_config_free(cfg);
+    s_afe->print_pipeline(s_afe_data);
+
+    s_afe_cap = s_afe->get_fetch_chunksize(s_afe_data);
+    s_afe_out = heap_caps_malloc(s_afe_cap * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_hold = heap_caps_malloc(HOLD_PKTS * sizeof(up_pkt_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_afe_out || !s_hold) return false;
+    ESP_LOGI(TAG, "afe: feed %d x %d, fetch %d samples at %d Hz", s_afe->get_feed_chunksize(s_afe_data),
+             s_afe->get_feed_channel_num(s_afe_data), s_afe_cap, s_afe->get_samp_rate(s_afe_data));
+    if (s_soft_ref >= 0) audio_ref_enable(true);
+    return xTaskCreatePinnedToCore(feed_task, "afe_feed", 8192, NULL, 6, NULL, 0) == pdPASS;
+}
+#else
 static bool wake_init(void)
 {
     srmodel_list_t *models = esp_srmodel_init("model");
@@ -332,6 +521,7 @@ static bool wake_init(void)
              name, s_wn_chunk, s_wn->get_samp_rate(s_wn_data));
     return s_wn_buf && s_hold;
 }
+#endif   /* CONFIG_BUDDY_AEC */
 #endif
 
 /* Mic to omni. */
@@ -351,9 +541,14 @@ static void up_task(void *arg)
             if (w > work_max) work_max = w;
         }
         int16_t *in = f.pcm;
+#if CONFIG_BUDDY_AEC
+        bool heard = mic_frame(in);      /* the front end ran WakeNet already */
+        t_work = esp_timer_get_time();
+#else
         size_t n = audio_read(in, IN_SAMPLES);
         t_work = esp_timer_get_time();
         if (n < IN_SAMPLES) memset(in + n, 0, (IN_SAMPLES - n) * sizeof(int16_t));
+#endif
 
         /* The INMP441's DC offset is large and wanders while its high-pass settles;
          * a one-pole blocker takes it out before it reaches the encoder. */
@@ -368,9 +563,11 @@ static void up_task(void *arg)
          * before the half-duplex mute below — so the wake word both opens a
          * conversation and cuts into the Buddy mid-sentence. */
         uint32_t now = now_ms();
+#if !CONFIG_BUDDY_AEC
         int64_t t0 = esp_timer_get_time();
         bool heard = wake_feed(in, IN_SAMPLES);
         us_wake += esp_timer_get_time() - t0;
+#endif
         if (s_phase == PHASE_IDLE) {
             if (heard) session_begin(now);
             continue;
@@ -389,10 +586,15 @@ static void up_task(void *arg)
 
         /* Half duplex, for now. While the Buddy talks, the microphone hears the
          * speaker, and omni would take its own voice for the child's and interrupt
-         * itself. Silence keeps the stream continuous — omni wants it gapless — and
-         * echo cancellation is what replaces this, later. Saying the wake word is how
-         * a child gets a word in meanwhile. */
+         * itself. Silence keeps the stream continuous — omni wants it gapless. Saying
+         * the wake word is how a child gets a word in meanwhile.
+         *
+         * With echo cancellation (BUDDY_AEC) the speaker is already out of the signal,
+         * so the child is heard while the Buddy talks — unless
+         * BUDDY_AEC_KEEP_HALF_DUPLEX asks for the old behaviour. */
+#if !CONFIG_BUDDY_AEC || CONFIG_BUDDY_AEC_KEEP_HALF_DUPLEX
         if (s_speaking) memset(in, 0, IN_SAMPLES * sizeof(int16_t));
+#endif
 
         f.frame = ++frames;
         if (xQueueSend(s_pcmq, &f, 0) != pdTRUE) s_up_dropped++;      /* never wait here */
@@ -528,6 +730,9 @@ static void down_task(void *arg)
         if (esp_opus_dec_decode(s_dec, &raw, &fo, &info) != ESP_AUDIO_ERR_OK) continue;
         us_dec += esp_timer_get_time() - t0;
         size_t ns = fo.decoded_size / sizeof(int16_t);
+        /* The photos' mouths hear exactly what the speaker is about to: this PCM,
+         * never the microphone and never omni's text. */
+        lipsync_feed(pcm, ns);
         audio_write(pcm, ns);
     }
 }
@@ -611,10 +816,12 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
 
 #if CONFIG_BUDDY_WAKE_WORD
     ESP_LOGI(TAG, "listening for the wake word; will talk to wss://%s" VOICE_PATH " as %s", gateway, serial);
+    status_set(STATUS_IDLE);
     return true;
 #else
     esp_wifi_set_ps(WIFI_PS_NONE);       /* always in a conversation: see session_begin */
     ESP_LOGI(TAG, "connecting to wss://%s" VOICE_PATH " as %s", gateway, serial);
+    status_set(STATUS_CONNECTING);
     return esp_websocket_client_start(s_ws) == ESP_OK;
 #endif
 }
