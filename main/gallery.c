@@ -18,6 +18,12 @@
 static const char *TAG = "gallery";
 
 #define MAX_PHOTOS 64
+#define MAX_PATCHES 16     /* tools/bake_gallery.py MAX_PATCHES */
+/* Patch roles. 0..7 are the viseme classes in VISEMES order (lipsync.h), so
+ * lipsync_now() indexes straight in; REST is not stored because it is the photo. */
+#define PATCH_BLINK      8
+#define PATCH_SMILE      9
+#define PATCH_SURPRISED 10
 #define NAME_LEN   24
 #define MAX_SIDE   BOARD_LCD_W         /* the panel; the baker never writes more */
 
@@ -52,6 +58,15 @@ typedef struct {
     int16_t chin_x, chin_y;            /* where the jaw sits when the mouth is shut */
     float open, width;                 /* eased toward the shape being heard */
     int16_t shown_drop, shown_w;
+    /* Patches (a GLR3 pack): the same frame with only the mouth, or only the eyes,
+     * redrawn. A photograph cannot talk by sliding its jaw over a dark hole — there
+     * is no mouth interior in a still to reveal — so where the artwork exists, the
+     * region is simply swapped instead. Pixels stay in flash: RGB565A8 is LVGL's own
+     * layout, so the descriptor points at the pack and nothing is decoded or copied. */
+    uint8_t n_patch;
+    struct { uint8_t role; int16_t x, y; lv_image_dsc_t dsc; } patch[MAX_PATCHES];
+    lv_obj_t *mouth_ov, *eyes_ov;      /* children of img; one patch each, or hidden */
+    int8_t shown_mouth, shown_eyes;    /* patch index on screen, -1 for none */
 } photo_t;
 
 /* PSRAM: 3.8 KB that is read once per swipe, and internal SRAM is what voice is short of. */
@@ -65,12 +80,14 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static int load_pack(void)
 {
     size_t len = (size_t)(pack_end - pack_start);
-    bool v2 = len >= 8 && memcmp(pack_start, "GLR2", 4) == 0;
+    bool v3 = len >= 8 && memcmp(pack_start, "GLR3", 4) == 0;
+    bool v2 = v3 || (len >= 8 && memcmp(pack_start, "GLR2", 4) == 0);
     if (len < 8 || (!v2 && memcmp(pack_start, "GLRY", 4) != 0)) {
-        ESP_LOGW(TAG, "no gallery pack (run tools/bake_gallery.ps1)");
+        ESP_LOGW(TAG, "no gallery pack (run tools/bake_gallery.py)");
         return 0;
     }
-    const size_t esz = 8 + NAME_LEN + (v2 ? 8 : 0);
+    /* GLR3 adds n_patches, a pad and the offset of this photo's patch table. */
+    const size_t esz = 8 + NAME_LEN + (v2 ? 8 : 0) + (v3 ? 8 : 0);
     uint32_t n = rd32(pack_start + 4);
     if (n > MAX_PHOTOS) n = MAX_PHOTOS;
     int kept = 0;
@@ -93,6 +110,34 @@ static int load_pack(void)
         p->my = v2 ? rd16(m + 2) : 0;
         p->mw = v2 ? rd16(m + 4) : 0;
         p->jaw = v2 ? rd16(m + 6) : 0;
+        p->shown_mouth = p->shown_eyes = -1;
+        if (!v3) continue;
+
+        uint32_t np = rd16(m + 8), tab = rd32(m + 12);
+        if (np > MAX_PATCHES) np = MAX_PATCHES;
+        for (uint32_t k = 0; k < np; k++) {
+            const uint8_t *q = pack_start + tab + k * 16;
+            if (q + 16 > pack_end) break;
+            uint16_t px = rd16(q), py = rd16(q + 2), pw = rd16(q + 4), ph = rd16(q + 6);
+            uint32_t data = rd32(q + 12);
+            /* 3 bytes a pixel: the colour plane then the alpha plane. A pack that
+             * says otherwise is truncated or from another baker, and drawing it
+             * would read past the end of flash. */
+            uint32_t need = (uint32_t)pw * ph * 3;
+            if (!pw || !ph || data > len || need > len - data) {
+                ESP_LOGW(TAG, "%s: patch %u lies outside the pack; skipped", p->name, (unsigned)k);
+                continue;
+            }
+            int j = p->n_patch++;
+            p->patch[j].role = q[8];
+            p->patch[j].x = (int16_t)px;
+            p->patch[j].y = (int16_t)py;
+            p->patch[j].dsc = (lv_image_dsc_t){
+                .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565A8,
+                            .w = pw, .h = ph, .stride = (uint32_t)pw * 2 },
+                .data_size = need, .data = pack_start + data };
+        }
+        if (p->n_patch) ESP_LOGI(TAG, "%s: %u patches", p->name, p->n_patch);
     }
     return kept;
 }
@@ -258,18 +303,55 @@ static int demo_viseme(void)
 }
 #endif
 
+/* Defined below, beside mouth_create: the talk timer is above them in this file. */
+static void patch_show(photo_t *p, lv_obj_t *slot, int8_t *shown, int idx);
+static int patch_of(const photo_t *p, int role);
+
+/* Blinking. Nothing in the audio says when to blink, so the photo keeps its own
+ * clock: a blink roughly every BLINK_EVERY_MS, held BLINK_HOLD_MS — about the length
+ * of a real one. Driven from the talk timer rather than a timer of its own, because
+ * it is the same 33 ms tick and one less thing to own. */
+#define BLINK_EVERY_MS 4200
+#define BLINK_HOLD_MS   120
+static void blink_tick(photo_t *p)
+{
+    static uint32_t next, until;
+    uint32_t now = lv_tick_get();
+    int idx = patch_of(p, PATCH_BLINK);
+    if (idx < 0) return;
+    if (!next) next = now + BLINK_EVERY_MS;
+    if (until && (int32_t)(now - until) >= 0) {
+        until = 0;
+        /* Spread them out a little, so a watched face does not tick like a metronome. */
+        next = now + BLINK_EVERY_MS + (lv_rand(0, 1800));
+    } else if (!until && (int32_t)(now - next) >= 0) {
+        until = now + BLINK_HOLD_MS;
+    }
+    patch_show(p, p->eyes_ov, &p->shown_eyes, until ? idx : -1);
+}
+
 static void on_talk(lv_timer_t *t)
 {
     (void)t;
     if (s_page < 0 || s_page >= s_count) return;
     photo_t *p = &s_photo[s_page];
-    if (!p->chin_dsc.data) return;
 #if CONFIG_BUDDY_LIPSYNC_DEMO
     int v = demo_viseme();
 #else
     int v = lipsync_now();
 #endif
     if (v < 0 || v >= LIPSYNC_COUNT) v = LIPSYNC_REST;
+
+    /* A photo with artwork swaps the region instead of working the jaw. REST has no
+     * patch of its own — it is the photo — so it hides the overlay rather than
+     * drawing anything, which is also what makes the quiet state cost nothing. */
+    if (p->n_patch) {
+        patch_show(p, p->mouth_ov, &p->shown_mouth,
+                   v == LIPSYNC_REST ? -1 : patch_of(p, v));
+        blink_tick(p);
+        return;
+    }
+    if (!p->chin_dsc.data) return;
     /* Most of the way there in one 33 ms step: quick enough to keep up with speech,
      * soft enough that a one-frame flicker of the classifier does not snap the jaw. */
     p->open += (k_shape[v][0] / 100.0f - p->open) * 0.55f;
@@ -283,6 +365,26 @@ static void mouth_shut(photo_t *p)
     p->open = 0;
     p->width = 1;
     mouth_place(p);
+}
+
+/* Put one patch on screen, or nothing. `slot` is the overlay that owns this kind of
+ * region; `shown` remembers what is on it so an unchanged viseme costs no LVGL call
+ * at all — on_talk runs 30 times a second and most frames repeat. */
+static void patch_show(photo_t *p, lv_obj_t *slot, int8_t *shown, int idx)
+{
+    if (!slot || *shown == idx) return;
+    *shown = (int8_t)idx;
+    if (idx < 0) { lv_obj_add_flag(slot, LV_OBJ_FLAG_HIDDEN); return; }
+    lv_image_set_src(slot, &p->patch[idx].dsc);
+    lv_obj_set_pos(slot, p->patch[idx].x, p->patch[idx].y);
+    lv_obj_remove_flag(slot, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* The patch carrying `role`, or -1. A handful of entries, walked rarely. */
+static int patch_of(const photo_t *p, int role)
+{
+    for (int i = 0; i < p->n_patch; i++) if (p->patch[i].role == role) return i;
+    return -1;
 }
 
 /* The mouth's two objects, made once per photo and hidden until it is decoded. */
@@ -307,6 +409,18 @@ static void mouth_create(photo_t *p)
     p->chin = lv_image_create(p->img);
     lv_obj_remove_flag(p->chin, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(p->chin, LV_OBJ_FLAG_HIDDEN);
+
+    /* The patch overlays, above the jaw: when a photo has artwork for its mouth the
+     * jaw puppet is not used at all, and these two are what move instead. Separate
+     * slots so the eyes can blink in the middle of a word. */
+    if (p->n_patch) {
+        p->mouth_ov = lv_image_create(p->img);
+        p->eyes_ov = lv_image_create(p->img);
+        lv_obj_add_flag(p->mouth_ov, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(p->eyes_ov, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(p->mouth_ov, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(p->eyes_ov, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    }
 }
 
 static void decode(photo_t *p)
