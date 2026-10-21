@@ -9,8 +9,7 @@
  *
  * One raw Opus packet per binary WebSocket message, in both directions, because that
  * is exactly what omni's proto asks for and what the gateway relays unchanged. omni's
- * conversation state arrives as JSON text frames and drives the face: listening,
- * thinking, speaking.
+ * conversation state arrives as JSON text frames: listening, thinking, speaking.
  *
  * Needs Wi-Fi up. With CONFIG_BUDDY_WAKE_WORD (the default) nothing is sent until
  * WakeNet hears the wake word on the device; the conversation then runs until

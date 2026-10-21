@@ -12,6 +12,11 @@
  * is the one button every ESP32-S3 devkit already has, and which this firmware already
  * reads for the 5-second factory reset.
  *
+ * On the ST7701S board GPIO 0 is also DB17 of the panel bus, and every other RTC GPIO is
+ * taken too (0-18 by the panel and audio, 19/20 by USB, 21 by PCLK). It still works as
+ * the wake button because the panel is dark by then: sleep_now() takes the pin back from
+ * the LCD peripheral before arming ext0. Awake, BOOT cannot be read at all.
+ *
  * **Deep sleep has no microphone, so the wake word cannot wake the kit.** After
  * CONFIG_BUDDY_SLEEP_IDLE_S of quiet, "Jarvis" stops working until somebody presses the
  * button. That is the trade for the power, and it is the single most surprising thing
@@ -25,8 +30,8 @@ void sleep_init(void);
  *  directive, a button, a conversation. */
 void sleep_note_activity(void);
 
-/** Begin the sleep sequence: let the Buddy finish talking, show the `asleep` face, tell
- *  the gateway, blank the panel, then deep sleep. `reason` is carried in the event and is
+/** Begin the sleep sequence: let the Buddy finish talking, tell the gateway, blank the
+ *  panel, then deep sleep. `reason` is carried in the event and is
  *  one of "idle", "voice", "blockly", "manual". Does not return if it succeeds. */
 void sleep_now(const char *reason);
 

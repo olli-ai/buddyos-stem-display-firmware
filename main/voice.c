@@ -4,9 +4,6 @@
 
 #if CONFIG_BUDDY_VOICE
 #include "audio.h"
-#include "face_view.h"
-#include "face_lipsync.h"
-#include "generated/face_assets.h"
 #include "generated/voice_upsampler.h"
 #include "esp_websocket_client.h"
 #include "esp_opus_enc.h"
@@ -21,6 +18,7 @@
 #endif
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -140,21 +138,13 @@ static void *s_enc, *s_dec;
 static uint8_t *s_enc_out;
 static int s_enc_out_len;
 static volatile bool s_connected;
-/* While the Buddy is talking. Written by the WebSocket task, read by the audio tasks;
- * a flag rather than calls across tasks, because lip-sync keeps state that only one
- * task may touch. */
+/* While the Buddy is talking. Written by the WebSocket task, read by the audio tasks. */
 static volatile bool s_speaking;
 static volatile uint32_t s_shed_silence, s_shed_old, s_underruns, s_late;
 
 bool voice_active(void) { return s_connected; }
 
-static void show_state(const char *name)
-{
-    for (int i = 0; i < face_state_count; i++)
-        if (!strcmp(face_states[i].name, name)) { face_view_request_state(i); return; }
-}
-
-/* omni's vocabulary, onto the face's. */
+/* omni's turn-taking, as it arrives. */
 static void on_status(const char *st)
 {
 #if CONFIG_BUDDY_WAKE_WORD
@@ -164,12 +154,9 @@ static void on_status(const char *st)
     if (s_barged && strcmp(st, "speaking_started")) s_barged = false;
     else if (s_barged) { ESP_LOGI(TAG, "omni: %s (before the interrupt; ignored)", st); return; }
 #endif
-    if (!strcmp(st, "listening"))             { s_speaking = false; show_state("listening"); }
-    else if (!strcmp(st, "processing"))       { show_state("thinking"); }
-    else if (!strcmp(st, "speaking_started")) { s_speaking = true;  show_state("speaking"); }
-    else if (!strcmp(st, "speaking_ended") || !strcmp(st, "interrupted"))
-                                              { s_speaking = false; show_state("listening"); }
-    else if (!strcmp(st, "error"))            { s_speaking = false; show_state("error"); }
+    if (!strcmp(st, "speaking_started")) s_speaking = true;
+    else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
+             !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
 #if CONFIG_BUDDY_WAKE_WORD
     s_last_activity_ms = now_ms();
 #endif
@@ -190,7 +177,6 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = false;
         s_speaking = false;
         audio_speaker_enable(false);
-        show_state("idle");
         ESP_LOGW(TAG, "disconnected");
         break;
     case WEBSOCKET_EVENT_DATA:
@@ -292,7 +278,6 @@ static void barge_in(uint32_t now)
     s_barged_ms = now;
     s_speaking = false;
     xQueueReset(s_down);
-    show_state("listening");
 }
 
 static void session_begin(uint32_t now)
@@ -306,7 +291,6 @@ static void session_begin(uint32_t now)
      * beacon, so omni's steady 20 ms packets arrive in 100-300 ms clumps. Off for
      * the length of a conversation, back on when it ends. */
     esp_wifi_set_ps(WIFI_PS_NONE);
-    show_state("listening");
     if (esp_websocket_client_start(s_ws) != ESP_OK) session_end("could not start");
 }
 
@@ -323,7 +307,6 @@ static void session_end(const char *why)
     xQueueReset(s_down);
     audio_speaker_enable(false);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    show_state("idle");
     /* Not s_wn->clean(): in ESP-SR 2.1.2 it faults inside WakeNet9's quantised model
      * (dl_convq_queue_bzero on a NULL queue), found when the first conversation
      * ended. WakeNet runs throughout a conversation now, so there is nothing stale
@@ -430,7 +413,7 @@ static void send_task(void *arg)
 {
     (void)arg;
     static pcm_frame_t f;
-    static int16_t up[UP_SAMPLES];
+    EXT_RAM_BSS_ATTR static int16_t up[UP_SAMPLES];      /* PSRAM, like this task's stack */
     static up_pkt_t p;
     int16_t hist[VOICE_UP_PHASE] = { 0 };
     uint64_t us_fir = 0, us_enc = 0;
@@ -505,15 +488,13 @@ static void send_task(void *arg)
     }
 }
 
-/* omni to the amp, and to the mouth. */
+/* omni to the amp. */
 static void down_task(void *arg)
 {
     (void)arg;
     static pkt_t p;
-    static int16_t pcm[960];             /* up to 60 ms at 16 kHz */
-    bool was_speaking = false;
-
-    uint64_t us_dec = 0, us_lip = 0;     /* per-stage totals, for the log */
+    EXT_RAM_BSS_ATTR static int16_t pcm[960];   /* up to 60 ms at 16 kHz; PSRAM, like the stack */
+    uint64_t us_dec = 0;                 /* decode total, for the log */
     bool refill = true;                  /* start with a cushion, not a single packet */
     uint32_t played = 0;
 
@@ -537,9 +518,8 @@ static void down_task(void *arg)
             ESP_LOGI(TAG, "down: held %u, shed %lu silence + %lu old, %lu waited-for, %lu underruns",
                      (unsigned)uxQueueMessagesWaiting(s_down), (unsigned long)s_shed_silence,
                      (unsigned long)s_shed_old, (unsigned long)s_late, (unsigned long)s_underruns);
-            ESP_LOGI(TAG, "down: per 20 ms packet: opus decode %llu us, lip-sync %llu us",
-                     us_dec / 500, us_lip / 500);
-            us_dec = us_lip = 0;
+            ESP_LOGI(TAG, "down: per 20 ms packet: opus decode %llu us", us_dec / 500);
+            us_dec = 0;
         }
         esp_audio_dec_in_raw_t raw = { .buffer = p.data, .len = p.len };
         esp_audio_dec_out_frame_t fo = { .buffer = (uint8_t *)pcm, .len = sizeof(pcm) };
@@ -549,18 +529,6 @@ static void down_task(void *arg)
         us_dec += esp_timer_get_time() - t0;
         size_t ns = fo.decoded_size / sizeof(int16_t);
         audio_write(pcm, ns);
-
-        /* The same samples that go to the speaker drive the mouth, so the lips follow
-         * what the child actually hears. Lip-sync state lives on this task alone. */
-        bool sp = s_speaking;
-        if (sp && !was_speaking) face_lipsync_start();
-        if (!sp && was_speaking) { face_lipsync_stop(); face_view_set_live_mouth(-1); }
-        if (sp) {
-            t0 = esp_timer_get_time();
-            face_view_set_live_mouth(face_lipsync_feed(pcm, ns));
-            us_lip += esp_timer_get_time() - t0;
-        }
-        was_speaking = sp;
     }
 }
 
@@ -642,9 +610,6 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
 #if CONFIG_BUDDY_WAKE_WORD
-    /* A kit waiting to be spoken to looks idle, not like the demo reel: the demo's
-     * cycle runs through "error" and "speaking", which say something untrue here. */
-    show_state("idle");
     ESP_LOGI(TAG, "listening for the wake word; will talk to wss://%s" VOICE_PATH " as %s", gateway, serial);
     return true;
 #else

@@ -31,3 +31,7 @@ sdkconfig
 tools/bake_face.ts
 tools/bake_catalogue.ts
 CLAUDE.md
+
+# Photos for the gallery and the pack baked from them. Usually other
+# people's pictures: they stay on the machine that built the image.
+gallery/
