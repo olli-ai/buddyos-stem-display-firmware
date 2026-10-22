@@ -23,6 +23,7 @@
 #include "face_catalogue.h"
 #include <math.h>
 #include <string.h>
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 static const char *TAG = "face";
@@ -81,6 +82,9 @@ static int16_t part_of(int st, int i)
  * A character's artist drew eyes and a mouth, never brows. */
 static const int ART_SLOT[FACE_LAYER_COUNT] = { -1, -1, 0, -1, 1, 2 };
 
+/* The panel over the catalogue's own size: see where it is set. */
+static float s_cat_scale = 1.0f;
+
 static void show_sprite(int layer, int16_t idx)
 {
     if (s_shown[layer] == idx) return;
@@ -94,8 +98,8 @@ static void show_sprite(int layer, int16_t idx)
         int slot = ART_SLOT[layer];
         if (s_char && slot >= 0 && s_char->art[slot].header.w) {
             img = &s_char->art[slot];
-            x = s_char->art_x[slot];
-            y = s_char->art_y[slot];
+            x = (int16_t)lroundf(s_char->art_x[slot] * s_cat_scale);
+            y = (int16_t)lroundf(s_char->art_y[slot] * s_cat_scale);
         }
     } else if (idx >= 0 && idx < face_sprite_count) {
         const face_sprite_t *sp = &face_sprites[idx];
@@ -118,10 +122,99 @@ void face_view_set_character(const face_character_t *c)
 }
 
 /** On the render task: actually wear it. */
+/* The body, flattened: one opaque RGB565 copy in PSRAM, with the alpha and the tint
+ * already resolved into it.
+ *
+ * As shipped, the background is RGB565A8 and may carry a recolour, so every redraw
+ * blended 518,400 pixels and recoloured them — twice the per-pixel work, sixty times
+ * a second, for two things that only change when a child saves a design. Measured at
+ * 720x720 a full redraw cost 75-141 ms; an opaque image is a copy, and a copy is what
+ * lets the whole face move.
+ *
+ * Composited over black because that is what the screen behind it is (main.c sets
+ * it), so the mascot's soft edge stays soft rather than turning into a cut-out.
+ * Rebuilt on a character change or a colour change, which is to say rarely. */
+/* A catalogue baked for a smaller face than this panel. The partition is 1.5 MB and
+ * a 720x720 background is 1,519 KB on its own, so three characters only fit at 384 —
+ * and then everything the catalogue carries is in 384 space while the firmware's own
+ * sprites are in the panel's. Without this a character drew at its natural size in
+ * the corner. The background is resampled once, here; the artwork parts are small
+ * enough to let place() scale them per frame. */
+
+static lv_image_dsc_t s_flat;
+static uint16_t *s_flat_px;
+static uint32_t s_flat_rgb;
+static bool s_flat_original, s_flat_valid;
+
+static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
+{
+    const uint32_t sw = src->header.w, sh = src->header.h;
+    const uint32_t dw = face_bg.header.w, dh = face_bg.header.h;   /* always the panel */
+    const uint32_t sn = sw * sh, dn = dw * dh;
+    if (!sw || !sh) return;
+    if (!s_flat_px) {
+        s_flat_px = heap_caps_malloc(dn * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_flat_px) { ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended"); return; }
+    }
+    /* RGB565A8 is planar: the whole colour plane, then the whole alpha plane. */
+    const uint8_t *col = src->data, *alpha = src->data + sn * 2;
+    const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
+    /* 16.16 steps, so a catalogue baked for a smaller face still fills the panel.
+     * Bilinear, not nearest: this runs once per character, and 384 -> 720 by nearest
+     * is visibly blocky on art that was vector a moment ago. */
+    const uint32_t stepx = (sw << 16) / dw, stepy = (sh << 16) / dh;
+    for (uint32_t dy = 0; dy < dh; dy++) {
+        uint32_t fy = dy * stepy, y0 = fy >> 16, wy = (fy >> 8) & 0xFF;
+        uint32_t y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        for (uint32_t dx = 0; dx < dw; dx++) {
+            uint32_t fx = dx * stepx, x0 = fx >> 16, wx = (fx >> 8) & 0xFF;
+            uint32_t x1 = x0 + 1 < sw ? x0 + 1 : x0;
+            uint32_t idx[4] = { y0 * sw + x0, y0 * sw + x1, y1 * sw + x0, y1 * sw + x1 };
+            uint32_t wgt[4] = { (256 - wx) * (256 - wy), wx * (256 - wy),
+                                (256 - wx) * wy,          wx * wy };
+            uint32_t r = 0, g = 0, b = 0;
+            for (int k = 0; k < 4; k++) {
+                uint16_t c = original
+                    ? (uint16_t)(col[idx[k] * 2] | (col[idx[k] * 2 + 1] << 8)) : tint;
+                uint32_t a = alpha[idx[k]];
+                /* Over black: each channel simply scales with alpha. */
+                r += (((c >> 11) & 0x1F) * a / 255) * wgt[k];
+                g += (((c >> 5) & 0x3F) * a / 255) * wgt[k];
+                b += ((c & 0x1F) * a / 255) * wgt[k];
+            }
+            s_flat_px[dy * dw + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
+        }
+    }
+    s_flat.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_flat.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_flat.header.w = dw;
+    s_flat.header.h = dh;
+    s_flat.header.stride = dw * 2;
+    s_flat.data_size = dn * 2;
+    s_flat.data = (const uint8_t *)s_flat_px;
+    s_flat_valid = true;
+    if (sw != dw)
+        ESP_LOGI(TAG, "character baked at %lux%lu, resampled to the panel's %lux%lu",
+                 (unsigned long)sw, (unsigned long)sh, (unsigned long)dw, (unsigned long)dh);
+}
+
+/* Re-flatten with whatever character and colour are current, and show the result. */
+static void reflatten(void)
+{
+    const lv_image_dsc_t *src = s_char ? &s_char->bg : &face_bg;
+    flatten(src, s_flat_rgb, s_flat_original);
+    if (!s_bg) return;
+    lv_image_set_src(s_bg, s_flat_valid ? &s_flat : src);
+    /* The tint is baked in now, so LVGL must not apply it a second time. */
+    lv_obj_set_style_image_recolor_opa(s_bg, LV_OPA_TRANSP, 0);
+}
+
 static void wear_character(const face_character_t *c)
 {
     s_char = c;
-    lv_image_set_src(s_bg, c ? &c->bg : &face_bg);
+    /* The catalogue's artwork parts and their offsets are in its own space. */
+    s_cat_scale = (c && c->bg.header.w) ? (float)face_bg.header.w / c->bg.header.w : 1.0f;
+    reflatten();
     /* Every layer showing artwork is now showing somebody else's, so make them all
      * resolve again rather than trusting what is on screen. */
     for (int i = 1; i < FACE_LAYER_COUNT; i++) s_shown[i] = -1000;
@@ -137,7 +230,9 @@ void face_view_create(lv_obj_t *parent)
     lv_obj_remove_flag(s_root, LV_OBJ_FLAG_SCROLLABLE);
 
     s_bg = lv_image_create(s_root);
-    lv_image_set_src(s_bg, &face_bg);
+    s_flat_rgb = 0xFFFFFF;
+    s_flat_original = true;
+    reflatten();
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         s_layer[i] = lv_image_create(s_root);
@@ -165,8 +260,9 @@ void face_view_set_body_color(uint32_t rgb, bool original)
 static void paint_body(uint32_t rgb, bool original)
 {
     if (!s_bg) return;
-    lv_obj_set_style_image_recolor(s_bg, lv_color_hex(rgb), 0);
-    lv_obj_set_style_image_recolor_opa(s_bg, original ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    s_flat_rgb = rgb;
+    s_flat_original = original;
+    reflatten();
 }
 
 void face_view_request_state(int state)
@@ -310,7 +406,7 @@ void face_view_tick(uint32_t elapsed_ms)
      * still. Restoring it wants the PPA, which scales in hardware, and even that
      * only recovers the transform: the full-screen alpha blend underneath is the
      * other half of the cost and PPA's scale-rotate-mirror does not touch it. */
-    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);
+    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);  /* still until PPA */
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         if (i == MOUTH_LAYER && s_live_mouth >= 0) {
@@ -325,6 +421,11 @@ void face_view_tick(uint32_t elapsed_ms)
         }
         if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
         if (!s_img[i]) continue;
-        place(i, s_layer[i], &v[0], &v[i], s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
+        /* A catalogue part is drawn for a smaller face than this panel, so it
+         * carries the same factor its offsets did. Firmware sprites are already in
+         * the panel's space and get nothing. */
+        face_values_t own = v[i];
+        if (s_shown[i] == FACE_PART_ARTWORK) own.scale *= s_cat_scale;
+        place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
     }
 }

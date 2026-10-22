@@ -525,6 +525,35 @@ cannot compile without it), so if you have it, edit `SIZE` and run:
 bundles to CJS, where `import.meta.url` is `undefined`, so the relative path the baker
 would otherwise derive throws `ERR_INVALID_URL`. Needs `rsvg-convert` and `magick`.
 
+### The characters, and why they are baked at 384
+
+`main/face_catalogue.c` reads the characters out of the `faces` partition and
+memory-maps them, so they cost no RAM; `tools/bake_catalogue.ts` generates that
+image. Neither the partition's contents nor the baker are in the repo — the baker is
+untracked for the same reason `bake_face.ts` is, and the partition is written by
+hand — so a kit shows the one character baked into the firmware until someone bakes
+and flashes the rest:
+
+    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_catalogue.ts \
+        --bundle --platform=node --format=cjs --outfile=/tmp/cat.cjs \
+        --loader:.webp=dataurl --loader:.png=dataurl \
+    && node /tmp/cat.cjs face_catalogue.bin
+
+    esptool --chip esp32p4 -p PORT write-flash 0xd12000 face_catalogue.bin
+
+The offset is the `faces` partition's; `partitions-32mb.csv` is the authority and it
+moves if the table changes. The kit says what it found at boot — `3 characters
+mapped from flash, 1506 KB, no RAM` — and names them.
+
+**`SIZE` in that baker is 384, and that is forced by arithmetic.** A background is
+RGB565A8 at SIZE², so at the panel's own 720 one character is 1,519 KB and three are
+5,295 KB — 345% of a 1,536 KB partition. At 384 the three come to 1,506 KB, which is
+98% of it. The firmware resamples each character up to the panel once, when it is
+worn, so the cost is paid at a character change rather than per frame. More than
+three characters, or a sharper one, needs the partition re-cut — which in turn needs
+the 4.1 MB of baked artwork out of the app slot, since everything on this board must
+stay under 16 MB.
+
 ### Echo cancellation and the microphone slots
 
 The ES7210 hands the P4 four TDM slots. `BUDDY_AFE_INPUT_FORMAT` says what each one is,
