@@ -110,7 +110,11 @@ bool face_expression_wear(const char *id)
         const expression_t *e = &EXPRESSIONS[i];
         /* No fallback here, unlike a design: an expression this firmware advertised
          * is one whose every part it has, so a miss is a bug rather than a choice a
-         * child made that cannot be drawn. */
+         * child made that cannot be drawn.
+         *
+         * The mouth is resolved and stored but not drawn — face_view's part_of()
+         * leaves that layer to the design. Kept so the table stays the whole preset
+         * and the policy lives in one place rather than two. */
         int16_t parts[5] = {
             sprite_of("browL", e->brows), sprite_of("eyeL", e->eyes),
             sprite_of("browR", e->brows), sprite_of("eyeR", e->eyes),

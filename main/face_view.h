@@ -50,8 +50,10 @@ void face_view_tick(uint32_t elapsed_ms);
  */
 void face_view_set_live_mouth(int16_t sprite);
 
-/** Wear a named expression over whatever the current state draws, until the state
- *  turn ends. `parts` is {browL, eyeL, browR, eyeR, mouth}, or NULL to take it off.
+/** Wear a named expression over the current state's eyes and brows, until the turn
+ *  ends. The mouth is left to the design and to lip-sync, because the mouth is the
+ *  part a child designs. `parts` is {browL, eyeL, browR, eyeR, mouth} — the mouth is
+ *  stored but not drawn — or NULL to take the expression off.
  *  Safe from any task: it records, and the render tick applies it. */
 void face_view_request_expression(const int16_t parts[5]);
 

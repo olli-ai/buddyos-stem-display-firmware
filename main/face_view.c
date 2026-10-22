@@ -70,6 +70,8 @@ static volatile bool s_parts_dirty;
  * drawing happens where the drawing happens. */
 /* An expression the model chose mid-sentence, worn over the state's own parts. It
  * is a different axis from state: a Buddy can be `speaking` and `surprised` at once.
+ * It covers the eyes and brows only — see part_of() for why the mouth stays the
+ * child's.
  *
  * It is cleared at the start of the next *turn*, not at the next state change, and
  * that distinction was worth a measurement. The expression arrives while omni is
@@ -105,13 +107,39 @@ static volatile bool s_driven;
 static const int DESIGN_TO_LAYER[5] = { 1, 2, 3, 4, 5 };
 
 /** What state `st` draws now — the design received, or the one baked in. */
+/* Slot 4 of a parts array is the mouth; 0-3 are the brows and eyes. */
+#define MOUTH_SLOT 4
+
 static int16_t part_of(int st, int i)
 {
-    /* The expression wins while it is on. The mouth is the exception that needs no
-     * code: lip-sync already overrides the mouth layer in the tick, so a Buddy that
-     * looks surprised while talking still forms its words. */
-    if (s_expr_on) return s_expr[i];
+    /* An expression takes the eyes and the brows, and leaves the mouth alone.
+     *
+     * The mouth is the part of a face a child actually designs — it is where `grin`
+     * differs from `frown` — and letting the model overwrite it meant a designed
+     * speaking face was replaced within a few seconds of the Buddy opening its
+     * mouth, every time. Eyes and brows carry an expression perfectly well without
+     * it: `surprised` is wide eyes and raised brows whatever the mouth is doing, and
+     * while speech is playing the mouth belongs to lip-sync anyway.
+     *
+     * So the child owns the mouth, the model borrows the eyes. */
+    if (s_expr_on && i != MOUTH_SLOT) return s_expr[i];
     return s_parts_set ? s_parts[st][i] : face_design[st][i].sprite;
+}
+
+/* What the face is actually made of right now, by sprite name — the only way to
+ * tell "the design never arrived" from "the design arrived and something is drawing
+ * over it", which read identically on a screen. */
+static void report_worn(void);
+static void report_worn(void)
+{
+    const char *n[5];
+    for (int i = 0; i < 5; i++) {
+        int16_t sp = part_of(s_state, i);
+        n[i] = sp == FACE_PART_ARTWORK ? "artwork"
+             : (sp >= 0 && sp < face_sprite_count) ? face_sprites[sp].part : "-";
+    }
+    ESP_LOGI(TAG, "wearing %s: brows=%s eyes=%s mouth=%s%s", face_states[s_state].name,
+             n[0], n[1], n[4], s_expr_on ? "   <- expression over the design" : "");
 }
 
 void face_view_preview_states(void) { s_preview_req = true; }
@@ -443,6 +471,7 @@ void face_view_set_state(int state)
     s_state = state;
     for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(state, i));
     ESP_LOGI(TAG, "state -> %s (%u ms loop)", face_states[state].name, face_states[state].duration);
+    report_worn();
 }
 
 /* What each layer was last given, so an unchanged layer costs nothing.
@@ -547,14 +576,12 @@ void face_view_tick(uint32_t elapsed_ms)
             s_expr_on = true;
         }
         for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
+        report_worn();
     }
     if (s_parts_dirty) {
         s_parts_dirty = false;
         for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
-        ESP_LOGI(TAG, "wearing %s: browL=%d eyeL=%d browR=%d eyeR=%d mouth=%d%s",
-                 face_states[s_state].name, part_of(s_state, 0), part_of(s_state, 1),
-                 part_of(s_state, 2), part_of(s_state, 3), part_of(s_state, 4),
-                 s_expr_on ? " (an expression is overriding the design)" : "");
+        report_worn();
     }
 
     face_values_t v[FACE_LAYER_COUNT];
@@ -617,7 +644,21 @@ void face_view_tick(uint32_t elapsed_ms)
              * designed mouth back rather than leaving the last spoken shape on. */
             show_sprite(i, part_of(s_state, 4));
         } else if (v[i].sprite >= 0) {
-            show_sprite(i, v[i].sprite);
+            /* A baked sprite track names absolute sprites, and the face it was
+             * generated from is the factory's — so its "home" key is the factory
+             * part for this state. Drawing that undid the child's design every time
+             * a blink or a talk cycle came back round: `speaking` runs three sprite
+             * tracks (both eyes blinking, the 480 ms mouth cycle), so a designed
+             * speaking face was overwritten within a frame of the Buddy opening its
+             * mouth, and the child never saw it.
+             *
+             * So home means "whatever the design says". Every other value is the
+             * track doing something the design has no opinion about — a closed eye,
+             * an open mouth — and is drawn as baked. A blink now closes the child's
+             * eyes and opens them again as theirs. */
+            int slot = i - 1;                  /* DESIGN_TO_LAYER is {1,2,3,4,5} */
+            int16_t home = face_design[s_state][slot].sprite;
+            show_sprite(i, v[i].sprite == home ? part_of(s_state, slot) : v[i].sprite);
         }
         if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
         if (!s_img[i]) continue;
