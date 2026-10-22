@@ -19,6 +19,9 @@
 #include "voice.h"
 #include "buddy_ble.h"
 #include "setup_ui.h"
+#if CONFIG_BUDDY_SCREEN_FACE
+#include "face_directive.h"
+#endif
 #include "board_pins.h"
 #include <stdlib.h>
 #include <string.h>
@@ -263,8 +266,16 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         sleep_note_activity();
         if (!handle_activate_status(e->data, e->data_len)
-            && !handle_sleep_directive(e->data, e->data_len))
-            ESP_LOGI(TAG, "  not for this build (no face to show it on); ignored");
+            && !handle_sleep_directive(e->data, e->data_len)
+#if CONFIG_BUDDY_SCREEN_FACE
+            /* face.update and face.state: the design a child saved on the website,
+             * and the expression a conversation asks for. Only this build has
+             * somewhere to put them — the gallery shows photographs, which cannot
+             * wear a character. */
+            && !face_directive_receive(e->data, e->data_len)
+#endif
+            )
+            ESP_LOGI(TAG, "  nothing here handles that directive; ignored");
         break;
     case MQTT_EVENT_DISCONNECTED: ESP_LOGW(TAG, "mqtt disconnected"); break;
     case MQTT_EVENT_ERROR:
@@ -756,6 +767,12 @@ void net_start(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+#if CONFIG_BUDDY_SCREEN_FACE
+    /* The face this Buddy was last given, before the radio is even up: a design that
+     * only reappears once the network does is a Buddy that boots as a stranger. */
+    face_directive_restore();
+#endif
 
     /* Always started when CONFIG_BUDDY_NET is on: with no credentials it runs setup.
      *
