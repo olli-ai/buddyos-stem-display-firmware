@@ -192,6 +192,14 @@ config BUDDY_SCREEN_FACE
         spoken. Costs what the artwork costs: ARGB8888 baked at the panel's own size,
         about 4 MB at 720x720, which is why the P4 carries a 32 MB partition table.
 
+config BUDDY_SCREEN_GALLERY
+    bool "A photo gallery"
+    help
+        Photos swiped through by touch, each able to drop its jaw if gallery/mouths.csv
+        says where its mouth is. No eyes: a photograph's cannot move.
+
+endchoice
+
 config BUDDY_FACE_MOTION_DEMO
     bool "Cycle the website's whole-head motion presets"
     depends on BUDDY_SCREEN_FACE
@@ -208,13 +216,33 @@ config BUDDY_FACE_MOTION_DEMO
         A demo, not a product behaviour: it talks over the state machine's own
         motion, so leave it off unless that is what you want to see.
 
-config BUDDY_SCREEN_GALLERY
-    bool "A photo gallery"
+config BUDDY_AEC_NLP_LEVEL
+    int "Echo suppression (AEC NLP): 0 normal, 1 aggressive, 2 very aggressive"
+    depends on BUDDY_AEC
+    range 0 2
+    default 1
     help
-        Photos swiped through by touch, each able to drop its jaw if gallery/mouths.csv
-        says where its mouth is. No eyes: a photograph's cannot move.
+        How hard the echo canceller suppresses what the linear filter leaves behind —
+        which, on a full-duplex kit, is the Buddy's own voice arriving back through
+        its microphones. Too little and the far end hears the kit and takes it for
+        the child, so the Buddy interrupts itself mid-sentence.
 
-endchoice
+        It is a knob rather than a constant because the two failures it sits between
+        are both real on this board, and which one bites depends on the enclosure,
+        the volume and the room:
+
+        0 (normal) - the kit sometimes hears its own speaker.
+        1 (aggressive) - the ESP-SR default, and the default here.
+        2 (very aggressive) - the strongest suppression available.
+
+        The cost of turning it up: NLP suppresses whoever is *quieter* during
+        playback, and that is the child as well as the speaker. This board's
+        microphone delivers speech at about -47 dBFS where voice.c reckons arm's
+        length to be -25, so WakeNet already runs near its threshold, and turning
+        suppression up is what made the wake word intermittent when this was last
+        measured. If the kit stops waking, come back down. The real fix is level,
+        not suppression - see the mic gain note in voice.c.
+
 
 config BUDDY_AUDIO
     bool "Bring up the microphone and amplifier"

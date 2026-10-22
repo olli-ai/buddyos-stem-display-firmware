@@ -679,14 +679,20 @@ static bool wake_init(void)
      * the speaker — which is the signal barge-in depends on. If the speaker still
      * leaks, VERYAGGR; if the child stops being heard mid-reply, NORMAL. */
     cfg->aec_mode = AEC_MODE_FD_HIGH_PERF;
-    /* NORMAL, not AGGR. Aggressive suppression works on whoever is quieter, and on
-     * this board that is everybody: the microphone delivers speech at about -47 dBFS
-     * where voice.c reckons arm's length to be -25, so WakeNet already runs near its
-     * threshold and the wake word became intermittent once NLP was turned up. The
-     * echo it lets back is the lesser problem — the kit that cannot be woken is
-     * useless, the kit that occasionally hears itself is merely wrong sometimes.
-     * The real fix is level, not suppression; see the mic gain note below. */
-    cfg->aec_nlp_level = AEC_NLP_LEVEL_NORMAL;
+    /* Configurable, because the two failures either side of it are both real here
+     * and which one bites depends on the enclosure, the volume and the room.
+     *
+     * Turned down it lets the kit hear its own speaker, and omni's speech detector
+     * takes that for the child: the Buddy interrupts itself mid-sentence. Turned up
+     * it suppresses whoever is quieter during playback, and on this board that is
+     * everybody — the microphone delivers speech at about -47 dBFS where this file
+     * reckons arm's length to be -25 — so WakeNet runs nearer its threshold and the
+     * wake word was intermittent when this was last turned up. Whichever way it is
+     * set, the real fix is level rather than suppression; see the mic gain note. */
+    static const aec_nlp_level_t NLP[] = {
+        AEC_NLP_LEVEL_NORMAL, AEC_NLP_LEVEL_AGGR, AEC_NLP_LEVEL_VERYAGGR,
+    };
+    cfg->aec_nlp_level = NLP[CONFIG_BUDDY_AEC_NLP_LEVEL];
     cfg->wakenet_init = true;
     cfg->wakenet_mode = CONFIG_BUDDY_WAKE_THRESHOLD_MODE ? DET_MODE_95 : DET_MODE_90;
     cfg->vad_init = false;               /* the session's own level gate decides "quiet" */
