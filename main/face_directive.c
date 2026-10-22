@@ -338,6 +338,29 @@ static void forget(void)
 
 /** Keep it, so the face survives a power cut. Stored raw: the thing that arrived is
  *  the thing that gets replayed, and no second format can drift from the first. */
+/* Is this the design the kit is already wearing?
+ *
+ * It matters because `face.update` is a *retained* MQTT message: the broker replays
+ * it on every connect, so face_directive_receive() runs at each boot with exactly
+ * what face_directive_restore() has just applied from NVS. Without this the kit
+ * would parade all seven states every time it powered on, and the preview would
+ * stop meaning "your design arrived" — which is the only thing it is for. */
+static bool same_as_kept(const char *json, size_t len)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t kept = 0;
+    bool same = false;
+    if (nvs_get_blob(h, NVS_KEY, NULL, &kept) == ESP_OK && kept == len && len) {
+        char *buf = malloc(len);
+        if (buf && nvs_get_blob(h, NVS_KEY, buf, &kept) == ESP_OK)
+            same = memcmp(buf, json, len) == 0;
+        free(buf);
+    }
+    nvs_close(h);
+    return same;
+}
+
 static void remember(const char *json, size_t len)
 {
     if (len > DESIGN_MAX) { ESP_LOGW(TAG, "design too large to keep (%u B)", (unsigned)len); return; }
@@ -355,14 +378,16 @@ static void remember(const char *json, size_t len)
 
 bool face_directive_receive(const char *json, size_t len)
 {
+    /* Asked before applying, because applying is what makes it the current one. */
+    bool unchanged = same_as_kept(json, len);
     bool ok = face_directive_apply(json, len);
     /* Only an actual design is kept, and not one that was just cleared — storing
      * that would only put it straight back. */
     if (ok && s_is_design && !s_cleared) remember(json, len);
-    /* And show it. A design that arrives is a child who just pressed Save and is
-     * watching the kit; face_directive_restore() deliberately does not do this,
-     * because nobody is watching a kit come out of a reboot. */
-    if (ok && !s_cleared) face_view_preview_states();
+    /* And show it, if it is new. A design that *changes* is a child who just pressed
+     * Save and is watching the kit; the same design arriving again is the broker
+     * replaying a retained message, which happens at every boot. */
+    if (ok && !s_cleared && !unchanged) face_view_preview_states();
     return ok;
 }
 
