@@ -32,3 +32,12 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
 
 /** True while a session is connected — the demo loops stand aside for a real one. */
 bool voice_active(void);
+
+/** Settle the face, or wake it.
+ *
+ * What a child's "bye bye" turns into: the Buddy wears `asleep` and stays that way
+ * until the wake word starts a new conversation, rather than for as long as the room
+ * happens to stay quiet. Deliberately NOT deep sleep — on this board that can only be
+ * undone with the RESET button (see BUDDY_SLEEP_WAKE_GPIO), and a Buddy a child
+ * cannot wake by speaking to it is not asleep, it is off. */
+void voice_face_rest(bool rest);

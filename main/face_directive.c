@@ -1,5 +1,6 @@
 #include "face_directive.h"
 #include "face_view.h"
+#include "voice.h"
 #include "face_motion.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
@@ -224,7 +225,13 @@ size_t face_expressions_advertise(char *buf, size_t n)
      * is advertising nothing but `face2d`. */
     int w = snprintf(buf, n,
                      "{\"type\":\"register_tools\",\"client_tools\":[],"
-                     "\"ui_context\":[{\"type\":\"face2d\",\"resting\":\"original\","
+                     /* What this kit can be *asked to do*, beside what it can wear.
+                      * The device is the only thing that knows which directives its
+                      * firmware actually implements, so it says so rather than letting
+                      * a persona assume. `rest` is face.rest above; deep sleep is
+                      * deliberately not offered while it needs a RESET to undo. */
+                     "\"ui_context\":[{\"type\":\"device\",\"actions\":[\"rest\"]},"
+                     "{\"type\":\"face2d\",\"resting\":\"original\","
                      "\"emotions\":[");
     if (w < 0 || (size_t)w >= n) return 0;
     for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
@@ -332,6 +339,25 @@ bool face_directive_apply(const char *json, size_t len)
     if (cJSON_IsString(type) && strncmp(type->valuestring, "face.", 5) != 0) {
         cJSON_Delete(root);
         return false;
+    }
+
+    /* `face.rest` — what a child's "bye bye" turns into. The Buddy settles and stays
+     * settled until it is spoken to again, which is the whole difference between this
+     * and the quiet timer: saying goodbye is itself a sound, and the timer would wake
+     * the face a second after the skill rested it.
+     *
+     * Deliberately not `device.sleep`, which this firmware also implements. On this
+     * board deep sleep can only be undone with the RESET button — the P4 wakes from an
+     * LP GPIO and BOOT is GPIO 35, which is not one — so a Buddy that deep-slept on
+     * "bye bye" would need an adult to revive it. A face that settles and wakes when
+     * spoken to is the behaviour a child means. */
+    if (cJSON_IsString(type) && !strcmp(type->valuestring, "face.rest")) {
+        const cJSON *data = cJSON_GetObjectItem(root, "data");
+        const cJSON *r = data ? cJSON_GetObjectItem(data, "rest") : NULL;
+        bool rest = cJSON_IsBool(r) ? cJSON_IsTrue(r) : true;   /* asking means rest */
+        voice_face_rest(rest);
+        cJSON_Delete(root);
+        return true;
     }
 
     /* Which face to wear right now. A conversation moves through these faster than

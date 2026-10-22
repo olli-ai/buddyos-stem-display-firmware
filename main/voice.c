@@ -182,6 +182,11 @@ static volatile bool s_want_interrupt;   /* barge-in, sent by send_task */
 static volatile uint32_t s_last_activity_ms;
 #if CONFIG_BUDDY_SCREEN_FACE
 static bool s_face_resting;              /* the face is wearing `asleep`, not `idle` */
+/* Asked for, rather than arrived at. The quiet timer below rests the face when the
+ * room goes silent and wakes it on any sound — which would undo a "bye bye" within a
+ * second, because saying goodbye is a sound. So a requested rest holds until the wake
+ * word, and the timer stands aside while it does. */
+static volatile bool s_face_rest_held;
 #endif
 
 /* After a barge-in, the reply omni already sent is still arriving. It is dropped
@@ -497,6 +502,7 @@ static void session_begin(uint32_t now)
     ESP_LOGI(TAG, "wake word: opening a conversation");
 #if CONFIG_BUDDY_SCREEN_FACE
     s_face_resting = false;              /* awake again, whatever the face was doing */
+    s_face_rest_held = false;            /* and a held rest ends when spoken to */
 #endif
     status_set(STATUS_CONNECTING);
     show_state("busy");                  /* heard, and working on it */
@@ -800,7 +806,8 @@ static void up_task(void *arg)
              * Its own quiet check, because the session's one is only reached while a
              * conversation is open: the `continue` above is in the way. */
             if (frame_rms(in, IN_SAMPLES) > VOICE_RMS) s_last_activity_ms = now;
-            bool rest = since(now, s_last_activity_ms) > CONFIG_BUDDY_FACE_ASLEEP_S * 1000;
+            bool rest = s_face_rest_held
+                     || since(now, s_last_activity_ms) > CONFIG_BUDDY_FACE_ASLEEP_S * 1000;
             if (rest != s_face_resting) {
                 s_face_resting = rest;
                 ESP_LOGI(TAG, "%s", rest ? "the room is quiet; the face rests"
@@ -1000,6 +1007,17 @@ static void down_task(void *arg)
 #endif
     }
 }
+
+#if CONFIG_BUDDY_SCREEN_FACE
+void voice_face_rest(bool rest)
+{
+    /* Recorded here and acted on by up_task, which owns the face's idle behaviour.
+     * Called from the MQTT task, which must not touch LVGL. */
+    s_face_rest_held = rest;
+    if (!rest) s_last_activity_ms = now_ms();   /* woken: start the quiet clock again */
+    ESP_LOGI(TAG, "a skill asks the face to %s", rest ? "settle down" : "wake up");
+}
+#endif
 
 #define VOICE_PATH "/v1/stem/voice/stream"
 
