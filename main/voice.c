@@ -69,10 +69,23 @@ static inline void mouth_feed(const int16_t *pcm, size_t n) { lipsync_feed(pcm, 
  * the face driven, which stops the demo cycle for good — right, because from the
  * first conversation onwards something real has an opinion about the face. */
 #if CONFIG_BUDDY_SCREEN_FACE
+/* States that begin a turn, and so end whatever expression the last one was wearing.
+ * `thinking` and `speaking` are the turn itself and must not clear it: the expression
+ * is chosen during the first and belongs to the second. */
+static bool starts_a_turn(const char *name)
+{
+    return !strcmp(name, "listening") || !strcmp(name, "idle")
+        || !strcmp(name, "busy")      || !strcmp(name, "error");
+}
+
 static void show_state(const char *name)
 {
     for (int i = 0; i < face_state_count; i++)
-        if (!strcmp(face_states[i].name, name)) { face_view_request_state(i); return; }
+        if (!strcmp(face_states[i].name, name)) {
+            if (starts_a_turn(name)) face_view_request_expression(NULL);
+            face_view_request_state(i);
+            return;
+        }
 }
 #else
 static inline void show_state(const char *name) { (void)name; }

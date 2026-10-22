@@ -69,9 +69,17 @@ static volatile bool s_parts_dirty;
  * later the voice pipeline. Same rule as the design: only the request crosses, the
  * drawing happens where the drawing happens. */
 /* An expression the model chose mid-sentence, worn over the state's own parts. It
- * is a different axis from state: a Buddy can be `speaking` and `surprised` at once,
- * and the next state change is what takes it off again. Requested from the voice
- * task, applied in the tick — see the note at the top of face_view_tick(). */
+ * is a different axis from state: a Buddy can be `speaking` and `surprised` at once.
+ *
+ * It is cleared at the start of the next *turn*, not at the next state change, and
+ * that distinction was worth a measurement. The expression arrives while omni is
+ * still `thinking` — it is sent as soon as the tag is reached, which is ahead of the
+ * audio — so clearing on a state change wiped it a fraction of a second later when
+ * the state became `speaking`, which is to say immediately before the words it was
+ * chosen for. Observed on hardware: `face: sad` at 30522 ms, `state -> speaking` at
+ * 31264 ms, and a face that never looked sad.
+ *
+ * Requested from the voice task, applied in the tick — see face_view_tick(). */
 static int16_t s_expr[5];
 static bool s_expr_on;
 static volatile int16_t s_want_expr[5];
@@ -421,9 +429,6 @@ void face_view_set_state(int state)
 {
     if (state < 0 || state >= face_state_count) return;
     s_state = state;
-    /* A new state is a new feeling: the expression the last one was wearing does not
-     * carry over, or a single [FACE:sad] would outlast the sentence that caused it. */
-    s_expr_on = false;
     for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(state, i));
     ESP_LOGI(TAG, "state -> %s (%u ms loop)", face_states[state].name, face_states[state].duration);
 }
