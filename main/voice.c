@@ -205,6 +205,25 @@ static volatile bool s_connected;
 static volatile bool s_speaking;
 static volatile uint32_t s_shed_silence, s_shed_old, s_underruns, s_late;
 
+#if CONFIG_BUDDY_SCREEN_FACE
+/* Expressions, held until the audio they belong to is actually being heard.
+ *
+ * omni already places each [FACE:x] by *audio* rather than by text: tts.py splits
+ * the stream at the tag and reports `at_ms`, the tag's position in this turn's
+ * audio. But it fires when omni *sends* that audio, and the kit plays it later —
+ * after the jitter buffer, the decoder and the I2S DMA. Applying on arrival
+ * therefore ran the face ahead of the voice, and a reply with several tags showed
+ * them in a burst while the kit was still speaking the first sentence.
+ *
+ * So the kit keeps its own clock: milliseconds of this turn's audio actually fed to
+ * the speaker, zeroed when a turn's speech starts. An expression waits in this queue
+ * until that clock reaches its `at_ms`. */
+#define EXPR_PENDING 8
+typedef struct { uint32_t at_ms; char id[20]; } expr_due_t;
+static QueueHandle_t s_expr_q;
+static volatile uint32_t s_play_ms;
+#endif
+
 /* omni's own barge-in, which needs no wake word. When its voice activity detection
  * hears the child over the reply it stops mid-sentence and says so: "flush_audio"
  * first, then "interrupted" a millisecond later.
@@ -248,8 +267,20 @@ static void on_status(const char *st)
         s_speaking = false;
         xQueueReset(s_down);
         mouth_stop();                    /* the mouth shuts with the speaker */
+#if CONFIG_BUDDY_SCREEN_FACE
+        /* Barge-in: the rest of that reply is never spoken, so the faces chosen for
+         * it must not appear over whatever is said next. */
+        if (s_expr_q) xQueueReset(s_expr_q);
+        s_play_ms = 0;
+#endif
     } else if (!strcmp(st, "speaking_started")) {
         s_flushing = false;              /* a new reply: what arrives now is current */
+#if CONFIG_BUDDY_SCREEN_FACE
+        /* A turn's audio starts here, so the clock its expressions are timed against
+         * does too. The queue is NOT cleared: a tag at the very start of a reply has
+         * at_ms 0 and can arrive a moment before this status does. */
+        s_play_ms = 0;
+#endif
     }
 
     if (!strcmp(st, "speaking_started")) s_speaking = true;
@@ -349,12 +380,19 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                  * Scheduling it against playback is the next thing, and it wants its
                  * own measurement — a face that changes late reads worse than one
                  * that changes a moment early. */
-                const cJSON *em = cJSON_GetObjectItem(j, "emotion");
-                const char *id = cJSON_GetStringValue(em);
-                if (face_expression_wear(id))
-                    ESP_LOGI(TAG, "face: %s", id);
-                else
-                    ESP_LOGW(TAG, "no expression '%s' in this firmware", id ? id : "?");
+                const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(j, "emotion"));
+                const cJSON *at = cJSON_GetObjectItem(j, "at_ms");
+                if (!id || !*id) break;
+                expr_due_t d = { .at_ms = cJSON_IsNumber(at) && at->valuedouble > 0
+                                          ? (uint32_t)at->valuedouble : 0 };
+                strlcpy(d.id, id, sizeof d.id);
+                /* Full means the model is tagging faster than they can be worn; drop
+                 * the oldest, which is the one most likely already overtaken. */
+                if (s_expr_q && xQueueSend(s_expr_q, &d, 0) != pdTRUE) {
+                    expr_due_t old;
+                    xQueueReceive(s_expr_q, &old, 0);
+                    xQueueSend(s_expr_q, &d, 0);
+                }
             }
 #endif
             cJSON_Delete(j);
@@ -917,6 +955,20 @@ static void down_task(void *arg)
         if (sp) mouth_feed(pcm, ns);
         was_speaking = sp;
         audio_write(pcm, ns);
+#if CONFIG_BUDDY_SCREEN_FACE
+        /* This frame is now the speaker's problem, so it counts as heard. Then wear
+         * anything the child has reached — more than one, if a short tag ran past. */
+        s_play_ms += (uint32_t)(ns / (AUDIO_SAMPLE_RATE / 1000));
+        expr_due_t d;
+        while (s_expr_q && xQueuePeek(s_expr_q, &d, 0) == pdTRUE && d.at_ms <= s_play_ms) {
+            xQueueReceive(s_expr_q, &d, 0);
+            if (face_expression_wear(d.id))
+                ESP_LOGI(TAG, "face: %s (due %lu ms, played %lu)", d.id,
+                         (unsigned long)d.at_ms, (unsigned long)s_play_ms);
+            else
+                ESP_LOGW(TAG, "no expression '%s' in this firmware", d.id);
+        }
+#endif
     }
 }
 
@@ -924,6 +976,9 @@ static void down_task(void *arg)
 
 bool voice_start(const char *serial, const char *gateway, const char *user_token)
 {
+#if CONFIG_BUDDY_SCREEN_FACE
+    if (!s_expr_q) s_expr_q = xQueueCreate(EXPR_PENDING, sizeof(expr_due_t));
+#endif
     if (s_ws) return true;
     if (!user_token || !user_token[0]) {
         ESP_LOGE(TAG, "no user token: omni resolves the persona with it (set the kit up "

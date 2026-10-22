@@ -359,6 +359,10 @@ bool face_directive_receive(const char *json, size_t len)
     /* Only an actual design is kept, and not one that was just cleared — storing
      * that would only put it straight back. */
     if (ok && s_is_design && !s_cleared) remember(json, len);
+    /* And show it. A design that arrives is a child who just pressed Save and is
+     * watching the kit; face_directive_restore() deliberately does not do this,
+     * because nobody is watching a kit come out of a reboot. */
+    if (ok && !s_cleared) face_view_preview_states();
     return ok;
 }
 

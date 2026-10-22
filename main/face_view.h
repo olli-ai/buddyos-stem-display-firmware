@@ -54,3 +54,9 @@ void face_view_set_live_mouth(int16_t sprite);
  *  turn ends. `parts` is {browL, eyeL, browR, eyeR, mouth}, or NULL to take it off.
  *  Safe from any task: it records, and the render tick applies it. */
 void face_view_request_expression(const int16_t parts[5]);
+
+/** Play every state once, about a second each, then go back to the one showing now.
+ *  What a child gets for pressing Save: the faces they just designed, which they
+ *  would otherwise only meet one at a time in the middle of a conversation. Anything
+ *  that asks for a state — a conversation, a directive — cancels it. */
+void face_view_preview_states(void);

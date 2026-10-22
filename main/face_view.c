@@ -85,6 +85,16 @@ static bool s_expr_on;
 static volatile int16_t s_want_expr[5];
 static volatile bool s_expr_pending, s_expr_clearing;
 
+/* The Save preview. A design arrives and the kit wears each state in turn, because
+ * the alternative is a child who never sees six of the seven faces they made: the
+ * kit sits in `idle` between conversations, and `idle` is the one state whose
+ * default (`original`) is the character's own artwork — designed to look untouched. */
+#define PREVIEW_MS 1100
+static volatile bool s_preview_req;
+static int s_preview_i = -1;
+static uint32_t s_preview_t0;
+static int s_preview_back;
+
 static volatile int s_want_state = -1;
 static volatile bool s_driven;
 
@@ -103,6 +113,8 @@ static int16_t part_of(int st, int i)
     if (s_expr_on) return s_expr[i];
     return s_parts_set ? s_parts[st][i] : face_design[st][i].sprite;
 }
+
+void face_view_preview_states(void) { s_preview_req = true; }
 
 void face_view_request_expression(const int16_t parts[5])
 {
@@ -508,7 +520,23 @@ void face_view_tick(uint32_t elapsed_ms)
     int want = s_want_state;
     if (want >= 0) {
         s_want_state = -1;
+        s_preview_i = -1;          /* something real wants the face; stop showing off */
         if (want != s_state) face_view_set_state(want);
+    }
+    if (s_preview_req) {
+        s_preview_req = false;
+        s_preview_back = s_state;
+        s_preview_i = 0;
+        s_preview_t0 = elapsed_ms;
+        face_view_set_state(0);
+    } else if (s_preview_i >= 0 && elapsed_ms - s_preview_t0 >= PREVIEW_MS) {
+        s_preview_t0 = elapsed_ms;
+        if (++s_preview_i >= face_state_count) {
+            s_preview_i = -1;
+            face_view_set_state(s_preview_back);
+        } else {
+            face_view_set_state(s_preview_i);
+        }
     }
     if (s_expr_pending) {
         s_expr_pending = false;
