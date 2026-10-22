@@ -551,6 +551,10 @@ void face_view_tick(uint32_t elapsed_ms)
     if (s_parts_dirty) {
         s_parts_dirty = false;
         for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
+        ESP_LOGI(TAG, "wearing %s: browL=%d eyeL=%d browR=%d eyeR=%d mouth=%d%s",
+                 face_states[s_state].name, part_of(s_state, 0), part_of(s_state, 1),
+                 part_of(s_state, 2), part_of(s_state, 3), part_of(s_state, 4),
+                 s_expr_on ? " (an expression is overriding the design)" : "");
     }
 
     face_values_t v[FACE_LAYER_COUNT];
