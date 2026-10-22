@@ -676,10 +676,34 @@ void face_view_tick(uint32_t elapsed_ms)
      * call does nothing. The S3 keeps the still body, which is right for it. */
 #if CONFIG_IDF_TARGET_ESP32P4
     {
+        const float UNIT = face_bg.header.w / 100.0f;
+
+        /* A head rotation becomes sideways movement, for the whole head at once.
+         *
+         * The website shakes the entire face, body and all, because a browser can
+         * rotate a layer for nothing. Here the body is composited by the PPA, which
+         * turns in quarter circles only — so a `shake` track could either rotate the
+         * features over a body that stayed put, which looks like a face sliding off
+         * its own head, or move everything together. It moves everything together.
+         *
+         * Substituting a translation for a rotation is a real approximation and is
+         * only honest at small angles: the website's shake is +/-6 degrees, where the
+         * features' arc about the face centre is within a pixel or two of a straight
+         * line. `r` is roughly where the features sit below that centre, so the
+         * travel matches what the eyes would have done had they really swung.
+         *
+         * It is applied to v[0] rather than to the body alone, which is the whole
+         * point — place() then carries the same movement into every feature, and the
+         * face stays assembled. */
+        if (v[0].rotation != 0.0f) {
+            const float r = face_bg.header.h / 3.0f;
+            v[0].x += -sinf(v[0].rotation * (float)M_PI / 180.0f) * r / UNIT;
+            v[0].rotation = 0.0f;
+        }
+
         /* The head's own x/y, in the same face units place() uses, turned into
          * whole panel pixels — the PPA translates exactly, so there is no rounding
          * to hide and a one-pixel move is a one-pixel move. */
-        const float UNIT = face_bg.header.w / 100.0f;
         int bx = (int)lroundf(v[0].x * UNIT), by = (int)lroundf(v[0].y * UNIT);
         if (bx != s_bx || by != s_by) {
             s_bx = bx; s_by = by;
