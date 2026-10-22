@@ -209,9 +209,23 @@ void face_view_set_state(int state)
     ESP_LOGI(TAG, "state -> %s (%u ms loop)", face_states[state].name, face_states[state].duration);
 }
 
+/* What each layer was last given, so an unchanged layer costs nothing.
+ *
+ * Every setter here marks its object dirty, and a dirty full-screen background is
+ * 518,400 pixels of redraw — so calling them unconditionally made every frame a full
+ * frame whether or not anything moved. gallery.c already learned this about its jaw
+ * ("only touches LVGL on a change of a whole pixel"); the face had not.
+ *
+ * It also quietly fixes the breathing. Scale arrives as a float and leaves as 256ths,
+ * so a 3 s breath cycle of a percent or two crosses an integer step a handful of
+ * times a second, not sixty: the body still breathes, and the expensive transform
+ * runs only on the frames where the result would actually differ. */
+typedef struct { int32_t sx, sy, rot, x, y; lv_opa_t opa; bool set; } placed_t;
+static placed_t s_placed[FACE_LAYER_COUNT];
+
 /* Place one image under the face transform composed with its own.
  * `ox, oy` is the sprite's untransformed top-left; w, h its size. */
-static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t *own,
+static void place(int slot, lv_obj_t *obj, const face_values_t *head, const face_values_t *own,
                   int32_t ox, int32_t oy, int32_t w, int32_t h)
 {
     const float FCX = face_bg.header.w / 2.0f, FCY = face_bg.header.h / 2.0f;
@@ -230,12 +244,27 @@ static void place(lv_obj_t *obj, const face_values_t *head, const face_values_t 
 
     /* A transform about the image's own centre leaves that centre where it is, so
      * putting the centre in the right place is all the positioning needed. */
+    placed_t p = {
+        .sx  = (int32_t)(sx * own->scale * 256.0f),
+        .sy  = (int32_t)(sy * own->scale * own->scale_y * 256.0f),
+        .rot = (int32_t)((head->rotation + own->rotation) * 10.0f),
+        .x   = (int32_t)lroundf(rx - w / 2.0f),
+        .y   = (int32_t)lroundf(ry - h / 2.0f),
+        .opa = (lv_opa_t)(head->opacity * own->opacity * 255.0f),
+        .set = true,
+    };
+    placed_t *was = &s_placed[slot];
+    if (was->set && p.sx == was->sx && p.sy == was->sy && p.rot == was->rot
+        && p.x == was->x && p.y == was->y && p.opa == was->opa)
+        return;                          /* nothing moved: leave the screen alone */
+    *was = p;
+
     lv_image_set_pivot(obj, w / 2, h / 2);
-    lv_image_set_scale_x(obj, (int32_t)(sx * own->scale * 256.0f));
-    lv_image_set_scale_y(obj, (int32_t)(sy * own->scale * own->scale_y * 256.0f));
-    lv_image_set_rotation(obj, (int32_t)((head->rotation + own->rotation) * 10.0f));
-    lv_obj_set_pos(obj, (int32_t)lroundf(rx - w / 2.0f), (int32_t)lroundf(ry - h / 2.0f));
-    lv_obj_set_style_opa(obj, (lv_opa_t)(head->opacity * own->opacity * 255.0f), 0);
+    lv_image_set_scale_x(obj, p.sx);
+    lv_image_set_scale_y(obj, p.sy);
+    lv_image_set_rotation(obj, p.rot);
+    lv_obj_set_pos(obj, p.x, p.y);
+    lv_obj_set_style_opa(obj, p.opa, 0);
 }
 
 void face_view_tick(uint32_t elapsed_ms)
@@ -266,7 +295,7 @@ void face_view_tick(uint32_t elapsed_ms)
     face_motion_sample(s_state, elapsed_ms, v);
 
     static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
-    place(s_bg, &v[0], &REST, 0, 0, face_bg.header.w, face_bg.header.h);
+    place(0, s_bg, &v[0], &REST, 0, 0, face_bg.header.w, face_bg.header.h);
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         if (i == MOUTH_LAYER && s_live_mouth >= 0) {
@@ -281,6 +310,6 @@ void face_view_tick(uint32_t elapsed_ms)
         }
         if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
         if (!s_img[i]) continue;
-        place(s_layer[i], &v[0], &v[i], s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
+        place(i, s_layer[i], &v[0], &v[i], s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
     }
 }

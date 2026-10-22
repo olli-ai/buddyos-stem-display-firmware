@@ -81,7 +81,16 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
      * is ready here, not in a completion callback. The P4's MIPI-DSI DPI panel does the
      * same (a CPU copy plus a cache write-back, as long as its DMA2D option is off), and
      * so does MIPI's colour order: RGB565 straight from memory, no swap. */
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* Direct mode: px IS one of the panel's frame buffers, so there is nothing to
+     * copy — handing it back to the DPI panel switches which one is scanned out.
+     * Only the last call of a frame carries the whole screen, which is the one that
+     * should swap; the rest are partial areas of the buffer already being drawn. */
+    if (lv_display_flush_is_last(d))
+        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, px);
+#else
     esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
+#endif
     lv_display_flush_ready(d);
 }
 
@@ -150,11 +159,30 @@ void app_main(void)
      * per frame while blending, and PSRAM is the bus the panel is already streaming
      * the frame buffer from. Not DMA — nothing but the CPU touches it. Got before the
      * radio fragments the heap. */
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* Draw into the panel's own buffers. Partial rendering meant twenty blend-and-copy
+     * passes for a full 720x720 frame and measured 93 ms; here LVGL blends into the
+     * memory the display controller is already scanning, and the flush is a buffer
+     * swap rather than a megabyte of copying. The S3 keeps the partial path: its
+     * RGB panel has no frame buffer to lend, and at 240x240 it did not need one. */
+    void *fb0 = NULL, *fb1 = NULL;
+    esp_err_t fberr = lcd_p4_buffers(&fb0, &fb1);
+    if (fberr != ESP_OK || !fb0 || !fb1) {
+        ESP_LOGE(TAG, "no frame buffers from the panel (%s)", esp_err_to_name(fberr));
+        return;
+    }
+    size_t buf_bytes = (size_t)LCD_W * LCD_H * sizeof(uint16_t);
+    lv_display_set_buffers(disp, fb0, fb1, buf_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+    lv_display_set_flush_cb(disp, flush_cb);
+    ESP_LOGI(TAG, "draw buffers: 2 x %u B, the panel's own; direct rendering",
+             (unsigned)buf_bytes);
+#else
     size_t buf_bytes = BUF_PX * sizeof(uint16_t);
     void *buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!buf) { ESP_LOGE(TAG, "no internal memory for a %u B draw buffer", (unsigned)buf_bytes); return; }
     lv_display_set_buffers(disp, buf, NULL, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flush_cb);
+#endif
 
     /* After the panel: on the S3 TP_RST is the panel's reset line, and starting the
      * panel pulsed it. */
@@ -181,7 +209,6 @@ void app_main(void)
      * up calls setup_ui_set() from the net task the moment that task starts. */
     setup_ui_create(scr);
 #endif
-    ESP_LOGI(TAG, "draw buffer: 1 x %u B internal; frame buffer in PSRAM", (unsigned)buf_bytes);
     mem_report("gallery up");
 
 #if CONFIG_BUDDY_AUDIO
@@ -208,11 +235,31 @@ void app_main(void)
     sleep_init();
 
     uint32_t report = 0;
+    uint32_t lvgl_frames = 0, lvgl_worst = 0;
+    uint64_t lvgl_total = 0;
     while (1) {
+        /* What a frame actually costs, which is the only way to tell an optimisation
+         * from a change. lv_timer_handler() is where the face is composited and the
+         * panel is fed, so its worst case is the frame budget: 16 ms at 60 fps. */
+        int64_t t0 = esp_timer_get_time();
         uint32_t wait = lv_timer_handler();
+        uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+        if (us > lvgl_worst) lvgl_worst = us;
+        lvgl_total += us;
+        lvgl_frames++;
         vTaskDelay(pdMS_TO_TICKS(wait > 20 ? 20 : (wait < 2 ? 2 : wait)));
         /* The measurement the planning docs have been arguing about instead of
          * taking. It means little until the radio is up, which is the next step. */
-        if (++report > 1500) { report = 0; mem_report("running"); }
+        if (++report > 300) {
+            report = 0;
+            mem_report("running");
+            if (lvgl_frames) {
+                ESP_LOGI(TAG, "lvgl: %lu frames, mean %lu us, worst %lu us (16000 is 60 fps)",
+                         (unsigned long)lvgl_frames,
+                         (unsigned long)(lvgl_total / lvgl_frames),
+                         (unsigned long)lvgl_worst);
+                lvgl_frames = lvgl_total = lvgl_worst = 0;
+            }
+        }
     }
 }

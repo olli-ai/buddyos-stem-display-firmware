@@ -88,15 +88,23 @@ esp_err_t lcd_p4_start(esp_lcd_panel_handle_t *out)
     esp_lcd_dbi_io_config_t ioc = { .virtual_channel = 0, .lcd_cmd_bits = 8, .lcd_param_bits = 8 };
     if ((err = esp_lcd_new_panel_io_dbi(bus, &ioc, &io)) != ESP_OK) return err;
 
-    /* One frame buffer and no DMA2D: draw_bitmap is then a CPU copy into it that has
-     * finished when it returns, which is the flush main.c already does for the S3's
-     * RGB panel. 720x720 RGB565 is 1 MB of PSRAM. */
+    /* TWO frame buffers, and LVGL renders straight into them — see lcd_p4_buffers().
+     *
+     * With one, LVGL had to blend into a small internal buffer and have draw_bitmap
+     * copy each piece across; at 720x720 that is twenty passes and twenty copies for
+     * a full frame, which measured 93 ms — about 72 CPU cycles a pixel, which no
+     * alpha blend costs. The passes were the price, not the blending. Rendering into
+     * the buffer the panel is already scanning removes both, and the second buffer is
+     * what makes that tear-free: LVGL draws one while the DMA shows the other.
+     *
+     * 720x720 RGB565 is 1 MB each, of 32 MB. On the S3, with a whole screen of
+     * 57,600 pixels, none of this was worth doing. */
     esp_lcd_dpi_panel_config_t dpi = {
         .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
         .dpi_clock_freq_mhz = 80,
         .virtual_channel = 0,
         .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
-        .num_fbs = 1,
+        .num_fbs = 2,
         .video_timing = {
             .h_size = LCD_P4_W, .v_size = LCD_P4_H,
             .hsync_back_porch = 20, .hsync_pulse_width = 20, .hsync_front_porch = 40,
@@ -125,6 +133,12 @@ esp_err_t lcd_p4_start(esp_lcd_panel_handle_t *out)
     ESP_LOGI(TAG, "JD9365 %dx%d over 2-lane MIPI-DSI, 1 MB frame buffer in PSRAM", LCD_P4_W, LCD_P4_H);
     *out = s_panel;
     return ESP_OK;
+}
+
+esp_err_t lcd_p4_buffers(void **fb0, void **fb1)
+{
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_dpi_panel_get_frame_buffer(s_panel, 2, fb0, fb1);
 }
 
 void lcd_p4_set_on(bool on)

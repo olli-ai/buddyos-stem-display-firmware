@@ -18,5 +18,9 @@
  *  backlight. The frame buffer is black. */
 esp_err_t lcd_p4_start(esp_lcd_panel_handle_t *out);
 
+/** The panel's own frame buffers, for LVGL to render directly into. Valid after
+ *  lcd_p4_start(). Two of them, so one is drawn while the other is displayed. */
+esp_err_t lcd_p4_buffers(void **fb0, void **fb1);
+
 /** Backlight and DISPOFF/DISPON together. */
 void lcd_p4_set_on(bool on);
