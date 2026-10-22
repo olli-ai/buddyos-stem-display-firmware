@@ -155,8 +155,60 @@ void face_view_request_expression(const int16_t parts[5])
  * A character's artist drew eyes and a mouth, never brows. */
 static const int ART_SLOT[FACE_LAYER_COUNT] = { -1, -1, 0, -1, 1, 2 };
 
-/* The panel over the catalogue's own size: see where it is set. */
+/* A catalogue character is baked smaller than the panel and scaled up when worn;
+ * everything measured in its own space carries this factor. Declared here because
+ * measure_features() below needs it. */
 static float s_cat_scale = 1.0f;
+
+/* Which feature each layer belongs to: face, browL, eyeL, browR, eyeR, mouth.
+ * A brow belongs to its own eye, so it moves with it. */
+static const int FEATURE_SLOT[FACE_LAYER_COUNT] = { -1, 0, 0, 1, 1, 2 };
+
+/* The firmware's own face carries its eyes and mouth *inside* face_bg — that is why
+ * `artwork` draws nothing extra on the built-in character. So there is no stored
+ * anchor saying where its left eye is; the only record is where the drawn parts were
+ * authored to sit, which is what these are for. One plain part per feature, measured
+ * once, is the built-in face's anchor for that feature. */
+static const struct { const char *layer, *part; } FEATURE_REF[3] = {
+    { "eyeL", "round" }, { "eyeR", "round" }, { "mouth", "neutral" },
+};
+
+/* Where this character wants each feature, minus where the built-in face put it.
+ * Added to every drawn part, so a designed eye lands on the character's eye rather
+ * than on the eye of whichever face the sprites were drawn for. */
+static int16_t s_feat_dx[3], s_feat_dy[3];
+
+static int16_t find_sprite(const char *layer, const char *part)
+{
+    for (int i = 0; i < face_sprite_count; i++)
+        if (!strcmp(face_sprites[i].layer, layer) && !strcmp(face_sprites[i].part, part))
+            return (int16_t)i;
+    return -1;
+}
+
+/* One delta per feature, not one per sprite: parts of a feature keep the sizes and
+ * offsets their artist gave them relative to each other, and the whole feature moves
+ * together. Recomputed whenever the character changes. */
+static void measure_features(void)
+{
+    for (int slot = 0; slot < 3; slot++) {
+        s_feat_dx[slot] = s_feat_dy[slot] = 0;
+        if (!s_char || !s_char->art[slot].header.w) continue;   /* built-in: no shift */
+        int16_t r = find_sprite(FEATURE_REF[slot].layer, FEATURE_REF[slot].part);
+        if (r < 0 || !face_sprites[r].img) continue;
+        const face_sprite_t *sp = &face_sprites[r];
+        float cx = (s_char->art_x[slot] + s_char->art[slot].header.w / 2.0f) * s_cat_scale;
+        float cy = (s_char->art_y[slot] + s_char->art[slot].header.h / 2.0f) * s_cat_scale;
+        s_feat_dx[slot] = (int16_t)lroundf(cx - (sp->x + sp->img->header.w / 2.0f));
+        s_feat_dy[slot] = (int16_t)lroundf(cy - (sp->y + sp->img->header.h / 2.0f));
+    }
+    if (s_char)
+        ESP_LOGI(TAG, "'%s' wants its parts moved: eyeL %+d,%+d  eyeR %+d,%+d  mouth %+d,%+d",
+                 s_char->id, s_feat_dx[0], s_feat_dy[0], s_feat_dx[1], s_feat_dy[1],
+                 s_feat_dx[2], s_feat_dy[2]);
+}
+
+/* The panel over the catalogue's own size: see where it is set. */
 
 static void show_sprite(int layer, int16_t idx)
 {
@@ -175,8 +227,13 @@ static void show_sprite(int layer, int16_t idx)
             y = (int16_t)lroundf(s_char->art_y[slot] * s_cat_scale);
         }
     } else if (idx >= 0 && idx < face_sprite_count) {
+        /* A drawn part, authored for the built-in face. Shifted onto this character's
+         * own feature, or it sits where somebody else's eye was — which on Pip put
+         * the eyes low on the head with the mouth crowding between them. */
         const face_sprite_t *sp = &face_sprites[idx];
         img = sp->img; x = sp->x; y = sp->y;
+        int slot = FEATURE_SLOT[layer];
+        if (slot >= 0) { x += s_feat_dx[slot]; y += s_feat_dy[slot]; }
     } else {
         return;
     }
@@ -362,6 +419,7 @@ static void wear_character(const face_character_t *c)
     s_char = c;
     /* The catalogue's artwork parts and their offsets are in its own space. */
     s_cat_scale = (c && c->bg.header.w) ? (float)face_bg.header.w / c->bg.header.w : 1.0f;
+    measure_features();              /* needs s_char and s_cat_scale, both just set */
     reflatten();
     /* Every layer showing artwork is now showing somebody else's, so make them all
      * resolve again rather than trusting what is on screen. */
