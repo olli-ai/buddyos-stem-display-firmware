@@ -295,7 +295,22 @@ void face_view_tick(uint32_t elapsed_ms)
     face_motion_sample(s_state, elapsed_ms, v);
 
     static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
-    place(0, s_bg, &v[0], &REST, 0, 0, face_bg.header.w, face_bg.header.h);
+    /* The body does not take the head's transform, and on this panel that is a
+     * deliberate trade rather than an omission.
+     *
+     * Scaling a full-screen alpha image means inverse-mapping and interpolating
+     * 518,400 pixels on one core with no SIMD. Measured on the board, at 720x720, a
+     * frame that did it cost 330 ms against a 16 ms budget; the same frame without
+     * it costs 12-141 ms, and the quiet frames either side fall from 35 ms to under
+     * 2 ms. At the S3's 240x240 the same code moved a ninth of the pixels and nobody
+     * noticed.
+     *
+     * The features still breathe — brows, eyes and mouth are small enough that
+     * transforming them is free — so the face is alive; it is the body that holds
+     * still. Restoring it wants the PPA, which scales in hardware, and even that
+     * only recovers the transform: the full-screen alpha blend underneath is the
+     * other half of the cost and PPA's scale-rotate-mirror does not touch it. */
+    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         if (i == MOUTH_LAYER && s_live_mouth >= 0) {
