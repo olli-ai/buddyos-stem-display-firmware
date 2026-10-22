@@ -270,7 +270,7 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
          * expression its design gives the state. Sent on every connect because a
          * reconnect is a new session to omni, which remembers nothing. */
         {
-            char ad[320];
+            char ad[384];   /* the whole vocabulary, with room to spare */
             size_t n = face_expressions_advertise(ad, sizeof ad);
             if (n && esp_websocket_client_send_text(s_ws, ad, n, pdMS_TO_TICKS(200)) > 0)
                 ESP_LOGI(TAG, "offered this face's expressions");

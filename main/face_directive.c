@@ -49,11 +49,14 @@ static int16_t sprite_of(const char *layer, const char *part)
  * `not a kit expression`, so a drift between the two shows up in a log line on the
  * first conversation rather than as a face that never changes.
  *
- * Ten, not eighteen, and the order is the kit's choice: omni caps a vocabulary at
- * MAX_EMOTIONS=10 because instruction compliance falls off with choice count, and a
- * list sent longer than that is truncated silently. Better to choose the ten than to
- * discover which ten survived. They are picked to span the range rather than to
- * crowd one end of it, and `original` is first because it is also the resting face.
+ * All eighteen. omni used to take the first ten and drop the rest where nobody could
+ * see it happen; it no longer caps a kit at all, because a kit's vocabulary is a
+ * closed set — every id has to be a key of KIT_EXPRESSIONS over there, so the list is
+ * bounded by that table rather than by anything a device claims.
+ *
+ * `original` stays first because it is also the resting face, and the rest run from
+ * the expressions a conversation reaches for most often to the ones it rarely does.
+ * Order no longer decides what survives, but it is still the order the model reads.
  */
 typedef struct { const char *id, *eyes, *brows, *mouth; } expression_t;
 
@@ -68,6 +71,14 @@ static const expression_t EXPRESSIONS[] = {
     { "thinking",  "lookup",  "furrow",  "flatsmile" },
     { "love",      "heart",   "raised",  "smile"     },
     { "sleepy",    "closed",  "none",    "snore"     },
+    { "neutral",   "round",   "none",    "flatsmile" },
+    { "talking",   "round",   "none",    "open"      },
+    { "focused",   "squint",  "furrow",  "neutral"   },
+    { "cool",      "squint",  "flat",    "smirk"     },
+    { "starry",    "star",    "raised",  "laugh"     },
+    { "angry",     "angry",   "angry",   "bigfrown"  },
+    { "dizzy",     "spiral",  "worried", "wave"      },
+    { "ko",        "cross",   "worried", "squiggle"  },
 };
 #define N_EXPRESSIONS (sizeof EXPRESSIONS / sizeof *EXPRESSIONS)
 
