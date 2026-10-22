@@ -581,9 +581,60 @@ The kit empties its playback queue on that, because the cloud cannot — half a 
 the abandoned sentence is already here, queued and in the codec's DMA, and playing it
 out would sound exactly like not having been heard. Saying "Jarvis" still works and is
 still faster, since it needs no round trip. Whether the cloud interrupts itself at all
-depends on the persona: `profile_settings.interruption` must not be `none`, and the
-`vad_processor` plugin gives the quick path (a quarter second of speech); without it the
-decision waits for transcribed words.
+depends on the persona: `profile_settings.interruption` must not be `none`.
+
+> **Do not put `vad_processor` on a persona this kit uses.** It is the quick path for a
+> browser and it is a dead end here, in a way that looks like nothing happening.
+>
+> Loading it switches omni's ASR-based interruption **off** and puts VAD in charge; VAD
+> then gates every onset on loudness, `has_speech AND (loudness > loudness_at_onset)`,
+> which defaults to **-30 dBFS** (`app/config.py`). This kit streams at around **-57**.
+> It never clears the bar, so VAD never fires — and the path that would have worked was
+> turned off to get there. Measured over 114 s of a real conversation:
+> `vad_speech_active=False` throughout, while the ASR was transcribing the child at 0.85
+> confidence the whole time.
+>
+> Echo suppression makes this worse rather than better. NLP works on whoever is quieter
+> during playback, so the louder it is set the further the child's voice sits below that
+> -30 gate. The two settings pull against each other, and only one of them is helping.
+>
+> Either leave `vad_processor` off and let the ASR path do it, or set
+> `loudness_at_onset: null` on the plugin entry (that is the documented way to disable
+> the gate) — the microphone sensitivity control in the website's persona editor writes
+> exactly that. Until the kit's input level is fixed, off is the safer of the two.
+
+### How hard to suppress the echo
+
+`CONFIG_BUDDY_AEC_NLP_LEVEL` — 0 normal, 1 aggressive, 2 very aggressive, **default 2**.
+It is a knob rather than a constant because the failures either side of it are both real
+on this board, and which one bites depends on the enclosure, the volume and the room.
+
+Too low and the kit hears its own speaker: omni's speech detector takes the Buddy's
+voice for the child and the Buddy interrupts itself mid-sentence. Caught in a log at
+NORMAL — `speaking_started` 45410, `interrupted` 47819, two and a half seconds into its
+own reply.
+
+Measured on the board, echo left in the microphone while the Buddy talks, against a
+reference slot at about 15000/32768:
+
+| `BUDDY_AEC_NLP_LEVEL` | residue in the mic |
+| --- | --- |
+| 1 aggressive | `M:83/833` |
+| 2 very aggressive | `M:37/536` |
+
+Turning it to the top roughly halves what leaks through. The cost it is supposed to
+carry — NLP suppresses whoever is quieter, and the child is quieter — did not show up:
+the wake word was heard 3 of 4 times at aggressive and 5 of 6 at very aggressive. Both
+samples are far too small to separate, which is the honest reading; what they do rule
+out is the collapse that made this NORMAL in the first place.
+
+**The real fix is level, not suppression.** This board's microphone delivers speech at
+about -47 dBFS where `voice.c` reckons arm's length to be -25 — roughly 22 dB quiet.
+That is what puts WakeNet near its threshold at *any* NLP setting, what puts the child
+below omni's -30 dB VAD gate, and so what forces the trade at all. Note that raising
+`CONFIG_BUDDY_MIC_GAIN_DB` is **not** that fix: 30 -> 37 lifted the *reference* slot
+about twentyfold rather than the microphones, wrecking the cancellation it was meant to
+help. It wants the ES7210's per-channel gain instead.
 
 **What bring-up found** (2026-10-21, one board, P4 silicon v3.2):
 
