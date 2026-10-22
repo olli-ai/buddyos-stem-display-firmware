@@ -1,5 +1,6 @@
 #include "face_directive.h"
 #include "face_view.h"
+#include "face_motion.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
 #include "generated/face_assets.h"
@@ -10,6 +11,7 @@
 #include "esp_err.h"
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "design";
 
@@ -34,6 +36,139 @@ static int16_t sprite_of(const char *layer, const char *part)
         if (!strcmp(face_sprites[i].layer, layer) && !strcmp(face_sprites[i].part, part))
             return (int16_t)i;
     return -1;
+}
+
+/* ── a design's own motion ────────────────────────────────────────────────────
+ *
+ * The website authors tracks of exactly the shape the baker produces, so this is a
+ * conversion rather than an interpreter: names to indices, floats to the baked
+ * fixed-point units, and the keys handed to face_motion.c to sample like any other.
+ *
+ * What the hardware can do with them differs by property, and that is worth knowing
+ * before reading a bug report. Every layer's transform is LVGL's, so brows, eyes and
+ * the mouth take all of it. The *body* is composited by the PPA (face_view.c), which
+ * translates to the pixel but cannot rotate by less than a quarter turn or scale by
+ * less than a sixteenth — so on a whole-head track, `x` and `y` move the body and
+ * `rotation` and `scale` move only the features over it. `shake` is a rotation
+ * track, so it shakes the face without shaking the head.
+ */
+
+/* The website's lists, in its order: these indices are the wire format. */
+static const char *MOTION_LAYERS[] = { "face", "browL", "eyeL", "browR", "eyeR", "mouth" };
+static const char *MOTION_PROPS[]  = { "x", "y", "scale", "scaleY", "rotation", "opacity" };
+static const char *MOTION_EASINGS[] = { "step", "linear", "easeIn", "easeOut",
+                                        "easeInOut", "back", "bounce" };
+
+static int index_of(const char *const *list, int n, const char *s)
+{
+    if (!s) return -1;
+    for (int i = 0; i < n; i++) if (!strcmp(list[i], s)) return i;
+    return -1;
+}
+#define N_OF(a) ((int)(sizeof(a) / sizeof(*(a))))
+
+/* One numeric value into the units the baker uses. Clamped rather than wrapped: a
+ * design is network input, and an int16 that rolls over draws a face inside out. */
+static int16_t fixed(uint8_t prop, double v)
+{
+    double scaled;
+    switch (prop) {
+        case 0: case 1: scaled = v * 16.0;    break;   /* x, y: face units */
+        case 2: case 3: scaled = v * 1024.0;  break;   /* scale, scaleY */
+        case 4:         scaled = v * 64.0;    break;   /* rotation, degrees */
+        default:        scaled = v * 255.0;   break;   /* opacity */
+    }
+    if (scaled > 32767.0) scaled = 32767.0;
+    if (scaled < -32768.0) scaled = -32768.0;
+    return (int16_t)lround(scaled);
+}
+
+/* `extra.motion.states` — the child's own loops, replacing the baked ones per state. */
+static void apply_motion(const cJSON *motion)
+{
+    face_motion_design_clear();
+    if (!motion) return;                 /* no motion authored: the baked loops, as always */
+    const cJSON *states = cJSON_IsObject(motion) ? cJSON_GetObjectItem(motion, "states") : NULL;
+    if (!cJSON_IsObject(states)) {
+        ESP_LOGW(TAG, "this design has a motion key with no states in it");
+        return;
+    }
+
+    int added = 0, refused = 0;
+    for (int st = 0; st < face_state_count; st++) {
+        const cJSON *sm = cJSON_GetObjectItem(states, face_states[st].name);
+        if (!cJSON_IsObject(sm)) continue;
+        const cJSON *dur = cJSON_GetObjectItem(sm, "duration");
+        const cJSON *tracks = cJSON_GetObjectItem(sm, "tracks");
+        if (!cJSON_IsNumber(dur) || dur->valuedouble <= 0 || !cJSON_IsArray(tracks)) continue;
+        uint16_t duration = (uint16_t)(dur->valuedouble > 65535 ? 65535 : dur->valuedouble);
+
+        const cJSON *tr;
+        cJSON_ArrayForEach(tr, tracks) {
+            if (!cJSON_IsObject(tr)) continue;
+            int layer = index_of(MOTION_LAYERS, N_OF(MOTION_LAYERS),
+                                 cJSON_GetStringValue(cJSON_GetObjectItem(tr, "layer")));
+            const char *pname = cJSON_GetStringValue(cJSON_GetObjectItem(tr, "prop"));
+            const cJSON *keys = cJSON_GetObjectItem(tr, "keys");
+            if (layer < 0 || !pname || !cJSON_IsArray(keys)) { refused++; continue; }
+            bool is_sprite = !strcmp(pname, "sprite");
+            int prop = is_sprite ? 255 : index_of(MOTION_PROPS, N_OF(MOTION_PROPS), pname);
+            if (prop < 0) { refused++; continue; }
+
+            face_key_t buf[48];
+            int n = 0;
+            const cJSON *k;
+            cJSON_ArrayForEach(k, keys) {
+                if (n >= (int)(sizeof buf / sizeof *buf) || !cJSON_IsObject(k)) break;
+                const cJSON *kt = cJSON_GetObjectItem(k, "t");
+                if (!cJSON_IsNumber(kt)) continue;
+                int16_t v;
+                if (is_sprite) {
+                    /* A sprite key names a part, as the design's states do. Resolved
+                     * against this layer, so `closed` means the closed *eye*. */
+                    v = sprite_of(MOTION_LAYERS[layer],
+                                  cJSON_GetStringValue(cJSON_GetObjectItem(k, "id")));
+                    if (v < 0 && v != FACE_PART_ARTWORK) continue;
+                } else {
+                    const cJSON *kv = cJSON_GetObjectItem(k, "v");
+                    if (!cJSON_IsNumber(kv)) continue;
+                    v = fixed((uint8_t)prop, kv->valuedouble);
+                }
+                int e = index_of(MOTION_EASINGS, N_OF(MOTION_EASINGS),
+                                 cJSON_GetStringValue(cJSON_GetObjectItem(k, "e")));
+                buf[n++] = (face_key_t){
+                    .t = (uint16_t)(kt->valuedouble > 65535 ? 65535 : kt->valuedouble),
+                    .v = v,
+                    .e = (uint8_t)(e < 0 ? 4 : e),      /* the website's own default */
+                };
+            }
+            if (!n) { refused++; continue; }
+
+            const cJSON *every = cJSON_GetObjectItem(tr, "every");
+            uint16_t ev = cJSON_IsNumber(every) && every->valuedouble > 0
+                        ? (uint16_t)(every->valuedouble > 65535 ? 65535 : every->valuedouble) : 0;
+            if (face_motion_design_add(st, duration, (uint8_t)layer, (uint8_t)prop, buf, n, ev))
+                added++;
+            else
+                refused++;
+        }
+    }
+    if (added) {
+        /* Which states the child re-authored, by name — the states they did not keep
+         * the baked loop, and that distinction is invisible otherwise. */
+        char named[96] = "";
+        for (int st = 0; st < face_state_count; st++)
+            if (face_motion_state_has_design(st)) {
+                strlcat(named, named[0] ? "," : "", sizeof named);
+                strlcat(named, face_states[st].name, sizeof named);
+            }
+        ESP_LOGI(TAG, "this design brings its own motion: %d tracks over %s%s",
+                 added, named, refused ? " (some refused)" : "");
+    } else if (refused) {
+        ESP_LOGW(TAG, "this design's motion could not be read; the built-in loops stay");
+    } else {
+        ESP_LOGW(TAG, "this design's motion names no state this device has");
+    }
 }
 
 /* ── expressions ──────────────────────────────────────────────────────────────
@@ -236,6 +371,7 @@ bool face_directive_apply(const char *json, size_t len)
         ESP_LOGI(TAG, "design cleared — back to the built-in face");
         s_cleared = true;
         face_view_reset_parts();
+        face_motion_design_clear();      /* back to the loops this kit was built with */
         face_lipsync_set_mouths(face_viseme_sprite);
         cJSON_Delete(root);
         forget();
@@ -319,11 +455,7 @@ bool face_directive_apply(const char *json, size_t len)
 
     apply_talk(cJSON_GetObjectItem(extra, "talk"));
 
-    /* Motion is not applied yet: the keyframe tracks are baked, and reading them
-     * from a design means an interpreter that builds tracks at runtime. Saying so
-     * beats a face that silently keeps the factory's blink. */
-    if (cJSON_GetObjectItem(extra, "motion"))
-        ESP_LOGW(TAG, "this design has motion; the device still plays the built-in loops");
+    apply_motion(cJSON_GetObjectItem(extra, "motion"));
 
     s_is_design = true;
     cJSON_Delete(root);
