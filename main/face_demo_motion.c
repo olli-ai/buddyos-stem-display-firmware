@@ -7,19 +7,20 @@
  *
  *   nod      face.y  0 -> 3 -> 0           translation  — exact, to the pixel
  *   bounce   face.y -6 -> 0 -> -6          translation  — exact, to the pixel
- *   shake    face.rotation 0 -> -6 -> +6   rotation     — substituted: face_view.c
- *                                                         turns a head rotation into
- *                                                         the sideways travel it
- *                                                         mostly reads as, so the
- *                                                         whole face moves
+ *   shake    face.rotation 0 -> -6 -> +6   rotation     — real, from pre-rendered
+ *                                                         turned copies of the body
+ *                                                         (face_view.c); the PPA
+ *                                                         cannot turn, so the turn
+ *                                                         exists before the frame
  *   breathe  face.scale 1 -> 1.025 -> 1    scale        — the body cannot: PPA
  *                                                         quantises scale to 1/16,
  *                                                         and 1.025 rounds to 1.000
  *
  * A fifth is kept that is not the website's — `shake-x`, the same 700 ms rhythm
- * written as a horizontal translation from the start. It is here to be compared
- * against the substituted `shake`: the two should now look close, and if they ever
- * stop looking close the substitution has drifted.
+ * written as a horizontal translation. It was the stand-in while rotation was
+ * approximated, and it stays as the contrast: `shake` should now look like a head
+ * turning and `shake-x` like a head sliding, and they should no longer resemble
+ * each other at all.
  *
  * The features keep their own transforms either way: LVGL still scales and rotates
  * brows, eyes and mouth, because they are small. It is only the 518,400-pixel body
@@ -63,7 +64,7 @@ static const preset_t PRESETS[] = {
     { "nod (y, exact)",            1200, 1, NOD,     4 },
     { "bounce (y, exact)",         1400, 1, BOUNCE,  3 },
     { "shake-x (x, exact)",          700, 0, SHAKE_X, 5 },
-    { "shake (rotation -> sideways)",700, 4, SHAKE,   5 },
+    { "shake (rotation, real)",      700, 4, SHAKE,   5 },
     { "breathe (scale, body still)",3000, 2, BREATHE, 3 },
 };
 #define N_PRESETS (sizeof PRESETS / sizeof *PRESETS)

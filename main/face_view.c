@@ -293,16 +293,22 @@ static uint32_t s_body_bg;
  * circles only — so the turn has to exist before the frame does. These are the body
  * at a handful of fixed angles, built once when a character is first asked to rotate.
  *
- * They are kept at the size the body was *baked* at, not the panel's, and that costs
- * nothing: a catalogue character is 384 square and is upscaled to 720 either way, so
- * a 384 copy holds every pixel of information the 720 one did. It is also cheaper to
- * draw — PPA reads 384x384 instead of 720x720, 6.4 ms against 14.
+ * They are rendered at the panel's size, and the first attempt at this got it wrong
+ * in an instructive way. Keeping them at the body's 384 bake and letting the PPA
+ * upscale looked free — same information, cheaper blit — but the PPA's scaler is far
+ * cruder than the bilinear pass flatten() does on the CPU, and a blocky upscale of a
+ * smooth radial gradient draws exactly the contour it steps across: concentric rings,
+ * centred on the face, clearly visible on a photograph of the panel.
  *
- * STEP is 1.5 degrees, which over the website's +/-6 shake is nine positions. The
- * oscillation spends most of its time near the extremes, so the steps in between go
- * unnoticed; finer costs memory that the voice pipeline wants. */
-#define ROT_STEP_DEG  1.5f
-#define ROT_MAX_DEG   9.0f
+ * So the rotation and the upscale happen in one CPU pass, sampling the 384 source
+ * straight into a 720 destination. The cost is the same as flatten's, which this is a
+ * variant of, and the PPA is left doing what it is good at: moving whole pixels.
+ *
+ * STEP is 2 degrees, which over the website's +/-6 shake is seven positions. The
+ * oscillation spends most of its time near the extremes, so the steps between go
+ * unnoticed; finer costs a megabyte each and the voice pipeline wants that PSRAM. */
+#define ROT_STEP_DEG  2.0f
+#define ROT_MAX_DEG   6.0f
 #define ROT_SLOTS     ((int)(2 * ROT_MAX_DEG / ROT_STEP_DEG) + 1)   /* 13, 0 in the middle */
 static uint16_t *s_rot[ROT_SLOTS];
 static uint16_t *s_rot_base;             /* the unturned body, at bake size */
@@ -438,32 +444,35 @@ static void render_ready_cb(lv_event_t *e)
 }
 #endif
 
-/* The body at bake size, composited over black exactly as flatten() does, and turned
- * by `deg` about its own centre. Inverse-mapped with bilinear sampling: for each
- * destination pixel, where did it come from. */
+/* The body composited over black exactly as flatten() does, turned by `deg` about its
+ * centre and resampled to the panel in the same pass. Inverse-mapped with bilinear
+ * sampling: for each destination pixel, where in the source did it come from. */
 static void render_rotated(const lv_image_dsc_t *src, uint16_t *out, float deg,
                            uint32_t rgb, bool original)
 {
-    const uint32_t w = src->header.w, h = src->header.h, n = w * h;
+    const uint32_t sw = src->header.w, sh = src->header.h, n = sw * sh;
+    const uint32_t w = face_bg.header.w, h = face_bg.header.h;   /* the panel */
     const uint8_t *col = src->data, *alpha = src->data + n * 2;
     const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
     const float a = deg * (float)M_PI / 180.0f, ca = cosf(a), sa = sinf(a);
-    const float cx = w / 2.0f, cy = h / 2.0f;
+    const float cx = w / 2.0f, cy = h / 2.0f;          /* destination centre */
+    const float k = (float)sw / w;                     /* panel -> source */
 
     for (uint32_t dy = 0; dy < h; dy++) {
         float ry = dy - cy;
         for (uint32_t dx = 0; dx < w; dx++) {
             float rx = dx - cx;
-            float sx =  ca * rx + sa * ry + cx;
-            float sy = -sa * rx + ca * ry + cy;
-            if (sx < 0 || sy < 0 || sx >= w - 1 || sy >= h - 1) {
+            /* Rotate about the centre in panel space, then step into the source. */
+            float sx = ( ca * rx + sa * ry) * k + sw / 2.0f;
+            float sy = (-sa * rx + ca * ry) * k + sh / 2.0f;
+            if (sx < 0 || sy < 0 || sx >= sw - 1 || sy >= sh - 1) {
                 out[dy * w + dx] = 0;            /* turned in from outside: black */
                 continue;
             }
             uint32_t x0 = (uint32_t)sx, y0 = (uint32_t)sy;
             uint32_t fx = (uint32_t)((sx - x0) * 256), fy = (uint32_t)((sy - y0) * 256);
-            uint32_t idx[4] = { y0 * w + x0, y0 * w + x0 + 1,
-                                (y0 + 1) * w + x0, (y0 + 1) * w + x0 + 1 };
+            uint32_t idx[4] = { y0 * sw + x0, y0 * sw + x0 + 1,
+                                (y0 + 1) * sw + x0, (y0 + 1) * sw + x0 + 1 };
             uint32_t wgt[4] = { (256 - fx) * (256 - fy), fx * (256 - fy),
                                 (256 - fx) * fy,         fx * fy };
             uint32_t r = 0, g = 0, b = 0;
@@ -487,8 +496,8 @@ static void build_rotations(void)
 {
     if (s_rot_ready || s_rot_failed) return;
     const lv_image_dsc_t *src = s_char ? &s_char->bg : &face_bg;
-    const uint32_t w = src->header.w, h = src->header.h;
-    if (!w || !h) { s_rot_failed = true; return; }
+    const uint32_t w = face_bg.header.w, h = face_bg.header.h;   /* the panel's size */
+    if (!src->header.w || !src->header.h || !w || !h) { s_rot_failed = true; return; }
 
     int64_t t0 = esp_timer_get_time();
     size_t bytes = FACE_PPA_ROUND((size_t)w * h * 2);
