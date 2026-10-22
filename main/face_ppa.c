@@ -80,53 +80,76 @@ static esp_err_t fill(void *dst, uint32_t dw, uint32_t dh,
     return ppa_do_fill(s_fill, &f);
 }
 
-/* Put the whole body on the panel, moved as one piece.
+/* How many output pixels one input pixel becomes, in sixteenths — the only form the
+ * hardware has. 16 is 1:1; 30 is the 1.875 that turns a 384 bake into this panel. */
+static uint32_t out_of(uint32_t block, uint32_t k16)
+{
+    return block * (k16 / 16) + block * (k16 % 16) / 16;
+}
+
+/* Put the whole body on the panel, moved as one piece and scaled from whatever size
+ * it was baked at.
  *
- * Translation only, and at 1:1 on purpose. PPA_SR_SCAL_X_FRAG is four bits wide, so
- * the hardware quantises scale to *sixteenths*: the smallest zoom it can express
- * above 1.0 is 1.0625, which is 45 pixels on this panel. A breath of a percent or
- * two rounds to exactly nothing, and the steps it can express are jumps rather than
- * movement. A translation has no such floor — it is exact to the pixel, and a shake,
- * a lean and a nod are all made of translation. So that is what the body gets, and
- * breathing stays with the features, which LVGL transforms for free because they are
- * small.
+ * Translation is exact to the output pixel. Scale is not free-form — PPA_SR_SCAL_X_FRAG
+ * is four bits, so the ratio must be a whole number of sixteenths — but the one ratio
+ * this needs, 720/384, is exactly 30/16, and 1:1 is 16/16. A size that does not land
+ * on a sixteenth is refused rather than silently drawn at the wrong scale.
  *
- * Moving the picture uncovers a strip at the edge it came from. ppa_do_fill paints
- * that strip in the body's own background colour, so the face slides across a
- * background rather than dragging a torn edge behind it. */
+ * Rotation is NOT here and cannot be: the hardware turns in quarter circles only. A
+ * turned face is a separate pre-rendered source handed to this function (face_view.c),
+ * which is why the source size is a parameter rather than an assumption.
+ *
+ * Whatever the move leaves uncovered is filled with the body's own background, as four
+ * rectangles around what was written. Four rather than two because a scaled block can
+ * fall a pixel or two short of the panel, and a seam of stale frame is worse than a
+ * fill that overlaps itself. */
 esp_err_t face_ppa_body(const void *src, uint32_t sw, uint32_t sh,
                         void *dst, uint32_t dw, uint32_t dh,
                         int tx, int ty, uint32_t bg_rgb)
 {
-    if (!s_srm || !s_fill) return ESP_ERR_INVALID_STATE;
+    if (!s_srm || !s_fill || !sw || !sh) return ESP_ERR_INVALID_STATE;
+    uint32_t kx = (dw * 16 + sw / 2) / sw, ky = (dh * 16 + sh / 2) / sh;
+    if (kx != ky || kx < 16 || kx > 255) return ESP_ERR_INVALID_ARG;
+    if (out_of(sw, kx) != dw || out_of(sh, kx) != dh) return ESP_ERR_INVALID_ARG;
+
     uint32_t ax = (uint32_t)(tx < 0 ? -tx : tx), ay = (uint32_t)(ty < 0 ? -ty : ty);
     if (ax >= dw || ay >= dh) return ESP_ERR_INVALID_ARG;   /* moved clean off the panel */
 
-    uint32_t bw = dw - ax, bh = dh - ay;
+    /* The largest source block whose scaled width still fits the space the move left. */
+    uint32_t bw = (dw - ax) * 16 / kx, bh = (dh - ay) * 16 / kx;
+    while (bw > 1 && out_of(bw, kx) > dw - ax) bw--;
+    while (bh > 1 && out_of(bh, kx) > dh - ay) bh--;
     if (bw > sw) bw = sw;
     if (bh > sh) bh = sh;
+
+    uint32_t in_x = tx < 0 ? (ax * 16 + kx - 1) / kx : 0;
+    uint32_t in_y = ty < 0 ? (ay * 16 + kx - 1) / kx : 0;
+    if (in_x + bw > sw) in_x = sw - bw;
+    if (in_y + bh > sh) in_y = sh - bh;
+
+    uint32_t ox = tx > 0 ? ax : 0, oy = ty > 0 ? ay : 0;
+    uint32_t ow = out_of(bw, kx), oh = out_of(bh, kx);
 
     ppa_srm_oper_config_t op = {
         .in = {
             .buffer = (void *)src,
             .pic_w = sw, .pic_h = sh,
             .block_w = bw, .block_h = bh,
-            .block_offset_x = tx < 0 ? ax : 0,
-            .block_offset_y = ty < 0 ? ay : 0,
+            .block_offset_x = in_x, .block_offset_y = in_y,
             .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
         },
         .out = {
             .buffer = dst,
             .buffer_size = FACE_PPA_ROUND((size_t)dw * dh * 2),
             .pic_w = dw, .pic_h = dh,
-            .block_offset_x = tx > 0 ? ax : 0,
-            .block_offset_y = ty > 0 ? ay : 0,
+            .block_offset_x = ox, .block_offset_y = oy,
             .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
         },
         .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
-        .scale_x = 1.0f, .scale_y = 1.0f,
+        .scale_x = kx / 16.0f, .scale_y = kx / 16.0f,
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
+
     int64_t t0 = esp_timer_get_time();
     esp_err_t err = ppa_do_scale_rotate_mirror(s_srm, &op);
     if (err != ESP_OK) return err;
@@ -140,9 +163,12 @@ esp_err_t face_ppa_body(const void *src, uint32_t sw, uint32_t sh,
         n = 0; total = 0;
     }
 
-    /* The two strips the move left behind; they overlap in a corner, harmlessly. */
-    if (ax) err = fill(dst, dw, dh, tx > 0 ? 0 : dw - ax, 0, ax, dh, bg_rgb);
-    if (err == ESP_OK && ay) err = fill(dst, dw, dh, 0, ty > 0 ? 0 : dh - ay, dw, ay, bg_rgb);
+    if (ox)           err = fill(dst, dw, dh, 0, 0, ox, dh, bg_rgb);
+    if (err == ESP_OK && ox + ow < dw)
+        err = fill(dst, dw, dh, ox + ow, 0, dw - ox - ow, dh, bg_rgb);
+    if (err == ESP_OK && oy) err = fill(dst, dw, dh, 0, 0, dw, oy, bg_rgb);
+    if (err == ESP_OK && oy + oh < dh)
+        err = fill(dst, dw, dh, 0, oy + oh, dw, dh - oy - oh, bg_rgb);
     return err;
 }
 

@@ -284,7 +284,30 @@ static uint16_t *s_flat_px;
  * eyes and mouth behind and the face would double. That is also why the display
  * renders whole screens (see main.c). */
 static int s_bx, s_by;
+static float s_brot;                 /* the head's turn this frame, degrees */
 static uint32_t s_body_bg;
+
+/* A turned face, pre-rendered.
+ *
+ * The website shakes the whole head by rotating it, and the PPA turns in quarter
+ * circles only — so the turn has to exist before the frame does. These are the body
+ * at a handful of fixed angles, built once when a character is first asked to rotate.
+ *
+ * They are kept at the size the body was *baked* at, not the panel's, and that costs
+ * nothing: a catalogue character is 384 square and is upscaled to 720 either way, so
+ * a 384 copy holds every pixel of information the 720 one did. It is also cheaper to
+ * draw — PPA reads 384x384 instead of 720x720, 6.4 ms against 14.
+ *
+ * STEP is 1.5 degrees, which over the website's +/-6 shake is nine positions. The
+ * oscillation spends most of its time near the extremes, so the steps in between go
+ * unnoticed; finer costs memory that the voice pipeline wants. */
+#define ROT_STEP_DEG  1.5f
+#define ROT_MAX_DEG   9.0f
+#define ROT_SLOTS     ((int)(2 * ROT_MAX_DEG / ROT_STEP_DEG) + 1)   /* 13, 0 in the middle */
+static uint16_t *s_rot[ROT_SLOTS];
+static uint16_t *s_rot_base;             /* the unturned body, at bake size */
+static uint32_t s_rot_w, s_rot_h;
+static bool s_rot_ready, s_rot_failed;
 static int64_t s_render_t0;
 #endif
 static uint32_t s_flat_rgb;
@@ -371,7 +394,19 @@ static void render_start_cb(lv_event_t *e)
     lv_draw_buf_t *buf = lv_display_get_buf_active(d);
     if (!buf || !buf->data) return;
 
-    esp_err_t err = face_ppa_body(s_flat_px, s_flat.header.w, s_flat.header.h,
+    /* A turned copy when the head is turning, the plain body when it is not. Both
+     * come from the same 384 bake, so there is no change of sharpness as the shake
+     * passes back through centre. */
+    const uint16_t *body = s_flat_px;
+    uint32_t bw = s_flat.header.w, bh = s_flat.header.h;
+    if (s_rot_ready) {
+        int slot = ROT_SLOTS / 2 + (int)lroundf(s_brot / ROT_STEP_DEG);
+        if (slot < 0) slot = 0;
+        if (slot >= ROT_SLOTS) slot = ROT_SLOTS - 1;
+        body = s_rot[slot];
+        bw = s_rot_w; bh = s_rot_h;
+    }
+    esp_err_t err = face_ppa_body(body, bw, bh,
                                   buf->data,
                                   lv_display_get_horizontal_resolution(d),
                                   lv_display_get_vertical_resolution(d),
@@ -403,6 +438,87 @@ static void render_ready_cb(lv_event_t *e)
 }
 #endif
 
+/* The body at bake size, composited over black exactly as flatten() does, and turned
+ * by `deg` about its own centre. Inverse-mapped with bilinear sampling: for each
+ * destination pixel, where did it come from. */
+static void render_rotated(const lv_image_dsc_t *src, uint16_t *out, float deg,
+                           uint32_t rgb, bool original)
+{
+    const uint32_t w = src->header.w, h = src->header.h, n = w * h;
+    const uint8_t *col = src->data, *alpha = src->data + n * 2;
+    const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
+    const float a = deg * (float)M_PI / 180.0f, ca = cosf(a), sa = sinf(a);
+    const float cx = w / 2.0f, cy = h / 2.0f;
+
+    for (uint32_t dy = 0; dy < h; dy++) {
+        float ry = dy - cy;
+        for (uint32_t dx = 0; dx < w; dx++) {
+            float rx = dx - cx;
+            float sx =  ca * rx + sa * ry + cx;
+            float sy = -sa * rx + ca * ry + cy;
+            if (sx < 0 || sy < 0 || sx >= w - 1 || sy >= h - 1) {
+                out[dy * w + dx] = 0;            /* turned in from outside: black */
+                continue;
+            }
+            uint32_t x0 = (uint32_t)sx, y0 = (uint32_t)sy;
+            uint32_t fx = (uint32_t)((sx - x0) * 256), fy = (uint32_t)((sy - y0) * 256);
+            uint32_t idx[4] = { y0 * w + x0, y0 * w + x0 + 1,
+                                (y0 + 1) * w + x0, (y0 + 1) * w + x0 + 1 };
+            uint32_t wgt[4] = { (256 - fx) * (256 - fy), fx * (256 - fy),
+                                (256 - fx) * fy,         fx * fy };
+            uint32_t r = 0, g = 0, b = 0;
+            for (int k = 0; k < 4; k++) {
+                uint16_t c = original
+                    ? (uint16_t)(col[idx[k] * 2] | (col[idx[k] * 2 + 1] << 8)) : tint;
+                uint32_t al = alpha[idx[k]];
+                r += (((c >> 11) & 0x1F) * al / 255) * wgt[k];
+                g += (((c >> 5) & 0x3F) * al / 255) * wgt[k];
+                b += ((c & 0x1F) * al / 255) * wgt[k];
+            }
+            out[dy * w + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
+        }
+    }
+}
+
+/* Build every angle for the character being worn. Called the first time a design
+ * actually asks the head to turn, not at boot: most faces never rotate, and this is
+ * seconds of CPU and megabytes of PSRAM that they should not pay for. */
+static void build_rotations(void)
+{
+    if (s_rot_ready || s_rot_failed) return;
+    const lv_image_dsc_t *src = s_char ? &s_char->bg : &face_bg;
+    const uint32_t w = src->header.w, h = src->header.h;
+    if (!w || !h) { s_rot_failed = true; return; }
+
+    int64_t t0 = esp_timer_get_time();
+    size_t bytes = FACE_PPA_ROUND((size_t)w * h * 2);
+    for (int i = 0; i < ROT_SLOTS; i++) {
+        s_rot[i] = heap_caps_aligned_alloc(FACE_PPA_ALIGN, bytes,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_rot[i]) {
+            ESP_LOGW(TAG, "no PSRAM for a turned face; the head will not rotate");
+            for (int k = 0; k < ROT_SLOTS; k++) { heap_caps_free(s_rot[k]); s_rot[k] = NULL; }
+            s_rot_failed = true;
+            return;
+        }
+        render_rotated(src, s_rot[i], (i - ROT_SLOTS / 2) * ROT_STEP_DEG,
+                       s_flat_rgb, s_flat_original);
+    }
+    s_rot_base = s_rot[ROT_SLOTS / 2];      /* the 0-degree copy is the plain body */
+    s_rot_w = w; s_rot_h = h;
+    s_rot_ready = true;
+    ESP_LOGI(TAG, "%d turned faces at %lux%lu, %u KB, in %lld ms", ROT_SLOTS,
+             (unsigned long)w, (unsigned long)h,
+             (unsigned)(ROT_SLOTS * bytes / 1024), (esp_timer_get_time() - t0) / 1000);
+}
+
+static void drop_rotations(void)
+{
+    for (int i = 0; i < ROT_SLOTS; i++) { heap_caps_free(s_rot[i]); s_rot[i] = NULL; }
+    s_rot_base = NULL;
+    s_rot_ready = s_rot_failed = false;
+}
+
 /* Re-flatten with whatever character and colour are current, and show the result. */
 static void reflatten(void)
 {
@@ -416,6 +532,10 @@ static void reflatten(void)
 
 static void wear_character(const face_character_t *c)
 {
+    /* Turned copies are this character's head and take a second or two to make, so
+     * they survive a design that re-states the same character — which every boot
+     * does, because `face.update` is retained and arrives again on each connect. */
+    if (c != s_char) drop_rotations();
     s_char = c;
     /* The catalogue's artwork parts and their offsets are in its own space. */
     s_cat_scale = (c && c->bg.header.w) ? (float)face_bg.header.w / c->bg.header.w : 1.0f;
@@ -678,27 +798,21 @@ void face_view_tick(uint32_t elapsed_ms)
     {
         const float UNIT = face_bg.header.w / 100.0f;
 
-        /* A head rotation becomes sideways movement, for the whole head at once.
+        /* The head really turns. The PPA cannot, so the turn was rendered ahead of
+         * time (build_rotations) and the frame picks the nearest angle. Built the
+         * first time a design asks for one, because most faces never rotate.
          *
-         * The website shakes the entire face, body and all, because a browser can
-         * rotate a layer for nothing. Here the body is composited by the PPA, which
-         * turns in quarter circles only — so a `shake` track could either rotate the
-         * features over a body that stayed put, which looks like a face sliding off
-         * its own head, or move everything together. It moves everything together.
-         *
-         * Substituting a translation for a rotation is a real approximation and is
-         * only honest at small angles: the website's shake is +/-6 degrees, where the
-         * features' arc about the face centre is within a pixel or two of a straight
-         * line. `r` is roughly where the features sit below that centre, so the
-         * travel matches what the eyes would have done had they really swung.
-         *
-         * It is applied to v[0] rather than to the body alone, which is the whole
-         * point — place() then carries the same movement into every feature, and the
-         * face stays assembled. */
-        if (v[0].rotation != 0.0f) {
-            const float r = face_bg.header.h / 3.0f;
-            v[0].x += -sinf(v[0].rotation * (float)M_PI / 180.0f) * r / UNIT;
-            v[0].rotation = 0.0f;
+         * v[0].rotation is left alone: place() keeps rotating the features by the
+         * same angle, so the eyes swing with the head they are drawn on. */
+        if (v[0].rotation != 0.0f || s_rot_ready) {
+            build_rotations();
+            float r = v[0].rotation;
+            if (r >  ROT_MAX_DEG) r =  ROT_MAX_DEG;
+            if (r < -ROT_MAX_DEG) r = -ROT_MAX_DEG;
+            if (fabsf(r - s_brot) >= ROT_STEP_DEG / 2) {
+                s_brot = r;
+                lv_obj_invalidate(lv_obj_get_screen(s_root));
+            }
         }
 
         /* The head's own x/y, in the same face units place() uses, turned into
