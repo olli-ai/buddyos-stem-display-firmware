@@ -68,6 +68,15 @@ static volatile bool s_parts_dirty;
 /* A state asked for from somewhere that is not the render task — a directive, and
  * later the voice pipeline. Same rule as the design: only the request crosses, the
  * drawing happens where the drawing happens. */
+/* An expression the model chose mid-sentence, worn over the state's own parts. It
+ * is a different axis from state: a Buddy can be `speaking` and `surprised` at once,
+ * and the next state change is what takes it off again. Requested from the voice
+ * task, applied in the tick — see the note at the top of face_view_tick(). */
+static int16_t s_expr[5];
+static bool s_expr_on;
+static volatile int16_t s_want_expr[5];
+static volatile bool s_expr_pending, s_expr_clearing;
+
 static volatile int s_want_state = -1;
 static volatile bool s_driven;
 
@@ -80,7 +89,18 @@ static const int DESIGN_TO_LAYER[5] = { 1, 2, 3, 4, 5 };
 /** What state `st` draws now — the design received, or the one baked in. */
 static int16_t part_of(int st, int i)
 {
+    /* The expression wins while it is on. The mouth is the exception that needs no
+     * code: lip-sync already overrides the mouth layer in the tick, so a Buddy that
+     * looks surprised while talking still forms its words. */
+    if (s_expr_on) return s_expr[i];
     return s_parts_set ? s_parts[st][i] : face_design[st][i].sprite;
+}
+
+void face_view_request_expression(const int16_t parts[5])
+{
+    if (parts) for (int i = 0; i < 5; i++) s_want_expr[i] = parts[i];
+    s_expr_clearing = (parts == NULL);
+    s_expr_pending = true;
 }
 
 /* browL, eyeL, browR, eyeR, mouth -> the character's own artwork slot, or -1.
@@ -401,6 +421,9 @@ void face_view_set_state(int state)
 {
     if (state < 0 || state >= face_state_count) return;
     s_state = state;
+    /* A new state is a new feeling: the expression the last one was wearing does not
+     * carry over, or a single [FACE:sad] would outlast the sentence that caused it. */
+    s_expr_on = false;
     for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(state, i));
     ESP_LOGI(TAG, "state -> %s (%u ms loop)", face_states[state].name, face_states[state].duration);
 }
@@ -481,6 +504,16 @@ void face_view_tick(uint32_t elapsed_ms)
     if (want >= 0) {
         s_want_state = -1;
         if (want != s_state) face_view_set_state(want);
+    }
+    if (s_expr_pending) {
+        s_expr_pending = false;
+        if (s_expr_clearing) {
+            s_expr_on = false;
+        } else {
+            for (int i = 0; i < 5; i++) s_expr[i] = s_want_expr[i];
+            s_expr_on = true;
+        }
+        for (int i = 0; i < 5; i++) show_sprite(DESIGN_TO_LAYER[i], part_of(s_state, i));
     }
     if (s_parts_dirty) {
         s_parts_dirty = false;

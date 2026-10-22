@@ -49,3 +49,8 @@ void face_view_tick(uint32_t elapsed_ms);
  * is not lost — releasing puts the designed shape straight back.
  */
 void face_view_set_live_mouth(int16_t sprite);
+
+/** Wear a named expression over whatever the current state draws, until the state
+ *  next changes. `parts` is {browL, eyeL, browR, eyeR, mouth}, or NULL to take it
+ *  off. Safe from any task: it records, and the render tick applies it. */
+void face_view_request_expression(const int16_t parts[5]);

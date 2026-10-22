@@ -36,6 +36,81 @@ static int16_t sprite_of(const char *layer, const char *part)
     return -1;
 }
 
+/* ── expressions ──────────────────────────────────────────────────────────────
+ *
+ * The face presets from `PRESETS` in ../buddyos-stem-fe/src/data/faceParts.ts, which
+ * is the source of truth for all three lists that have to agree: these triples, the
+ * ids omni gives the model (`KIT_EXPRESSIONS` in
+ * ../buddyos-omni/app/plugins/visual_face_emotion/face_context.py), and the parts
+ * baked into face_sprites.
+ *
+ * Transcribed rather than generated, which is a debt — but not a silent one. The kit
+ * advertises exactly these ids and omni refuses any it does not know, logging
+ * `not a kit expression`, so a drift between the two shows up in a log line on the
+ * first conversation rather than as a face that never changes.
+ *
+ * Ten, not eighteen, and the order is the kit's choice: omni caps a vocabulary at
+ * MAX_EMOTIONS=10 because instruction compliance falls off with choice count, and a
+ * list sent longer than that is truncated silently. Better to choose the ten than to
+ * discover which ten survived. They are picked to span the range rather than to
+ * crowd one end of it, and `original` is first because it is also the resting face.
+ */
+typedef struct { const char *id, *eyes, *brows, *mouth; } expression_t;
+
+static const expression_t EXPRESSIONS[] = {
+    { "original",  "artwork", "none",    "artwork"   },
+    { "happy",     "sparkle", "none",    "grin"      },
+    { "curious",   "wide",    "oneup",   "tinyu"     },
+    { "surprised", "wide",    "raised",  "gasp"      },
+    { "sad",       "tear",    "sad",     "frown"     },
+    { "silly",     "wink",    "oneup",   "tongue"    },
+    { "confused",  "lookup",  "oneup",   "squiggle"  },
+    { "thinking",  "lookup",  "furrow",  "flatsmile" },
+    { "love",      "heart",   "raised",  "smile"     },
+    { "sleepy",    "closed",  "none",    "snore"     },
+};
+#define N_EXPRESSIONS (sizeof EXPRESSIONS / sizeof *EXPRESSIONS)
+
+size_t face_expressions_advertise(char *buf, size_t n)
+{
+    /* omni reads this as a `register_tools` control message and hands the contexts
+     * to its plugins; the gateway passes it through, having first checked that a kit
+     * is advertising nothing but `face2d`. */
+    int w = snprintf(buf, n,
+                     "{\"type\":\"register_tools\",\"client_tools\":[],"
+                     "\"ui_context\":[{\"type\":\"face2d\",\"resting\":\"original\","
+                     "\"emotions\":[");
+    if (w < 0 || (size_t)w >= n) return 0;
+    for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
+        int k = snprintf(buf + w, n - w, "%s\"%s\"", i ? "," : "", EXPRESSIONS[i].id);
+        if (k < 0 || (size_t)(w + k) >= n) return 0;
+        w += k;
+    }
+    int k = snprintf(buf + w, n - w, "]}]}");
+    if (k < 0 || (size_t)(w + k) >= n) return 0;
+    return (size_t)(w + k);
+}
+
+bool face_expression_wear(const char *id)
+{
+    if (!id) return false;
+    for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
+        if (strcmp(EXPRESSIONS[i].id, id)) continue;
+        const expression_t *e = &EXPRESSIONS[i];
+        /* No fallback here, unlike a design: an expression this firmware advertised
+         * is one whose every part it has, so a miss is a bug rather than a choice a
+         * child made that cannot be drawn. */
+        int16_t parts[5] = {
+            sprite_of("browL", e->brows), sprite_of("eyeL", e->eyes),
+            sprite_of("browR", e->brows), sprite_of("eyeR", e->eyes),
+            sprite_of("mouth", e->mouth),
+        };
+        face_view_request_expression(parts);
+        return true;
+    }
+    return false;
+}
+
 /** ADR 0009's fallback, out loud. */
 static int16_t resolve(const char *layer, const char *part, int16_t fallback, const char *state)
 {

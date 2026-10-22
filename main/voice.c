@@ -6,6 +6,7 @@
 #include "audio.h"
 #if CONFIG_BUDDY_SCREEN_FACE
 #include "face_lipsync.h"
+#include "face_directive.h"
 #include "face_view.h"
 #else
 #include "lipsync.h"
@@ -262,6 +263,21 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
         s_connected = true;
         audio_speaker_enable(true);
         ESP_LOGI(TAG, "connected");
+#if CONFIG_BUDDY_SCREEN_FACE
+        /* Say what this face can wear, before anything is said to the child. omni's
+         * visual_face_emotion plugin arms on this and nothing else: no advertisement,
+         * no face vocabulary in the model's prompt, and the Buddy talks with the one
+         * expression its design gives the state. Sent on every connect because a
+         * reconnect is a new session to omni, which remembers nothing. */
+        {
+            char ad[320];
+            size_t n = face_expressions_advertise(ad, sizeof ad);
+            if (n && esp_websocket_client_send_text(s_ws, ad, n, pdMS_TO_TICKS(200)) > 0)
+                ESP_LOGI(TAG, "offered this face's expressions");
+            else
+                ESP_LOGW(TAG, "could not offer expressions; the face will not follow speech");
+        }
+#endif
         break;
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_connected = false;
@@ -312,6 +328,22 @@ static void on_ws(void *arg, esp_event_base_t base, int32_t id, void *data)
                 on_status(st->valuestring);
             else if (cJSON_IsString(type) && !strcmp(type->valuestring, "config"))
                 ESP_LOGI(TAG, "session %.*s", e->data_len > 120 ? 120 : e->data_len, e->data_ptr);
+#if CONFIG_BUDDY_SCREEN_FACE
+            else if (cJSON_IsString(type) && !strcmp(type->valuestring, "face_emotion")) {
+                /* The model chose a face for what it is about to say. `at_ms` is the
+                 * offset into this turn's audio where it belongs; the kit wears it on
+                 * arrival instead, which is early by however much audio is queued.
+                 * Scheduling it against playback is the next thing, and it wants its
+                 * own measurement — a face that changes late reads worse than one
+                 * that changes a moment early. */
+                const cJSON *em = cJSON_GetObjectItem(j, "emotion");
+                const char *id = cJSON_GetStringValue(em);
+                if (face_expression_wear(id))
+                    ESP_LOGI(TAG, "face: %s", id);
+                else
+                    ESP_LOGW(TAG, "no expression '%s' in this firmware", id ? id : "?");
+            }
+#endif
             cJSON_Delete(j);
         }
         break;
