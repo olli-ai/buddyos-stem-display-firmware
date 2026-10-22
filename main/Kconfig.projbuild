@@ -192,6 +192,22 @@ config BUDDY_SCREEN_FACE
         spoken. Costs what the artwork costs: ARGB8888 baked at the panel's own size,
         about 4 MB at 720x720, which is why the P4 carries a 32 MB partition table.
 
+config BUDDY_FACE_MOTION_DEMO
+    bool "Cycle the website's whole-head motion presets"
+    depends on BUDDY_SCREEN_FACE
+    default n
+    help
+        Plays nod, bounce, shake and breathe on the head in turn, six seconds each,
+        naming each one on the console as it starts. For looking at what the panel
+        can do with each: on the P4 the body is composited by the PPA, which
+        translates exactly but cannot rotate by less than a quarter turn or scale by
+        less than a sixteenth - so nod and bounce move the body and shake and
+        breathe move only the features. A fifth preset, shake-x, is the same rhythm
+        as a translation, which is what a head shake can be on this hardware.
+
+        A demo, not a product behaviour: it talks over the state machine's own
+        motion, so leave it off unless that is what you want to see.
+
 config BUDDY_SCREEN_GALLERY
     bool "A photo gallery"
     help

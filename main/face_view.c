@@ -25,7 +25,9 @@
 #include <string.h>
 #include "esp_heap_caps.h"
 #if CONFIG_IDF_TARGET_ESP32P4
+#include "esp_timer.h"
 #include "face_ppa.h"
+#include "face_demo_motion.h"
 #endif
 #include "esp_log.h"
 
@@ -146,6 +148,20 @@ void face_view_set_character(const face_character_t *c)
 
 static lv_image_dsc_t s_flat;
 static uint16_t *s_flat_px;
+#if CONFIG_IDF_TARGET_ESP32P4
+/* The body is no longer an LVGL layer on this board; the PPA puts it on the panel
+ * directly, under whatever LVGL draws afterwards. s_bx/s_by is where it sits this
+ * frame.
+ *
+ * It goes down on *every* render, not only when it moves. The body is what erases
+ * the previous frame — the screen's own background no longer does, or it would
+ * paint over the body — so a render that skipped it would leave the last frame's
+ * eyes and mouth behind and the face would double. That is also why the display
+ * renders whole screens (see main.c). */
+static int s_bx, s_by;
+static uint32_t s_body_bg;
+static int64_t s_render_t0;
+#endif
 static uint32_t s_flat_rgb;
 static bool s_flat_original, s_flat_valid;
 
@@ -199,6 +215,14 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
     s_flat.data = (const uint8_t *)s_flat_px;
     s_flat_valid = true;
 #if CONFIG_IDF_TARGET_ESP32P4
+    /* What a move uncovers should match what the body sits on. flatten() composites
+     * over black, so this is black today — read rather than assumed, so art that
+     * reaches the corner still slides over its own background. */
+    uint16_t c = s_flat_px[0];
+    uint32_t r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+    s_body_bg = ((r5 << 3 | r5 >> 2) << 16) | ((g6 << 2 | g6 >> 4) << 8) | (b5 << 3 | b5 >> 2);
+#endif
+#if CONFIG_IDF_TARGET_ESP32P4
     /* Once, on the first body we flatten: what the hardware costs, before anything
      * is built on the assumption that it is fast. */
     static bool benched;
@@ -208,6 +232,51 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
         ESP_LOGI(TAG, "character baked at %lux%lu, resampled to the panel's %lux%lu",
                  (unsigned long)sw, (unsigned long)sh, (unsigned long)dw, (unsigned long)dh);
 }
+
+#if CONFIG_IDF_TARGET_ESP32P4
+/* Called by LVGL before it renders a frame, with the buffer it is about to render
+ * into. The body goes down first and LVGL draws the features over it — which is the
+ * whole trick: LVGL never touches the 518,400 pixels underneath, so the expensive
+ * layer moves in hardware while the cheap ones keep its transform stack. */
+static void render_start_cb(lv_event_t *e)
+{
+    s_render_t0 = esp_timer_get_time();
+    if (!s_flat_valid || !s_flat_px) return;
+    lv_display_t *d = lv_event_get_current_target(e);
+    lv_draw_buf_t *buf = lv_display_get_buf_active(d);
+    if (!buf || !buf->data) return;
+
+    esp_err_t err = face_ppa_body(s_flat_px, s_flat.header.w, s_flat.header.h,
+                                  buf->data,
+                                  lv_display_get_horizontal_resolution(d),
+                                  lv_display_get_vertical_resolution(d),
+                                  s_bx, s_by, s_body_bg);
+    if (err != ESP_OK) {
+        /* Never leave the screen half-painted over a transient: stop asking. */
+        ESP_LOGW(TAG, "body blit (%+d,%+d): %s", s_bx, s_by, esp_err_to_name(err));
+        s_bx = s_by = 0;
+    }
+}
+
+/* What a whole rendered frame costs, body blit included — the timer starts at the
+ * top of render_start_cb. Against face_ppa.c's own figure it splits the frame in
+ * two, so the next thing to optimise is chosen from a number rather than a guess.
+ * Measured here: 23-33 ms a frame, of which the body is 14-18 ms and LVGL's
+ * features are the remaining 9-14 ms. */
+static void render_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    static uint32_t n; static int64_t total, worst;
+    int64_t us = esp_timer_get_time() - s_render_t0;
+    total += us;
+    if (us > worst) worst = us;
+    if (++n == 100) {
+        ESP_LOGI(TAG, "100 renders: mean %lld us, worst %lld us, body blit included",
+                 total / 100, worst);
+        n = 0; total = worst = 0;
+    }
+}
+#endif
 
 /* Re-flatten with whatever character and colour are current, and show the result. */
 static void reflatten(void)
@@ -244,6 +313,26 @@ void face_view_create(lv_obj_t *parent)
     s_flat_rgb = 0xFFFFFF;
     s_flat_original = true;
     reflatten();
+
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* The body stops being an LVGL object here. It is hidden rather than deleted so
+     * every other path in this file — reflatten(), paint_body(), wear_character() —
+     * keeps working unchanged, and so the S3 build is untouched. */
+    if (face_ppa_start() == ESP_OK) {
+        lv_obj_add_flag(s_bg, LV_OBJ_FLAG_HIDDEN);
+        /* And the screen must stop painting over it: LVGL fills the dirty area with
+         * the screen's background before drawing children, which would erase the
+         * body the PPA just laid down. Transparent, it leaves the buffer alone. */
+        lv_obj_set_style_bg_opa(lv_obj_get_screen(s_root), LV_OPA_TRANSP, 0);
+        lv_display_add_event_cb(lv_obj_get_display(s_root), render_start_cb,
+                                LV_EVENT_RENDER_START, NULL);
+        lv_display_add_event_cb(lv_obj_get_display(s_root), render_ready_cb,
+                                LV_EVENT_RENDER_READY, NULL);
+        ESP_LOGI(TAG, "body composited by the PPA; LVGL draws the features over it");
+    } else {
+        ESP_LOGW(TAG, "no PPA: the body stays an LVGL layer, and stays still");
+    }
+#endif
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         s_layer[i] = lv_image_create(s_root);
@@ -401,7 +490,16 @@ void face_view_tick(uint32_t elapsed_ms)
     face_values_t v[FACE_LAYER_COUNT];
     face_motion_sample(s_state, elapsed_ms, v);
 
-    static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
+#if CONFIG_BUDDY_FACE_MOTION_DEMO
+    {
+        /* Deliberately after the sample and on top of it: the point is to watch one
+         * preset at a time on the head, not to blend it with the state's own. */
+        const char *preset = NULL;
+        if (face_demo_motion(elapsed_ms, &v[0], &preset))
+            ESP_LOGI(TAG, "motion demo: %s", preset);
+    }
+#endif
+
     /* The body does not take the head's transform, and on this panel that is a
      * deliberate trade rather than an omission.
      *
@@ -418,9 +516,27 @@ void face_view_tick(uint32_t elapsed_ms)
      *
      * Measured since, on this board (see face_ppa.c): LVGL needs 48-62 ms just to
      * blit this layer opaque and unscaled, and 250-460 ms to scale it, while the
-     * PPA does the same scale in 13-15 ms. The body can breathe again, but not
-     * through LVGL — that is what the compositor is for. */
+     * PPA does the same move in 14 ms. So on the P4 the body is not an LVGL layer
+     * at all any more — render_start_cb puts it on the panel in hardware and this
+     * call does nothing. The S3 keeps the still body, which is right for it. */
+#if CONFIG_IDF_TARGET_ESP32P4
+    {
+        /* The head's own x/y, in the same face units place() uses, turned into
+         * whole panel pixels — the PPA translates exactly, so there is no rounding
+         * to hide and a one-pixel move is a one-pixel move. */
+        const float UNIT = face_bg.header.w / 100.0f;
+        int bx = (int)lroundf(v[0].x * UNIT), by = (int)lroundf(v[0].y * UNIT);
+        if (bx != s_bx || by != s_by) {
+            s_bx = bx; s_by = by;
+            /* A head that moves while every feature happens to be still would
+             * otherwise invalidate nothing, and the frame would never be drawn. */
+            lv_obj_invalidate(lv_obj_get_screen(s_root));
+        }
+    }
+#else
+    static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
     place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);
+#endif
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         if (i == MOUTH_LAYER && s_live_mouth >= 0) {

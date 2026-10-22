@@ -41,6 +41,7 @@
 static const char *TAG = "face_ppa";
 
 static ppa_client_handle_t s_srm;
+static ppa_client_handle_t s_fill;      /* a fill is a different client, not a flag */
 static size_t s_dst_size;   /* the aligned size the PPA was told about */
 
 esp_err_t face_ppa_start(void)
@@ -51,7 +52,97 @@ esp_err_t face_ppa_start(void)
         .max_pending_trans_num = 1,
     };
     esp_err_t err = ppa_register_client(&cfg, &s_srm);
-    if (err != ESP_OK) ESP_LOGE(TAG, "no PPA client: %s", esp_err_to_name(err));
+    if (err != ESP_OK) { ESP_LOGE(TAG, "no PPA SRM client: %s", esp_err_to_name(err)); return err; }
+
+    cfg.oper_type = PPA_OPERATION_FILL;
+    err = ppa_register_client(&cfg, &s_fill);
+    if (err != ESP_OK) ESP_LOGE(TAG, "no PPA fill client: %s", esp_err_to_name(err));
+    return err;
+}
+
+/* One flat rectangle, for the strip a move uncovers. */
+static esp_err_t fill(void *dst, uint32_t dw, uint32_t dh,
+                      uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb)
+{
+    if (!w || !h) return ESP_OK;
+    ppa_fill_oper_config_t f = {
+        .out = {
+            .buffer = dst,
+            .buffer_size = FACE_PPA_ROUND((size_t)dw * dh * 2),
+            .pic_w = dw, .pic_h = dh,
+            .block_offset_x = x, .block_offset_y = y,
+            .fill_cm = PPA_FILL_COLOR_MODE_RGB565,
+        },
+        .fill_block_w = w, .fill_block_h = h,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+    };
+    f.fill_argb_color.val = 0xFF000000u | (rgb & 0xFFFFFFu);
+    return ppa_do_fill(s_fill, &f);
+}
+
+/* Put the whole body on the panel, moved as one piece.
+ *
+ * Translation only, and at 1:1 on purpose. PPA_SR_SCAL_X_FRAG is four bits wide, so
+ * the hardware quantises scale to *sixteenths*: the smallest zoom it can express
+ * above 1.0 is 1.0625, which is 45 pixels on this panel. A breath of a percent or
+ * two rounds to exactly nothing, and the steps it can express are jumps rather than
+ * movement. A translation has no such floor — it is exact to the pixel, and a shake,
+ * a lean and a nod are all made of translation. So that is what the body gets, and
+ * breathing stays with the features, which LVGL transforms for free because they are
+ * small.
+ *
+ * Moving the picture uncovers a strip at the edge it came from. ppa_do_fill paints
+ * that strip in the body's own background colour, so the face slides across a
+ * background rather than dragging a torn edge behind it. */
+esp_err_t face_ppa_body(const void *src, uint32_t sw, uint32_t sh,
+                        void *dst, uint32_t dw, uint32_t dh,
+                        int tx, int ty, uint32_t bg_rgb)
+{
+    if (!s_srm || !s_fill) return ESP_ERR_INVALID_STATE;
+    uint32_t ax = (uint32_t)(tx < 0 ? -tx : tx), ay = (uint32_t)(ty < 0 ? -ty : ty);
+    if (ax >= dw || ay >= dh) return ESP_ERR_INVALID_ARG;   /* moved clean off the panel */
+
+    uint32_t bw = dw - ax, bh = dh - ay;
+    if (bw > sw) bw = sw;
+    if (bh > sh) bh = sh;
+
+    ppa_srm_oper_config_t op = {
+        .in = {
+            .buffer = (void *)src,
+            .pic_w = sw, .pic_h = sh,
+            .block_w = bw, .block_h = bh,
+            .block_offset_x = tx < 0 ? ax : 0,
+            .block_offset_y = ty < 0 ? ay : 0,
+            .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+        },
+        .out = {
+            .buffer = dst,
+            .buffer_size = FACE_PPA_ROUND((size_t)dw * dh * 2),
+            .pic_w = dw, .pic_h = dh,
+            .block_offset_x = tx > 0 ? ax : 0,
+            .block_offset_y = ty > 0 ? ay : 0,
+            .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+        },
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+        .scale_x = 1.0f, .scale_y = 1.0f,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+    };
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t err = ppa_do_scale_rotate_mirror(s_srm, &op);
+    if (err != ESP_OK) return err;
+
+    /* What the hardware half of a frame costs, against what the frame costs — the
+     * two numbers together say whether the body or LVGL is the one to work on. */
+    static uint32_t n; static int64_t total;
+    total += esp_timer_get_time() - t0;
+    if (++n == 100) {
+        ESP_LOGI(TAG, "100 body blits, mean %lld us", total / 100);
+        n = 0; total = 0;
+    }
+
+    /* The two strips the move left behind; they overlap in a corner, harmlessly. */
+    if (ax) err = fill(dst, dw, dh, tx > 0 ? 0 : dw - ax, 0, ax, dh, bg_rgb);
+    if (err == ESP_OK && ay) err = fill(dst, dw, dh, 0, ty > 0 ? 0 : dh - ay, dw, ay, bg_rgb);
     return err;
 }
 

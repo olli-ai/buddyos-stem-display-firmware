@@ -6,7 +6,7 @@ set(srcs "main.c" "board_i2c.c" "status.c" "voice.c" "touch.c"
 # gallery one a viseme class a jaw can only approximate.
 if(CONFIG_BUDDY_SCREEN_FACE)
     list(APPEND srcs "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c"
-                     "face_catalogue.c" "generated/face_assets.c")
+                     "face_catalogue.c" "face_demo_motion.c" "generated/face_assets.c")
     if(IDF_TARGET STREQUAL "esp32p4")
         list(APPEND srcs "face_ppa.c")           # the P4's 2D accelerator
     endif()

@@ -172,9 +172,16 @@ void app_main(void)
         return;
     }
     size_t buf_bytes = (size_t)LCD_W * LCD_H * sizeof(uint16_t);
-    lv_display_set_buffers(disp, fb0, fb1, buf_bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+    /* FULL, not DIRECT, and the face is why. The PPA lays the body down under
+     * LVGL's features (face_view.c), which means every frame starts as a whole new
+     * picture: a partial redraw would leave the previous frame's eyes and mouth
+     * standing where the body has just erased everything around them, and the face
+     * doubles. Redrawing the whole screen is also cheaper than it sounds here —
+     * LVGL still renders only when something has actually changed, and what it
+     * renders is a handful of small sprites over a body it never touches. */
+    lv_display_set_buffers(disp, fb0, fb1, buf_bytes, LV_DISPLAY_RENDER_MODE_FULL);
     lv_display_set_flush_cb(disp, flush_cb);
-    ESP_LOGI(TAG, "draw buffers: 2 x %u B, the panel's own; direct rendering",
+    ESP_LOGI(TAG, "draw buffers: 2 x %u B, the panel's own; whole-screen rendering",
              (unsigned)buf_bytes);
 #else
     size_t buf_bytes = BUF_PX * sizeof(uint16_t);

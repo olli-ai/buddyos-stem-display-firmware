@@ -31,6 +31,13 @@
 esp_err_t face_ppa_start(void);
 
 /** Scale `src` by `scale` into the middle of `dst`. Blocking; dst is not cleared. */
+/* The body, moved as one piece into `dst`, with the strip the move uncovers filled
+ * in `bg_rgb` (0xRRGGBB). Translation is exact to the pixel; scaling is not
+ * available, and face_ppa.c says why. */
+esp_err_t face_ppa_body(const void *src, uint32_t sw, uint32_t sh,
+                        void *dst, uint32_t dw, uint32_t dh,
+                        int tx, int ty, uint32_t bg_rgb);
+
 esp_err_t face_ppa_scale(const void *src, uint32_t sw, uint32_t sh,
                          void *dst, uint32_t dw, uint32_t dh, float scale);
 
