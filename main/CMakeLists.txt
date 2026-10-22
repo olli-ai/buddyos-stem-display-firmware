@@ -7,6 +7,9 @@ set(srcs "main.c" "board_i2c.c" "status.c" "voice.c" "touch.c"
 if(CONFIG_BUDDY_SCREEN_FACE)
     list(APPEND srcs "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c"
                      "face_catalogue.c" "generated/face_assets.c")
+    if(IDF_TARGET STREQUAL "esp32p4")
+        list(APPEND srcs "face_ppa.c")           # the P4's 2D accelerator
+    endif()
 else()
     list(APPEND srcs "gallery.c" "lipsync.c" "generated/visemes.c")
 endif()
@@ -22,7 +25,13 @@ if(IDF_TARGET STREQUAL "esp32p4")
     # Waveshare ESP32-P4-WIFI6-Touch-LCD-4C: 720x720 MIPI-DSI, ES8311 + ES7210, and Wi-Fi
     # and BLE from the ESP32-C6 beside it, over SDIO.
     list(APPEND srcs "lcd_p4.c" "audio_p4.c")
-    list(APPEND reqs esp_lcd_jd9365 esp_codec_dev esp_wifi_remote esp_hosted)
+    # esp_driver_ppa is the P4's 2D accelerator, and it is required here rather than
+    # beside the face's other sources on purpose: a component's CMakeLists is read
+    # twice, and in the early pass that resolves REQUIRES no CONFIG_ symbol exists
+    # yet. Guarded by CONFIG_BUDDY_SCREEN_FACE it silently resolved to nothing and
+    # the build failed on a missing driver/ppa.h while the component sat unbuilt.
+    # IDF_TARGET *is* set in that pass, which is why the panel driver below works.
+    list(APPEND reqs esp_lcd_jd9365 esp_codec_dev esp_wifi_remote esp_hosted esp_driver_ppa)
     set(pack_name "gallery-720.bin")
 else()
     # The ESP32-S3 bench board: 480x480 round ST7701S, INMP441 + MAX98357A.

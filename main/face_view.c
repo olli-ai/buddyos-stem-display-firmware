@@ -24,6 +24,9 @@
 #include <math.h>
 #include <string.h>
 #include "esp_heap_caps.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "face_ppa.h"
+#endif
 #include "esp_log.h"
 
 static const char *TAG = "face";
@@ -153,7 +156,9 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
     const uint32_t sn = sw * sh, dn = dw * dh;
     if (!sw || !sh) return;
     if (!s_flat_px) {
-        s_flat_px = heap_caps_malloc(dn * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        /* Cache-line aligned, because the PPA reads this buffer directly. */
+        s_flat_px = heap_caps_aligned_alloc(FACE_PPA_ALIGN, FACE_PPA_ROUND(dn * 2),
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_flat_px) { ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended"); return; }
     }
     /* RGB565A8 is planar: the whole colour plane, then the whole alpha plane. */
@@ -193,6 +198,12 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
     s_flat.data_size = dn * 2;
     s_flat.data = (const uint8_t *)s_flat_px;
     s_flat_valid = true;
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* Once, on the first body we flatten: what the hardware costs, before anything
+     * is built on the assumption that it is fast. */
+    static bool benched;
+    if (!benched) { benched = true; face_ppa_benchmark(s_flat_px, dw, dh, dw, dh); }
+#endif
     if (sw != dw)
         ESP_LOGI(TAG, "character baked at %lux%lu, resampled to the panel's %lux%lu",
                  (unsigned long)sw, (unsigned long)sh, (unsigned long)dw, (unsigned long)dh);
@@ -403,10 +414,13 @@ void face_view_tick(uint32_t elapsed_ms)
      *
      * The features still breathe — brows, eyes and mouth are small enough that
      * transforming them is free — so the face is alive; it is the body that holds
-     * still. Restoring it wants the PPA, which scales in hardware, and even that
-     * only recovers the transform: the full-screen alpha blend underneath is the
-     * other half of the cost and PPA's scale-rotate-mirror does not touch it. */
-    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);  /* still until PPA */
+     * still.
+     *
+     * Measured since, on this board (see face_ppa.c): LVGL needs 48-62 ms just to
+     * blit this layer opaque and unscaled, and 250-460 ms to scale it, while the
+     * PPA does the same scale in 13-15 ms. The body can breathe again, but not
+     * through LVGL — that is what the compositor is for. */
+    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
         if (i == MOUTH_LAYER && s_live_mouth >= 0) {
