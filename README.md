@@ -583,38 +583,29 @@ out would sound exactly like not having been heard. Saying "Jarvis" still works 
 still faster, since it needs no round trip. Whether the cloud interrupts itself at all
 depends on the persona: `profile_settings.interruption` must not be `none`.
 
-> **Do not put `vad_processor` on a persona this kit uses.** It is the quick path for a
-> browser and it is a dead end here, in a way that looks like nothing happening.
+> **The kit needs `BUDDY_UPLINK_GAIN_DB` for any of this to work**, and until
+> 2026-10-22 it did not have it. Without the gain the kit was audible to omni's
+> recogniser and invisible to its interrupter, which looked like "barge-in is broken"
+> and was really "the audio is 40 dB too quiet".
 >
-> Loading it switches omni's ASR-based interruption **off** and puts VAD in charge; VAD
-> then gates every onset on loudness, `has_speech AND (loudness > loudness_at_onset)`,
-> which defaults to **-30 dBFS** (`app/config.py`). This kit streams at around **-57**.
-> It never clears the bar, so VAD never fires — and the path that would have worked was
-> turned off to get there. Measured over 114 s of a real conversation:
-> `vad_speech_active=False` throughout, while the ASR was transcribing the child at 0.85
-> confidence the whole time.
+> Measured against staging omni's own VAD telemetry, with a working Heymates device on
+> the same cluster for comparison:
 >
-> Echo suppression makes this worse rather than better. NLP works on whoever is quieter
-> during playback, so the louder it is set the further the child's voice sits below that
-> -30 gate. The two settings pull against each other, and only one of them is helping.
+> | | loudness | Silero score | speech episodes |
+> | --- | --- | --- | --- |
+> | kit, no uplink gain | -62.9 dBFS | 0.03 | none in 114 s |
+> | kit, +30 dB | -29.3 dBFS | 0.60-0.83 | start/end, 2.8 s |
+> | `HHMST26330000006` | -22.5 dBFS | 0.91-0.97 | normal |
 >
-> **Take it off the persona. Nothing short of that works**, and this was measured rather
-> than reasoned about (2026-10-22, staging omni, `device_id=ESP32-e8f60ae99b71`):
+> With the gain, barge-in works on the **fast VAD path**, with `vad_processor` loaded
+> and left on its defaults — `speaking_started` 30951, `flush_audio` 45219,
+> `interrupted` 45268. Talking over the Buddy stops it, as it does in a browser.
 >
-> - `loudness_at_onset: null` (the editor's "Very sensitive") removes the gate, and VAD
->   still never fires — loudness was never what was blocking it.
-> - `interruption_enabled: false` does **not** hand the job back to ASR either, which is
->   what its own docstring implies. It routes to a branch gated on
->   `_vad_speech_episodes <= _turn_vad_mark` (`app/pipeline/session.py`), and with no VAD
->   episodes ever that is `0 <= 0`, so every ASR final is discarded. Caught in the log:
->   a `type=final` of "ngừng lại" at 10:27:09 while the Buddy was speaking, and playback
->   running on to a normal `state=SPEAKING` completion thirty seconds later.
->
-> The branch the plugin's absence reaches instead (`Rule 2`) has no such precondition —
-> it calls the detector straight away — which is why removing the plugin works and
-> configuring it does not. The two branches ought to agree, and omni's own comment on
-> Rule 2 says so ("Without VAD in the session (no episodes at all) this can't tell, so
-> it falls through"); the suppressed-VAD branch is simply missing that escape.
+> Two theories this killed, both of which had been written down as fact. Silero was
+> **not** rejecting the kit for being 16 kHz upsampled to 48 — it simply never heard
+> speech at -63 dBFS. And `loudness_at_onset` was never the blocker: the editor's
+> "Very sensitive" removes that gate and changes nothing, because a 0.03 score fails
+> the probability threshold long before any loudness gate is consulted.
 
 ### How hard to suppress the echo
 

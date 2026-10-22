@@ -306,32 +306,46 @@ config BUDDY_WAKE_WORD
 config BUDDY_UPLINK_GAIN_DB
     int "Digital gain on the audio sent to the cloud, dB"
     depends on BUDDY_VOICE
-    range 0 24
-    default 0
+    range 0 40
+    default 30
     help
         Applied to the microphone AFTER the front end and BEFORE the Opus encoder, so
         it lifts only what the cloud hears. WakeNet is not affected: it runs inside
         the AFE, upstream of this.
 
-        It exists because this kit is quiet. Measured on the bench, speech at
-        conversational distance reaches the AFE at about -47 dBFS peak, where
-        voice.c's own note puts arm's length at -25, and a browser client arrives
-        near -20. Everything in the cloud is tuned for that: omni's speech detector
-        gates onsets on absolute loudness, so a kit 20 dB under simply never
-        registers as speaking and cannot interrupt a reply, however clean its audio.
+        It exists because this kit is quiet, and quiet turned out to be the whole
+        story behind "the device cannot be interrupted". Measured against staging
+        omni's own VAD telemetry (2026-10-22), with a working Heymates device on the
+        same cluster for comparison:
 
-        Raising the ES7210's analogue gain is NOT the way to do this. Tried at 37 dB
-        on the bench, it lifted the playback reference slot some twenty times rather
-        than the microphones, and AEC then cancelled against an echo that was not
-        there and deafened the wake word entirely.
+                                    loudness     Silero score   speech episodes
+          kit, no uplink gain       -62.9 dBFS   0.03           none in 114 s
+          kit, +30 dB               -29.3 dBFS   0.60-0.83      start/end, 2.8 s
+          HHMST26330000006          -22.5 dBFS   0.91-0.97      normal
 
-        0 disables it, and 0 is the default BECAUSE the one thing it was built for
-        turned out not to need it. Raised to 18 dB on the bench, omni's ASR went on
-        transcribing the kit at 0.85 confidence exactly as it had before — the audio
-        was never too quiet for the cloud to hear — and Silero still never reported a
-        single speech onset in 114 seconds (vad_speech_active=False), so barge-in did
-        not move. Whatever stops that VAD firing is not level. Peaks sit ~30 dB below
-        full scale, so 18 does not clip if you do need it for something else.
+        Silero was not rejecting the kit's audio for being 16 kHz upsampled to 48,
+        which was the standing theory. It simply never heard speech at -63 dBFS. At
+        -29 it does, barge-in works on the fast VAD path, and the kit interrupts
+        mid-reply the way a browser does: speaking_started 30951, flush_audio 45219,
+        interrupted 45268.
+
+        An earlier note here said "whatever stops that VAD firing is not level",
+        concluded from an 18 dB test that saw no change. 18 dB reaches about
+        -45 dBFS, still 20 dB short of where Silero starts scoring speech, so that
+        experiment was simply too small to move the thing it was testing. Raising a
+        setting partway and seeing nothing is not evidence that the setting is
+        irrelevant.
+
+        Raising the ES7210's analogue gain is still NOT the way to do this. Tried at
+        37 dB on the bench, it lifted the playback reference slot some twenty times
+        rather than the microphones, and AEC then cancelled against an echo that was
+        not there and deafened the wake word entirely. This gain is digital, applied
+        to one copy of the audio, and leaves both the reference and WakeNet alone.
+
+        Headroom: peaks sit roughly 30 dB below full scale before this, and the
+        multiply saturates rather than wraps, so 30 is about the most that is clean.
+        Past that, expect clipping on loud speech and a worse transcript, not a
+        louder one.
 
 config BUDDY_VOICE_IDLE_S
     int "Seconds of quiet that end a conversation"
