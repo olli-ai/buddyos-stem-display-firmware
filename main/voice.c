@@ -180,6 +180,9 @@ static volatile bool s_want_interrupt;   /* barge-in, sent by send_task */
 #define VOICE_RMS    580                 /* -35 dBFS */
 
 static volatile uint32_t s_last_activity_ms;
+#if CONFIG_BUDDY_SCREEN_FACE
+static bool s_face_resting;              /* the face is wearing `asleep`, not `idle` */
+#endif
 
 /* After a barge-in, the reply omni already sent is still arriving. It is dropped
  * until omni confirms it has stopped — any state change — or this long passes. */
@@ -492,6 +495,9 @@ static void barge_in(uint32_t now)
 static void session_begin(uint32_t now)
 {
     ESP_LOGI(TAG, "wake word: opening a conversation");
+#if CONFIG_BUDDY_SCREEN_FACE
+    s_face_resting = false;              /* awake again, whatever the face was doing */
+#endif
     status_set(STATUS_CONNECTING);
     show_state("busy");                  /* heard, and working on it */
     sleep_note_activity();      /* being talked to is the clearest activity there is */
@@ -784,7 +790,24 @@ static void up_task(void *arg)
         us_wake += esp_timer_get_time() - t0;
 #endif
         if (s_phase == PHASE_IDLE) {
-            if (heard) session_begin(now);
+            if (heard) { session_begin(now); continue; }
+#if CONFIG_BUDDY_SCREEN_FACE && CONFIG_BUDDY_FACE_ASLEEP_S > 0
+            /* Let the face rest when the room goes quiet. A kit between conversations
+             * holds `idle` indefinitely, so an idle state a child gave a lively loop —
+             * the website's shake is the obvious one — would otherwise run for hours
+             * at nobody. `asleep` is what the designer means by a Buddy at rest.
+             *
+             * Its own quiet check, because the session's one is only reached while a
+             * conversation is open: the `continue` above is in the way. */
+            if (frame_rms(in, IN_SAMPLES) > VOICE_RMS) s_last_activity_ms = now;
+            bool rest = since(now, s_last_activity_ms) > CONFIG_BUDDY_FACE_ASLEEP_S * 1000;
+            if (rest != s_face_resting) {
+                s_face_resting = rest;
+                ESP_LOGI(TAG, "%s", rest ? "the room is quiet; the face rests"
+                                         : "something stirred; the face wakes");
+                show_state(rest ? "asleep" : "idle");
+            }
+#endif
             continue;
         }
         if (heard) barge_in(now);

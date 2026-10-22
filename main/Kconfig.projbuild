@@ -200,6 +200,26 @@ config BUDDY_SCREEN_GALLERY
 
 endchoice
 
+config BUDDY_FACE_ASLEEP_S
+    int "Seconds of quiet before the face rests (0 keeps it awake)"
+    depends on BUDDY_SCREEN_FACE && BUDDY_WAKE_WORD
+    range 0 600
+    default 45
+    help
+        A kit between conversations sits in the `idle` state and stays there, because
+        the face belongs to the conversation from the moment the wake word arms. That
+        is right until a child designs an idle face that MOVES — the website's shake,
+        say — and then a Buddy nobody is talking to shakes its head for hours.
+
+        After this many seconds with no sound in the room, the face wears `asleep`
+        instead, which is the state the designer intends for a Buddy at rest. Any
+        sound brings `idle` straight back, and the wake word starts a conversation as
+        it always did.
+
+        This is the *face* resting, not the kit: BUDDY_SLEEP_IDLE_S is the one that
+        turns the panel off and deep-sleeps, and it should stay comfortably longer
+        than this so a Buddy is seen to doze before it goes dark.
+
 config BUDDY_FACE_MOTION_DEMO
     bool "Cycle the website's whole-head motion presets"
     depends on BUDDY_SCREEN_FACE
