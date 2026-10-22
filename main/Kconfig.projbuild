@@ -220,7 +220,7 @@ config BUDDY_AEC_NLP_LEVEL
     int "Echo suppression (AEC NLP): 0 normal, 1 aggressive, 2 very aggressive"
     depends on BUDDY_AEC
     range 0 2
-    default 1
+    default 2
     help
         How hard the echo canceller suppresses what the linear filter leaves behind —
         which, on a full-duplex kit, is the Buddy's own voice arriving back through
@@ -231,9 +231,20 @@ config BUDDY_AEC_NLP_LEVEL
         are both real on this board, and which one bites depends on the enclosure,
         the volume and the room:
 
-        0 (normal) - the kit sometimes hears its own speaker.
-        1 (aggressive) - the ESP-SR default, and the default here.
-        2 (very aggressive) - the strongest suppression available.
+        0 (normal) - the kit hears its own speaker and interrupts itself.
+        1 (aggressive) - the ESP-SR default.
+        2 (very aggressive) - the strongest available, and the default here.
+
+        Measured on this board, echo left in the microphone while the Buddy talks,
+        against a reference slot at about 15000/32768:
+
+            1 (aggressive)        M:83/833
+            2 (very aggressive)   M:37/536
+
+        so turning it to the top roughly halves what leaks through. Its cost did not
+        show up in wake-word reliability: 3 of 4 at aggressive against 5 of 6 at very
+        aggressive, which is too small a sample to separate but is certainly not the
+        collapse the note below warns about.
 
         The cost of turning it up: NLP suppresses whoever is *quieter* during
         playback, and that is the child as well as the speaker. This board's
