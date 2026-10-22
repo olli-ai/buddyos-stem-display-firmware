@@ -598,10 +598,23 @@ depends on the persona: `profile_settings.interruption` must not be `none`.
 > during playback, so the louder it is set the further the child's voice sits below that
 > -30 gate. The two settings pull against each other, and only one of them is helping.
 >
-> Either leave `vad_processor` off and let the ASR path do it, or set
-> `loudness_at_onset: null` on the plugin entry (that is the documented way to disable
-> the gate) — the microphone sensitivity control in the website's persona editor writes
-> exactly that. Until the kit's input level is fixed, off is the safer of the two.
+> **Take it off the persona. Nothing short of that works**, and this was measured rather
+> than reasoned about (2026-10-22, staging omni, `device_id=ESP32-e8f60ae99b71`):
+>
+> - `loudness_at_onset: null` (the editor's "Very sensitive") removes the gate, and VAD
+>   still never fires — loudness was never what was blocking it.
+> - `interruption_enabled: false` does **not** hand the job back to ASR either, which is
+>   what its own docstring implies. It routes to a branch gated on
+>   `_vad_speech_episodes <= _turn_vad_mark` (`app/pipeline/session.py`), and with no VAD
+>   episodes ever that is `0 <= 0`, so every ASR final is discarded. Caught in the log:
+>   a `type=final` of "ngừng lại" at 10:27:09 while the Buddy was speaking, and playback
+>   running on to a normal `state=SPEAKING` completion thirty seconds later.
+>
+> The branch the plugin's absence reaches instead (`Rule 2`) has no such precondition —
+> it calls the detector straight away — which is why removing the plugin works and
+> configuring it does not. The two branches ought to agree, and omni's own comment on
+> Rule 2 says so ("Without VAD in the session (no episodes at all) this can't tell, so
+> it falls through"); the suppressed-VAD branch is simply missing that escape.
 
 ### How hard to suppress the echo
 
