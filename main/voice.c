@@ -78,10 +78,37 @@ static bool starts_a_turn(const char *name)
         || !strcmp(name, "busy")      || !strcmp(name, "error");
 }
 
+#if CONFIG_BUDDY_SCREEN_FACE
+static bool s_face_resting;              /* the face is wearing `asleep`, not `idle` */
+/* Asked for, rather than arrived at. The quiet timer below rests the face when the
+ * room goes silent and wakes it on any sound — which would undo a "bye bye" within a
+ * second, because saying goodbye is a sound. So a requested rest holds until the wake
+ * word, and the timer stands aside while it does. */
+static volatile bool s_face_rest_held;
+#endif
+
 static void show_state(const char *name)
 {
+    const char *want = name;
+#if CONFIG_BUDDY_SCREEN_FACE && CONFIG_BUDDY_FACE_ASLEEP_S > 0
+    /* A skill asked the face to settle, and the conversation has not closed yet.
+     *
+     * The socket stays open for CONFIG_BUDDY_VOICE_IDLE_S after the last word, and
+     * the quiet timer that honours a held rest only runs once it has — so a Buddy
+     * told "bye bye" went on wearing `listening` for another fifteen seconds, which
+     * is exactly as long as it takes to look like nothing happened.
+     *
+     * So the rest lands at the first lull instead: the moment the Buddy stops
+     * speaking. Not during `speaking` — the goodbye should be said with a face on —
+     * and not during `thinking`, which is still part of answering. */
+    if (s_face_rest_held && (!strcmp(name, "listening") || !strcmp(name, "idle"))) {
+        want = "asleep";
+        s_face_resting = true;
+    }
+#endif
     for (int i = 0; i < face_state_count; i++)
-        if (!strcmp(face_states[i].name, name)) {
+        if (!strcmp(face_states[i].name, want)) {
+            /* On the state that was asked for, not the one substituted above. */
             if (starts_a_turn(name)) face_view_request_expression(NULL);
             face_view_request_state(i);
             return;
@@ -180,14 +207,6 @@ static volatile bool s_want_interrupt;   /* barge-in, sent by send_task */
 #define VOICE_RMS    580                 /* -35 dBFS */
 
 static volatile uint32_t s_last_activity_ms;
-#if CONFIG_BUDDY_SCREEN_FACE
-static bool s_face_resting;              /* the face is wearing `asleep`, not `idle` */
-/* Asked for, rather than arrived at. The quiet timer below rests the face when the
- * room goes silent and wakes it on any sound — which would undo a "bye bye" within a
- * second, because saying goodbye is a sound. So a requested rest holds until the wake
- * word, and the timer stands aside while it does. */
-static volatile bool s_face_rest_held;
-#endif
 
 /* After a barge-in, the reply omni already sent is still arriving. It is dropped
  * until omni confirms it has stopped — any state change — or this long passes. */

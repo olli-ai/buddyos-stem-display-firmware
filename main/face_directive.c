@@ -542,8 +542,14 @@ bool face_directive_receive(const char *json, size_t len)
     if (ok && s_is_design && !s_cleared) remember(json, len);
     /* And show it, if it is new. A design that *changes* is a child who just pressed
      * Save and is watching the kit; the same design arriving again is the broker
-     * replaying a retained message, which happens at every boot. */
-    if (ok && !s_cleared && !unchanged) face_view_preview_states();
+     * replaying a retained message, which happens at every boot.
+     *
+     * `s_is_design` is what keeps `face.state` and `face.rest` out of this. They
+     * arrive on the same topic and apply cleanly, so without it a skill that settled
+     * the face also set off a seven-state parade — seen on the board as a stray
+     * `state -> idle` a few milliseconds after `a skill asks the face to settle
+     * down`, which was the sweep's first step before the next status cancelled it. */
+    if (ok && s_is_design && !s_cleared && !unchanged) face_view_preview_states();
     return ok;
 }
 
