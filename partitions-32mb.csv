@@ -27,12 +27,29 @@
 # loader parsed what it read and found a model count it was happy with and no models,
 # which is what reading **zeros** looks like. That region simply is not mapped.
 #
-# 16 MB is 2^24, which is the whole 24-bit SPI address space, so the likely answer is
-# that cache reads past it need 4-byte addressing that this configuration does not do
-# — esptool handles 4-byte addressing itself, which is exactly why it can write and
-# verify a region the runtime cannot read. Proving *that* is the next job; until
-# somebody does it, treat 16 MB as the usable flash on this board and do not plan
-# artwork around the other half.
+# 16 MB is 2^24, the whole 24-bit SPI address space, and that was the answer. Cache
+# reads past it need 4-byte addressing, which IDF does support on this chip and which
+# this build does not turn on — esptool does its own, which is exactly why it can
+# write and verify a region the runtime cannot read.
+#
+# PROVEN on 2026-10-23. With CONFIG_IDF_EXPERIMENTAL_FEATURES=y and
+# CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH=y, `model` at 0x1100000 loads:
+#
+#   without the option:  "Successfully load srmodels", then no wake-word model
+#   with it:             "wake word model wn9_jarvis_tts", and "Jarvis" is heard
+#
+# The second is not just a boot: WakeNet reads that model continuously out of mapped
+# flash, and it ran 21 s and detected correctly. Everything else was already in place
+# — SOC_SPI_MEM_SUPPORT_CACHE_32BIT_ADDR_MAP is set on the P4,
+# BOOTLOADER_FLASH_32BIT_ADDR follows from the 32 MB size, and the flash is quad,
+# which is what the option requires. IDF_EXPERIMENTAL_FEATURES was the only gate.
+#
+# This table deliberately still stays under 16 MB, because the option is EXPERIMENTAL:
+# Espressif's own help says it "can't use on all flash chips stable" and to contact
+# their business support. One board booting is not a fleet. Taking the other 17 MB is
+# now a decision with a known cost rather than an unknown, and it buys the two things
+# that are actually short: a `faces` partition bigger than 1,536 KB (98% full at three
+# characters) and room to bake them at the panel's 720 instead of 384.
 #
 # The cost, stated plainly: an OTA now moves ~6 MB instead of ~2.3 MB, because the art
 # ships inside the firmware, and a slot has ~11% headroom rather than a third. ADR
