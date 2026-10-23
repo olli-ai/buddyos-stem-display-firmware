@@ -14,8 +14,25 @@
 # partition through the flash cache, and what came back was garbage: srmodel_load()
 # read a nonsense model count, its mallocs failed, and it stored through the NULL at
 # model_path.c:138. A boot loop every 22 s, with MTVAL 0x00000000 naming the cause.
-# So the top half of this chip is unused for now; proving out >16 MB mapping is its
-# own job, and not one to do while the face is being brought up.
+# So the top half of this chip is unused. That was deferred rather than settled, and
+# the deferral was re-tested on 2026-10-23 now that the face is up: `model` moved to
+# 0x1100000 (17 MB), same build, same code, nothing else changed.
+#
+#   under 16 MB (0x0e92000):  "wake word model wn9_jarvis_tts"
+#   above   (0x1100000):      "Successfully load srmodels", then no wake-word model
+#
+# esptool wrote and verified all five images at the new offset either way. So the
+# limit is real and it is in the read path, not the write path — but the failure is
+# cleaner than the one recorded above: no boot loop, no garbage, no NULL store. The
+# loader parsed what it read and found a model count it was happy with and no models,
+# which is what reading **zeros** looks like. That region simply is not mapped.
+#
+# 16 MB is 2^24, which is the whole 24-bit SPI address space, so the likely answer is
+# that cache reads past it need 4-byte addressing that this configuration does not do
+# — esptool handles 4-byte addressing itself, which is exactly why it can write and
+# verify a region the runtime cannot read. Proving *that* is the next job; until
+# somebody does it, treat 16 MB as the usable flash on this board and do not plan
+# artwork around the other half.
 #
 # The cost, stated plainly: an OTA now moves ~6 MB instead of ~2.3 MB, because the art
 # ships inside the firmware, and a slot has ~11% headroom rather than a third. ADR
