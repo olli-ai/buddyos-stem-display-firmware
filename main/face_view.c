@@ -144,6 +144,64 @@ static void report_worn(void)
 
 void face_view_preview_states(void) { s_preview_req = true; }
 
+/* ── what a touch does ────────────────────────────────────────────────────────
+ *
+ * A reaction is built out of parts this firmware already carries — 21 eyes, 8 brows,
+ * 31 mouths, all in the app image — and a movement the PPA can actually draw. That is
+ * the whole design constraint: the `faces` partition is 98% full at three characters,
+ * so a reaction made of new artwork could not be shipped for even one of them, let
+ * alone three. Made of parts, it costs nothing and works for every character,
+ * including ones that do not exist yet.
+ *
+ * The movement is a single half-sine over TOUCH_MS: out and back, no keyframes, no
+ * easing table. A touch wants to feel immediate, and anything longer than about a
+ * second reads as the Buddy being slow rather than pleased. */
+#define TOUCH_MS 900
+
+typedef struct {
+    const char *id;
+    const char *brows, *eyes, *mouth;   /* NULL leaves that layer to the design */
+    enum { TOUCH_STILL, TOUCH_BOUNCE, TOUCH_WIGGLE, TOUCH_NOD } move;
+} touch_react_t;
+
+static const touch_react_t TOUCH_REACTS[] = {
+    { "bounce", "raised", "happy",   "grin",  TOUCH_BOUNCE },
+    { "giggle", "oneup",  "wink",    "laugh", TOUCH_WIGGLE },
+    { "love",   "raised", "heart",   "smile", TOUCH_BOUNCE },
+    { "starry", "raised", "star",    "laugh", TOUCH_BOUNCE },
+    { "shy",    "sad",    "closed",  "smile", TOUCH_NOD    },
+};
+#define N_TOUCH_REACTS ((int)(sizeof TOUCH_REACTS / sizeof *TOUCH_REACTS))
+
+/* Starts at the first reaction rather than at nothing: a kit out of the box, or one
+ * whose design predates this, should still notice being touched. A design that names
+ * `touch` decides from then on, and `none` is how it says no. */
+static int s_touch_pick;
+static volatile bool s_touch_req;
+static uint32_t s_touch_t0;
+static bool s_touch_playing;
+
+void face_view_touch_react(void) { if (s_touch_pick >= 0) s_touch_req = true; }
+
+void face_view_set_touch_react(const char *id)
+{
+    s_touch_pick = -1;
+    for (int i = 0; id && i < N_TOUCH_REACTS; i++)
+        if (!strcmp(TOUCH_REACTS[i].id, id)) { s_touch_pick = i; break; }
+    ESP_LOGI(TAG, "a touch makes this Buddy %s",
+             s_touch_pick >= 0 ? TOUCH_REACTS[s_touch_pick].id : "do nothing");
+}
+
+/* Look up one part of a reaction, or -1000 to leave the layer alone. */
+static int16_t touch_part(const char *layer, const char *part)
+{
+    if (!part) return -1000;
+    for (int i = 0; i < face_sprite_count; i++)
+        if (!strcmp(face_sprites[i].layer, layer) && !strcmp(face_sprites[i].part, part))
+            return (int16_t)i;
+    return -1000;
+}
+
 void face_view_request_expression(const int16_t parts[5])
 {
     if (parts) for (int i = 0; i < 5; i++) s_want_expr[i] = parts[i];
@@ -803,6 +861,48 @@ void face_view_tick(uint32_t elapsed_ms)
      * PPA does the same move in 14 ms. So on the P4 the body is not an LVGL layer
      * at all any more — render_start_cb puts it on the panel in hardware and this
      * call does nothing. The S3 keeps the still body, which is right for it. */
+    /* A touch, played over whatever the state is already doing rather than instead of
+     * it: the Buddy is still listening or speaking while it reacts. */
+    if (s_touch_req) {
+        s_touch_req = false;
+        if (!s_touch_playing && s_touch_pick >= 0) {
+            const touch_react_t *r = &TOUCH_REACTS[s_touch_pick];
+            int16_t parts[5] = {
+                touch_part("browL", r->brows), touch_part("eyeL", r->eyes),
+                touch_part("browR", r->brows), touch_part("eyeR", r->eyes), -1000,
+            };
+            for (int i = 0; i < 4; i++)
+                if (parts[i] == -1000) parts[i] = part_of(s_state, i);
+            parts[4] = part_of(s_state, 4);
+            face_view_request_expression(parts);
+            /* The mouth only if nothing is speaking through it: lip-sync owns that
+             * layer while the Buddy talks, and a reaction must not cut a word short. */
+            if (s_live_mouth < 0) {
+                int16_t m = touch_part("mouth", r->mouth);
+                if (m != -1000) face_view_set_live_mouth(m);
+            }
+            s_touch_t0 = elapsed_ms;
+            s_touch_playing = true;
+        }
+    }
+    if (s_touch_playing) {
+        uint32_t dt = elapsed_ms - s_touch_t0;
+        if (dt >= TOUCH_MS) {
+            s_touch_playing = false;
+            face_view_request_expression(NULL);
+            face_view_set_live_mouth(-1);
+        } else {
+            float u = dt / (float)TOUCH_MS;
+            float out = sinf(u * (float)M_PI);        /* away and back, once */
+            switch (TOUCH_REACTS[s_touch_pick].move) {
+                case TOUCH_BOUNCE: v[0].y -= 7.0f * out; break;
+                case TOUCH_NOD:    v[0].y += 4.0f * out; break;
+                case TOUCH_WIGGLE: v[0].x += 4.0f * out * sinf(u * 6.0f * (float)M_PI); break;
+                default: break;
+            }
+        }
+    }
+
 #if CONFIG_IDF_TARGET_ESP32P4
     {
         const float UNIT = face_bg.header.w / 100.0f;

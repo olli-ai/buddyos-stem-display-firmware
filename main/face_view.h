@@ -62,3 +62,11 @@ void face_view_request_expression(const int16_t parts[5]);
  *  would otherwise only meet one at a time in the middle of a conversation. Anything
  *  that asks for a state — a conversation, a directive — cancels it. */
 void face_view_preview_states(void);
+
+/** The Buddy noticed being touched. Plays the reaction the design chose, once.
+ *  Safe from any task; ignored while one is already playing. */
+void face_view_touch_react(void);
+
+/** Which reaction a touch plays, by the website's id. Unknown ids turn it off, which
+ *  is also what a design that says nothing gets. */
+void face_view_set_touch_react(const char *id);

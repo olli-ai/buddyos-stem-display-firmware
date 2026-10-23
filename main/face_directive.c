@@ -477,6 +477,16 @@ bool face_directive_apply(const char *json, size_t len)
 
     apply_motion(cJSON_GetObjectItem(extra, "motion"));
 
+    /* What a touch does. One id, because the reaction itself is built from parts this
+     * firmware already has — see TOUCH_REACTS. A design that does not mention `touch`
+     * leaves the setting alone, so an older design does not silently switch off a
+     * behaviour the kit shipped with; `"none"` is how a child turns it off. */
+    const cJSON *touch = cJSON_GetObjectItem(extra, "touch");
+    if (touch) {
+        const cJSON *react = cJSON_IsObject(touch) ? cJSON_GetObjectItem(touch, "react") : touch;
+        face_view_set_touch_react(cJSON_GetStringValue(react));
+    }
+
     s_is_design = true;
     cJSON_Delete(root);
     return changed;

@@ -97,6 +97,10 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 /* The touch layer as an LVGL pointer: it is what swipes the gallery. A touch also
  * counts as somebody being there, so a child playing with the screen does not have
  * the kit fall asleep under their finger. */
+#if CONFIG_BUDDY_SCREEN_FACE
+static bool s_touched;                   /* a finger is down, for edge detection */
+#endif
+
 static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
@@ -106,8 +110,16 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
         sleep_note_activity();
+#if CONFIG_BUDDY_SCREEN_FACE
+        /* On the edge, not for every frame a finger stays down: a reaction is a
+         * response to being touched, not to being held. */
+        if (!s_touched) { s_touched = true; face_view_touch_react(); }
+#endif
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
+#if CONFIG_BUDDY_SCREEN_FACE
+        s_touched = false;
+#endif
     }
 }
 
