@@ -104,6 +104,11 @@ static void show_state(const char *name)
     if (s_face_rest_held && (!strcmp(name, "listening") || !strcmp(name, "idle"))) {
         want = "asleep";
         s_face_resting = true;
+        /* And the pill with it. on_status sets STATUS_LISTENING before calling here,
+         * so without this a settled Buddy sits under a "Listening" badge — the face
+         * says goodnight and the label argues with it. STATUS_IDLE is the waiting-
+         * for-the-wake-word one, which is exactly what the kit is now doing. */
+        status_set(STATUS_IDLE);
     }
 #endif
     for (int i = 0; i < face_state_count; i++)
