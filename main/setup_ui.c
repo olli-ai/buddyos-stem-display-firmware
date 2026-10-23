@@ -3,7 +3,10 @@
 #include "board_pins.h"
 #include "prov.h"
 
+#include "esp_log.h"
 #include <string.h>
+
+static const char *TAG = "setup";
 
 /* 48 on the P4's 720x720, 28 on the S3's 480 round panel, and whatever is actually
  * compiled in if someone trims the font list — a setup screen that fails to build is
@@ -47,6 +50,9 @@ static uint32_t s_shown_gen = (uint32_t)-1;
 static uint32_t s_entered;             /* lv_tick when s_shown was drawn */
 
 static lv_obj_t *s_box, *s_title, *s_serial, *s_step, *s_hint;
+#if LV_USE_QRCODE
+static lv_obj_t *s_qr;
+#endif
 
 void setup_ui_set(setup_ui_state_t s)
 {
@@ -147,6 +153,30 @@ void setup_ui_create(lv_obj_t *scr)
      * string in a list on a phone, and the two must look identical. */
     s_serial = label(col, SERIAL_FONT, 0xffffff);
     lv_label_set_text(s_serial, prov_serial());
+
+#if LV_USE_QRCODE
+    /* The same serial, for the camera. Typing `ESP32-e8f60ae99b71` off a screen into
+     * a phone is the step people get wrong, and a wrong character looks exactly like
+     * a kit that will not pair.
+     *
+     * It carries the serial alone, not a URL. The firmware does not know the
+     * website's address — that differs per environment and is not its business —
+     * and a bare serial is what the scanner needs either way. The printed serial
+     * stays directly above it, because a camera that will not focus is not a reason
+     * to be unable to set a kit up.
+     *
+     * White quiet zone around it: a scanner needs the margin, and this panel's
+     * background is dark enough that without one the finder patterns run into it. */
+    s_qr = lv_qrcode_create(col);
+    lv_qrcode_set_size(s_qr, BOARD_ROUND ? 150 : 230);
+    lv_qrcode_set_dark_color(s_qr, lv_color_black());
+    lv_qrcode_set_light_color(s_qr, lv_color_white());
+    lv_result_t qr = lv_qrcode_update(s_qr, prov_serial(), strlen(prov_serial()));
+    ESP_LOGI(TAG, "setup QR for '%s': %s", prov_serial(),
+             qr == LV_RESULT_OK ? "ready" : "REFUSED by the encoder");
+    lv_obj_set_style_border_color(s_qr, lv_color_white(), 0);
+    lv_obj_set_style_border_width(s_qr, BOARD_ROUND ? 6 : 10, 0);
+#endif
 
     s_step = label(col, BODY_FONT, 0xffb300);
     lv_label_set_text(s_step, "");
