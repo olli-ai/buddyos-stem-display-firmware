@@ -225,13 +225,7 @@ size_t face_expressions_advertise(char *buf, size_t n)
      * is advertising nothing but `face2d`. */
     int w = snprintf(buf, n,
                      "{\"type\":\"register_tools\",\"client_tools\":[],"
-                     /* What this kit can be *asked to do*, beside what it can wear.
-                      * The device is the only thing that knows which directives its
-                      * firmware actually implements, so it says so rather than letting
-                      * a persona assume. `rest` is face.rest above; deep sleep is
-                      * deliberately not offered while it needs a RESET to undo. */
-                     "\"ui_context\":[{\"type\":\"device\",\"actions\":[\"rest\"]},"
-                     "{\"type\":\"face2d\",\"resting\":\"original\","
+                     "\"ui_context\":[{\"type\":\"face2d\",\"resting\":\"original\","
                      "\"emotions\":[");
     if (w < 0 || (size_t)w >= n) return 0;
     for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
