@@ -1,14 +1,16 @@
 # buddyos-stem-display-firmware
 
-ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**, photo-gallery build: a
-2.1" round touch screen that shows **footballers you swipe between**, and behind it
-the same kit as ever — BLE Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice
-conversation that starts when you say "Jarvis".
+ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**: a round screen showing
+the Buddy a child designed on the website, and behind it the same kit as ever — BLE
+Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice conversation that starts when you
+say "Jarvis".
 
-There is **no Buddy face** in this build. The face renderer, the `.buddy` motion
-interpreter, the lip-sync classifier, the catalogue partition and the simulator are all
-gone; the screen belongs to the gallery. A `face.*` directive from the gateway is logged
-and ignored.
+**The face is the default build** (`BUDDY_SCREEN_FACE`). A design saved on the website
+arrives over MQTT, is applied to all seven states and survives a reboot; the character
+comes from the catalogue partition; the mouth follows the audio being spoken; and the
+model can change the expression mid-sentence. The **photo gallery** — footballers you
+swipe between — is the other half of the same firmware and is chosen with
+`BUDDY_SCREEN_GALLERY` in `menuconfig`. The two are exclusive: one screen, one job.
 
 **You can build one.** The parts are off-the-shelf modules on a breadboard, this firmware is
 Apache-2.0, and a kit you flashed yourself joins the BuddyOS cloud exactly like one that came
@@ -553,6 +555,113 @@ worn, so the cost is paid at a character change rather than per frame. More than
 three characters, or a sharper one, needs the partition re-cut — which in turn needs
 the 4.1 MB of baked artwork out of the app slot, since everything on this board must
 stay under 16 MB.
+
+### Drawing a face this panel can move
+
+LVGL cannot animate this face, and that is structural rather than a tuning problem: its
+hardware draw units are nxp, renesas and vg_lite — there is none for Espressif — so on
+the P4 it is software by construction. Measured on the board, 720×720:
+
+| | cost per frame |
+| --- | --- |
+| LVGL, scaling the body | 250–460 ms |
+| LVGL, opaque full-screen blit, no scaling | 48–62 ms |
+| **PPA, the same move** | **13–15 ms** |
+
+So the body is composited by the **PPA** (`main/face_ppa.c`), straight into the frame
+buffer LVGL is about to draw into, and LVGL draws only the features over it. During
+motion a frame costs 23–33 ms, of which the body is 14–18 and the features the rest —
+roughly 30–40 fps for a face moving as a whole.
+
+Three things the hardware decides, all of which show up as product behaviour:
+
+- **Translation is exact.** `PPA_SR_SCAL_X_FRAG` is four bits, so scale quantises to
+  sixteenths and a breath of 1.025 rounds to nothing — but a nod or a lean is pixel
+  accurate.
+- **Rotation does not exist in hardware**, only quarter turns. The website's `shake` is
+  a ±6° rotation, so the turn is rendered *before* the frame needs it: seven copies of
+  the body at 2° steps, built the first time a design asks the head to turn (3.7 s and
+  7 MB of PSRAM, once per character). An earlier attempt kept them at the 384 bake and
+  let the PPA upscale — same information, cheaper blit, and visibly wrong: the PPA's
+  scaler is cruder than a CPU bilinear pass and drew concentric rings across the body's
+  gradient. The rotation and the upscale now happen in one CPU pass.
+- **Whole screens, not dirty areas.** The body is what erases the previous frame, so a
+  partial redraw would leave the last frame's eyes standing where the body had erased
+  around them. `LV_DISPLAY_RENDER_MODE_FULL`; LVGL still renders only when something
+  changed.
+
+### What the face does on its own
+
+- **A design previews when it arrives.** Press Save and the kit wears all seven states,
+  about a second each, then returns. Only on a *change* — `face.update` is retained, so
+  the broker replays it at every boot and a parade on every power-up would stop meaning
+  anything.
+- **Parts follow the character.** Drawn parts are authored for the built-in face, which
+  is Sprout. On Pip a designed eye sat 14 px high and a designed mouth 57 px high, which
+  is the mouth crowding up between the eyes. Each character now carries one offset per
+  feature, measured when it is worn, so switching a state between `artwork` and a drawn
+  part no longer moves the feature.
+- **Baked loops come home to the design.** A sprite track names absolute sprites, and
+  the face it was generated from is the factory's — so every time a blink or the 480 ms
+  talking cycle came home it overwrote the child's eyes. Home now means "whatever the
+  design says".
+- **A design brings its own motion.** `extra.motion` is interpreted at runtime, per
+  state and whole: re-author `speaking` and `idle` keeps the loop it was built with.
+- **The face rests when the room is quiet** (`BUDDY_FACE_ASLEEP_S`, 45 s). Without it an
+  idle state a child gave a lively loop would run for hours at nobody.
+
+### Expressions, chosen by the model
+
+omni's `visual_face_emotion` plugin can change the face mid-sentence. The kit advertises
+what it can wear when the voice socket opens — a `face2d` context listing the preset ids
+it has artwork for — and omni supplies the wording the model is given for each. A device
+sends ids; it never sends prompt text.
+
+An expression is a **second axis from state**: a Buddy can be `speaking` and `surprised`
+at once. It takes the eyes and brows and leaves the mouth, because the mouth is the part
+a child designs and letting the model overwrite it meant a designed speaking face lasted
+only until the first tag. It is cleared at the start of the next turn, not at the next
+state change — the expression arrives while omni is still `thinking`, so clearing on a
+state change wiped it the moment the state became `speaking`.
+
+Timing comes from the audio, not the text. omni reports `at_ms`, the tag's position in
+the turn, and the kit holds each expression until *its own* playback reaches that point —
+measured across one 51 s reply, every expression landed within 7–20 ms of its due point,
+which is one Opus packet.
+
+### Skills: what a program can ask this kit to do
+
+A child's program is **not run on the kit**. omni injects it into the model's prompt and
+the model decides when to act, then publishes an MQTT directive. The kit implements two
+things a program may name:
+
+| directive | effect |
+| --- | --- |
+| `face.state` | wear one of `idle · listening · thinking · speaking · busy · error · asleep` |
+| `face.rest` | settle until spoken to again |
+
+`face.rest` is what "bye bye" should mean here. It settles the face at the first lull —
+not during `speaking`, since the goodbye should be said with a face on — and **ends the
+voice session**, because resting the face alone left the socket open and the kit went on
+answering anything said near it while looking asleep.
+
+Deliberately **not** `device.sleep`, which this firmware also implements: `device.` is a
+reserved prefix omni refuses from a program (`device.reset` factory-resets a kit), and on
+this board deep sleep is undone only by the RESET button — the P4 wakes from an LP GPIO,
+BOOT is GPIO 35, and the touch panel is polled with no interrupt line. A Buddy that
+deep-slept on "bye bye" would need an adult to revive it.
+
+The user-facing version of this list is a published guide in the gateway,
+`display-kit-program-actions`.
+
+### Setting up by camera
+
+The setup screen shows the serial as a **QR** as well as text (`CONFIG_LV_USE_QRCODE`;
+LVGL vendors the widget, so there is no new component). It carries the serial alone, not
+a URL: stem-fe's `ScanCode` step hands whatever it decodes straight through as the
+serial, so a URL would fail the BLE name filter downstream — an empty chooser with
+nothing to debug. The printed serial stays above it, because a camera that will not focus
+is not a reason to be unable to set a kit up.
 
 ### Echo cancellation and the microphone slots
 
