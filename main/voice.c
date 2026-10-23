@@ -848,6 +848,17 @@ static void up_task(void *arg)
         const char *why = NULL;
         if (s_phase == PHASE_OPENING && since(now, s_opened_ms) > OPEN_TIMEOUT_MS) why = "never opened";
         else if (s_phase == PHASE_OPEN && !s_connected) why = "dropped";
+#if CONFIG_BUDDY_SCREEN_FACE && CONFIG_BUDDY_FACE_ASLEEP_S > 0
+        /* A skill said goodbye for the child, so end the conversation rather than
+         * only looking like it. Resting the face alone left the socket open for
+         * another CONFIG_BUDDY_VOICE_IDLE_S, during which the kit still answered
+         * anything said near it — a Buddy that reads as asleep and replies anyway,
+         * under a pill that now said "Say Jarvis" and did not mean it.
+         *
+         * Once it has stopped speaking: the goodbye is the last thing it says, and
+         * cutting the session mid-sentence would take the words with it. */
+        else if (s_face_rest_held && !s_speaking) why = "said goodbye";
+#endif
         else if (since(now, s_last_activity_ms) > CONFIG_BUDDY_VOICE_IDLE_S * 1000) why = "quiet";
         if (why) { session_end(why); continue; }
         f.gen = s_gen;
