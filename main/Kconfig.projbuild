@@ -367,6 +367,32 @@ config BUDDY_UPLINK_GAIN_DB
         Past that, expect clipping on loud speech and a worse transcript, not a
         louder one.
 
+config BUDDY_UPLINK_DUCK_DB
+    int "dB to take off the uplink gain while the Buddy is speaking"
+    depends on BUDDY_VOICE && BUDDY_UPLINK_GAIN_DB > 0
+    range 0 40
+    default 12
+    help
+        The uplink gain lifts everything the cloud hears, including the echo the
+        canceller did not remove. That is fine until the gain is large: at +30 dB the
+        residue reached omni at about -25 dBFS, which is as loud as a person, and its
+        VAD interrupted the Buddy mid-sentence on the Buddy's own voice.
+
+        Measured 2026-10-23 on this board, from omni's own VAD telemetry:
+
+            echo while speaking   vad_score 0.44 at -25.5 dBFS
+            a child speaking      vad_score 0.58 - 0.89
+
+        which is far too close together to separate with a threshold. So the gain is
+        reduced by this much while the Buddy speaks: both the echo and a child trying
+        to interrupt come down equally, but only the echo was near the line, so the
+        echo drops under it and a real voice stays over.
+
+        0 disables the ducking. If the kit still interrupts itself, raise it; if a
+        child can no longer barge in over the Buddy, lower it. Turning the whole
+        uplink gain down instead is not the trade - that is what made the kit
+        inaudible to VAD in the first place.
+
 config BUDDY_VOICE_IDLE_S
     int "Seconds of quiet that end a conversation"
     depends on BUDDY_WAKE_WORD

@@ -453,10 +453,18 @@ static inline int16_t clamp16(int32_t v) { return v > 32767 ? 32767 : v < -32768
  * beside it already costs. */
 #define UP_GAIN_Q 8
 static int32_t s_up_gain;            /* 10^(dB/20) in Q8, set once at start */
+static int32_t s_up_gain_ducked;     /* the same, less BUDDY_UPLINK_DUCK_DB */
+
 static inline void uplink_gain(int16_t *pcm, int n)
 {
+    /* Less of it while the Buddy talks. The gain lifts the echo the canceller left
+     * behind as faithfully as it lifts a child, and at +30 dB that residue reached
+     * omni at about -25 dBFS — as loud as a person — so its VAD interrupted the
+     * Buddy on the Buddy's own voice. Ducking moves both down by the same amount;
+     * only the echo was near the threshold, so only the echo drops under it. */
+    int32_t g = s_speaking ? s_up_gain_ducked : s_up_gain;
     for (int i = 0; i < n; i++)
-        pcm[i] = clamp16((int32_t)pcm[i] * s_up_gain >> UP_GAIN_Q);
+        pcm[i] = clamp16((int32_t)pcm[i] * g >> UP_GAIN_Q);
 }
 #else
 static inline void uplink_gain(int16_t *pcm, int n) { (void)pcm; (void)n; }
@@ -1091,6 +1099,9 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
      * fixed at build time anyway. Logged because a kit that is too quiet for the
      * cloud and a kit that is clipping look identical from here. */
     s_up_gain = (int32_t)(powf(10.0f, CONFIG_BUDDY_UPLINK_GAIN_DB / 20.0f) * (1 << UP_GAIN_Q) + 0.5f);
+    s_up_gain_ducked = (int32_t)(powf(10.0f,
+        (CONFIG_BUDDY_UPLINK_GAIN_DB - CONFIG_BUDDY_UPLINK_DUCK_DB) / 20.0f)
+        * (1 << UP_GAIN_Q) + 0.5f);
     ESP_LOGI(TAG, "uplink gain: +%d dB (x%.2f) on the audio omni hears",
              CONFIG_BUDDY_UPLINK_GAIN_DB, (double)s_up_gain / (1 << UP_GAIN_Q));
 #endif
