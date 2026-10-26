@@ -1,16 +1,29 @@
-# The N16R8 board (16 MB flash): the same partitions as partitions.csv, with 3 MB
+# The N16R8 board (16 MB flash): the same partitions as partitions.csv, with 4.5 MB
 # app slots. The 2 MB slots filled to 97% once voice and the wake word were in, and
-# BLE setup does not fit beside them; an 8 MB part cannot hold two 3 MB slots plus
+# BLE setup does not fit beside them; an 8 MB part cannot hold two large slots plus
 # the `faces` partition, so the N8R2 keeps partitions.csv and builds without voice.
 #
-# `faces` is unused in this build (no face); it is kept so `model` does not move.
+# Why 4.5 and not 3 MB: the face is baked at the panel's own size and rides inside
+# the app (main/CMakeLists.txt), and this board's ST7701S is 480x480 — about 1.7 MB
+# of ARGB8888, which took the image to 3.36 MB and over a 3 MB slot. Widening the
+# slot is the cheap half of that trade; the expensive half would be shrinking the
+# art, which is the product. 16 MB has the room: two 4.5 MB slots plus `faces` and
+# `model` reach 0xB12000, leaving ~4.9 MB unused.
+#
+# This moves every partition after ota_0, so it is not an OTA-compatible change: a
+# device already running the 3 MB layout cannot be walked onto this one by an app
+# update, only re-flashed over USB. Done 2026-10-26, when no display-kit firmware had
+# ever been published to staging or production and no board was fielded on the old
+# layout. Widening it again later will not be free.
+#
+# `faces` holds the catalogue characters (ADR 0009), read by face_catalogue.c.
 # `model` is found by name, never by offset.
 #
 # Name,     Type, SubType,  Offset,   Size
 nvs,        data, nvs,      0x9000,   0x6000
 phy_init,   data, phy,      0xf000,   0x1000
-ota_0,      app,  ota_0,    0x10000,  0x300000
-ota_1,      app,  ota_1,    ,         0x300000
+ota_0,      app,  ota_0,    0x10000,  0x480000
+ota_1,      app,  ota_1,    ,         0x480000
 otadata,    data, ota,      ,         0x2000
 faces,      data, spiffs,   ,         0x180000
 model,      data, spiffs,   ,         0x80000

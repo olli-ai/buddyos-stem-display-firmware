@@ -5,46 +5,73 @@ the Buddy a child designed on the website, and behind it the same kit as ever �
 Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice conversation that starts when you
 say "Jarvis".
 
+## Which board
+
+Two boards carry this device type, and **one branch builds both**. There is no flag to
+set: the target decides, and `main/CMakeLists.txt` picks the matching face artwork.
+
+| Your board | Target | Screen |
+| --- | --- | --- |
+| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | HD21001C40 2.1" 480x480 round ST7701S |
+| **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch |
+
+```sh
+git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
+cd buddyos-stem-display-firmware
+
+# ESP32-S3-WROOM-1-N16R8 — the N16R8 overlay is not applied automatically
+idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+# ESP32-P4 — IDF layers sdkconfig.defaults.esp32p4 on its own
+idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
+```
+
+**Voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
+bringing the audio board up the first time once hung a device past the ROM bootloader
+(`main/Kconfig.projbuild` keeps the note), and `BUDDY_VOICE` hangs off it. A kit that
+should answer to "Jarvis" needs both, which is two lines in `menuconfig` or appended to
+the board's defaults:
+
+```
+CONFIG_BUDDY_AUDIO=y
+CONFIG_BUDDY_VOICE=y
+```
+
+Everything downstream of them already defaults to what the bench measured — echo
+cancellation on for the P4, and 30 dB of uplink gain, without which the cloud's VAD
+never hears a voice and the kit cannot be interrupted.
+
+**Do not build the N16R8 in the same directory as the P4**, or either in the default
+`build/`: a partition table and a face bake are per board, and a stale `sdkconfig` is
+how you get an image for the panel you do not have. The `-B` and `-DSDKCONFIG` above
+keep them apart.
+
+**What is per board, and why.** The face is vector art rasterised offline, so its cost is
+area and each panel needs its own bake — 480x480 for the S3 (~1.7 MB), 720x720 for the P4
+(~4 MB). Both are committed and exactly one is compiled, which is why building needs
+nothing but ESP-IDF. `face_view.c` takes the bake's dimensions *as* the panel's, so a
+mismatched one does not scale to fit; it draws short of the edges. The P4 additionally
+compiles `face_ppa.c`, its 2D accelerator, and its own panel and audio drivers.
+
+The two boards took separate branches for a while, when the P4's bake was the only one
+and it did not fit the S3's app slot. They no longer do, and fixes land once.
+
+## Setting your kit up
+
+Once the firmware is flashed, everything else happens at **<https://app.buddystem.com>** —
+create an account, add the kit over Bluetooth (the setup screen shows its serial as a QR
+to scan), design its face, give it a voice and choose what a touch does. A kit you built
+yourself appears there exactly like one that came in a box.
+
+---
+
 **The face is the default build** (`BUDDY_SCREEN_FACE`). A design saved on the website
 arrives over MQTT, is applied to all seven states and survives a reboot; the character
 comes from the catalogue partition; the mouth follows the audio being spoken; and the
 model can change the expression mid-sentence. The **photo gallery** — footballers you
 swipe between — is the other half of the same firmware and is chosen with
 `BUDDY_SCREEN_GALLERY` in `menuconfig`. The two are exclusive: one screen, one job.
-
-## Which board, which branch
-
-Two boards carry this device type, and **each has its own branch**. Build the one that
-matches the hardware in your hand — they are not one firmware with a flag, and the wrong
-branch will not fit.
-
-| Your board | Branch | Screen |
-| --- | --- | --- |
-| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | **`master`** — you are here | 1.28" round GC9A01, no touch |
-| **ESP32-P4** (32 MB flash) e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | **`esp32p4-touch-screen`** | 4" 720x720 JD9365, touch |
-
-```sh
-git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
-cd buddyos-stem-display-firmware
-git checkout esp32p4-touch-screen        # only if you have the P4 board
-```
-
-**Why not one branch.** The face is vector art rasterised offline, so its cost is area:
-the bake this branch carries is 3.0 MB of generated source, and the P4's 720x720 bake is
-26 MB, which links to a 5.6 MB image against this board's 3 MB app slot. Merging them
-leaves a tree that cannot build for either board — measured, after trying it. Unifying
-would mean a per-target asset set, or the baker in the repo so artwork is generated at
-build time rather than committed; until then, a branch each.
-
-The P4 branch is also where the newer work lives: the PPA compositor, catalogue
-characters, model-chosen expressions, touch reactions and the setup QR.
-
-## Setting your kit up
-
-Once the firmware is flashed, everything else happens at **<https://app.buddystem.com>** —
-create an account, add the kit over Bluetooth, design its face, give it a voice and watch
-what the cloud costs. A kit you built yourself appears there exactly like one that came in
-a box.
 
 **You can build one.** The parts are off-the-shelf modules on a breadboard, this firmware is
 Apache-2.0, and a kit you flashed yourself joins the BuddyOS cloud exactly like one that came
@@ -508,7 +535,7 @@ reads it, and it stays so `model` does not move. The command is in [Flash it](#f
 ## The Waveshare ESP32-P4 board
 
 The same firmware also builds for the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C**: an
-ESP32-P4 (rev 3, 32 MB PSRAM, 16 MB flash), a 4" 720×720 JD9365 MIPI-DSI panel, GT911
+ESP32-P4 (rev 3, 32 MB PSRAM, 32 MB flash), a 4" 720×720 JD9365 MIPI-DSI panel, GT911
 touch, an ES8311 DAC with its amplifier, an ES7210 four-channel ADC with two microphones,
 and an **ESP32-C6** for Wi-Fi 6 and BLE. Nothing is wired by hand — every pin is the
 board's (`main/board_pins.h`, from Waveshare's BSP).

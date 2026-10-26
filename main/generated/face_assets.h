@@ -12,7 +12,8 @@
 #include "lvgl.h"
 
 /** One rasterised part, with where it sits in the face. The face is the panel:
- *  SIZE in tools/bake_face.ts, 720 for the P4's JD9365, 240 for the old GC9A01.
+ *  FACE_SIZE in tools/bake_face.ts: 720 for the P4's JD9365, 480 for the S3's
+ *  ST7701S. Both bakes are committed; main/CMakeLists.txt compiles one.
  *  The art is vector, so changing it re-rasterises rather than upscales. */
 typedef struct {
     const char *layer;              /* "eyeL", "mouth", ... */
