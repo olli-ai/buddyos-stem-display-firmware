@@ -6,9 +6,25 @@ set(srcs "main.c" "board_i2c.c" "status.c" "voice.c" "touch.c"
 # gallery one a viseme class a jaw can only approximate.
 if(CONFIG_BUDDY_SCREEN_FACE)
     list(APPEND srcs "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c"
-                     "face_catalogue.c" "face_demo_motion.c" "generated/face_assets.c")
+                     "face_catalogue.c" "face_demo_motion.c")
+    # The face is vector art rasterised offline, so its cost is area and the bake
+    # belongs to the glass: 720 for the P4's JD9365, 480 for the S3's ST7701S. Both
+    # are committed (nothing here needs the front end to build) and exactly one is
+    # compiled — they define the same symbols. face_view.c takes face_bg's size *as*
+    # the panel's, so the wrong bake does not scale to fit: it draws short of the
+    # edges, and the 720 one does not fit the S3's app slot at all.
+    #
+    # Regenerating them needs tools/bake_face.ts (FACE_SIZE picks the size), which is
+    # untracked on purpose — it imports the website's catalogue and cannot compile
+    # without that repo. See .gitignore. Building the firmware never needs it.
+    #
+    # Chosen on IDF_TARGET rather than a CONFIG_: this list is read in the early pass
+    # that resolves sources, where no CONFIG_ symbol exists yet. IDF_TARGET does.
     if(IDF_TARGET STREQUAL "esp32p4")
+        list(APPEND srcs "generated/face_assets_720.c")
         list(APPEND srcs "face_ppa.c")           # the P4's 2D accelerator
+    else()
+        list(APPEND srcs "generated/face_assets_480.c")
     endif()
 else()
     list(APPEND srcs "gallery.c" "lipsync.c" "generated/visemes.c")

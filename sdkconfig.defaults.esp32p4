@@ -19,10 +19,10 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 # partitions-16mb.csv shares with the S3 build.
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 
-# 16 MB flash, and the same 3 MB app slots as the N16R8 build: partitions-16mb.csv.
-# 32 MB, which is what the board has — the bootloader was warning that the image
+# 32 MB flash, which is what the board has — the bootloader warned when the image
 # header asked for half of it. The face is baked for this panel (720x720 ARGB8888,
-# ~4.1 MB) and rides inside the app, so the slots are 8 MB; see partitions-32mb.csv.
+# ~4 MB) and rides inside the app, so the slots are 6.5 MB and the table is this
+# board's own: partitions-32mb.csv, not the S3's partitions-16mb.csv.
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-32mb.csv"
