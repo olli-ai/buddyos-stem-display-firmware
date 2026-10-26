@@ -4,6 +4,40 @@ ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**: the kit that s
 Buddy a child designed on the website, drawn with LVGL, lip-syncing to the voice it speaks
 with, and animated from the child's own keyframes.
 
+## Which board, which branch
+
+Two boards carry this device type, and **each has its own branch**. Build the one that
+matches the hardware in your hand — they are not one firmware with a flag, and the wrong
+branch will not fit.
+
+| Your board | Branch | Screen |
+| --- | --- | --- |
+| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | **`master`** — you are here | 1.28" round GC9A01, no touch |
+| **ESP32-P4** (32 MB flash) e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | **`esp32p4-touch-screen`** | 4" 720x720 JD9365, touch |
+
+```sh
+git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
+cd buddyos-stem-display-firmware
+git checkout esp32p4-touch-screen        # only if you have the P4 board
+```
+
+**Why not one branch.** The face is vector art rasterised offline, so its cost is area:
+the bake this branch carries is 3.0 MB of generated source, and the P4's 720x720 bake is
+26 MB, which links to a 5.6 MB image against this board's 3 MB app slot. Merging them
+leaves a tree that cannot build for either board — measured, after trying it. Unifying
+would mean a per-target asset set, or the baker in the repo so artwork is generated at
+build time rather than committed; until then, a branch each.
+
+The P4 branch is also where the newer work lives: the PPA compositor, catalogue
+characters, model-chosen expressions, touch reactions and the setup QR.
+
+## Setting your kit up
+
+Once the firmware is flashed, everything else happens at **<https://app.buddystem.com>** —
+create an account, add the kit over Bluetooth, design its face, give it a voice and watch
+what the cloud costs. A kit you built yourself appears there exactly like one that came in
+a box.
+
 **You can build one.** The parts are off-the-shelf modules on a breadboard, this firmware is
 Apache-2.0, and a kit you flashed yourself joins the BuddyOS cloud exactly like one that came
 in a box — same provisioning, same studio, same face designer. See
