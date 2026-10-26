@@ -24,11 +24,9 @@
 #include <math.h>
 #include <string.h>
 #include "esp_heap_caps.h"
-#if CONFIG_IDF_TARGET_ESP32P4
 #include "esp_timer.h"
-#include "face_ppa.h"
+#include "face_ppa.h"          /* macros and prototypes; face_ppa.c is P4-only */
 #include "face_demo_motion.h"
-#endif
 #include "esp_log.h"
 
 static const char *TAG = "face";
@@ -502,6 +500,7 @@ static void render_ready_cb(lv_event_t *e)
 }
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32P4
 /* The body composited over black exactly as flatten() does, turned by `deg` about its
  * centre and resampled to the panel in the same pass. Inverse-mapped with bilinear
  * sampling: for each destination pixel, where in the source did it come from. */
@@ -585,6 +584,10 @@ static void drop_rotations(void)
     s_rot_base = NULL;
     s_rot_ready = s_rot_failed = false;
 }
+#else
+/* The S3 has no PPA, so its body never turns and there is nothing to forget. */
+static inline void drop_rotations(void) { }
+#endif
 
 /* Re-flatten with whatever character and colour are current, and show the result. */
 static void reflatten(void)

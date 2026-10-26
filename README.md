@@ -5,6 +5,39 @@ the Buddy a child designed on the website, and behind it the same kit as ever �
 Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice conversation that starts when you
 say "Jarvis".
 
+## Which board, which branch
+
+Two boards carry this device type, and **each has its own branch**. Build the one that
+matches the hardware in your hand — they are not one firmware with a flag, and the wrong
+branch will not fit.
+
+| Your board | Branch | Screen |
+| --- | --- | --- |
+| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `master` | 1.28" round GC9A01, no touch |
+| **ESP32-P4** (32 MB flash) e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | **`esp32p4-touch-screen`** — you are here | 4" 720x720 JD9365, touch |
+
+```sh
+git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
+cd buddyos-stem-display-firmware
+git checkout esp32p4-touch-screen
+idf.py -DIDF_TARGET=esp32p4 build
+```
+
+**Why not one branch.** The face is vector art rasterised offline, so its cost is area:
+this branch's 720x720 bake is 26 MB of generated source and links to a 5.6 MB image,
+against the N16R8's 3 MB app slot. Merging the two leaves a tree that builds for neither
+board — measured, after trying it. Unifying would mean a per-target asset set, or the
+baker in the repo so artwork is generated at build time rather than committed.
+
+## Setting your kit up
+
+Once the firmware is flashed, everything else happens at **<https://app.buddystem.com>** —
+create an account, add the kit over Bluetooth (the setup screen shows its serial as a QR
+to scan), design its face, give it a voice and choose what a touch does. A kit you built
+yourself appears there exactly like one that came in a box.
+
+---
+
 **The face is the default build** (`BUDDY_SCREEN_FACE`). A design saved on the website
 arrives over MQTT, is applied to all seven states and survives a reboot; the character
 comes from the catalogue partition; the mouth follows the audio being spoken; and the

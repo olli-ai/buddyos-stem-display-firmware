@@ -1,6 +1,8 @@
 #include "face_directive.h"
 #include "face_view.h"
+#if CONFIG_BUDDY_VOICE
 #include "voice.h"
+#endif
 #include "face_motion.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
@@ -346,10 +348,17 @@ bool face_directive_apply(const char *json, size_t len)
      * "bye bye" would need an adult to revive it. A face that settles and wakes when
      * spoken to is the behaviour a child means. */
     if (cJSON_IsString(type) && !strcmp(type->valuestring, "face.rest")) {
+#if CONFIG_BUDDY_VOICE
         const cJSON *data = cJSON_GetObjectItem(root, "data");
         const cJSON *r = data ? cJSON_GetObjectItem(data, "rest") : NULL;
         bool rest = cJSON_IsBool(r) ? cJSON_IsTrue(r) : true;   /* asking means rest */
         voice_face_rest(rest);
+#else
+        /* A build without voice has no wake word, so a rested face could never be
+         * woken again. Better to ignore it and say so than to settle a Buddy that
+         * nothing can rouse. */
+        ESP_LOGW(TAG, "face.rest needs the voice build: nothing would wake it again");
+#endif
         cJSON_Delete(root);
         return true;
     }
