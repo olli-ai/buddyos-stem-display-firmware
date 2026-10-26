@@ -47,6 +47,12 @@ never hears a voice and the kit cannot be interrupted.
 how you get an image for the panel you do not have. The `-B` and `-DSDKCONFIG` above
 keep them apart.
 
+**Switching target also means deleting `dependencies.lock`.** It sits at the project
+root rather than in the build directory, it is gitignored, and it belongs to whichever
+target resolved last — so the first build after a switch fails while resolving a
+component for the other chip. `rm dependencies.lock` and build again; nothing is lost,
+it is regenerated.
+
 **What is per board, and why.** The face is vector art rasterised offline, so its cost is
 area and each panel needs its own bake — 480x480 for the S3 (~1.7 MB), 720x720 for the P4
 (~4 MB). Both are committed and exactly one is compiled, which is why building needs
@@ -569,19 +575,20 @@ own job; until someone does it, the top half of the chip is unused.
 
 ### Re-baking the face for a panel
 
-`main/generated/face_assets.c` is committed, so the firmware builds without the baker —
-but it is baked for one size, and that size is `SIZE` in `tools/bake_face.ts`: **720**
-for this board's JD9365, 240 for the old GC9A01. The art is vector, so changing it
-re-rasterises rather than upscales. The cost is area, in ARGB8888: 465 KB at 240, about
-4.1 MB at 720, which is the whole reason for the 32 MB table above.
+Both bakes are committed, so the firmware builds without the baker and without the
+website repo: `main/generated/face_assets_720.c` for this board's JD9365 and
+`face_assets_480.c` for the S3's ST7701S. `main/CMakeLists.txt` compiles exactly one,
+chosen on `IDF_TARGET` — they define the same symbols. The art is vector, so a new size
+re-rasterises rather than upscales. The cost is area, in ARGB8888: about 1.8 MB at 480
+and 4.1 MB at 720, which is the whole reason for the 32 MB table above.
 
 `tools/bake_face.ts` is deliberately untracked (it imports from `../buddyos-stem-fe` and
-cannot compile without it), so if you have it, edit `SIZE` and run:
+cannot compile without it), so if you have it, pick the size with `FACE_SIZE` and run:
 
     cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_face.ts \
         --bundle --platform=node --format=cjs --outfile=/tmp/bake.cjs \
         --loader:.webp=text --loader:.png=text \
-    && MASCOT_SRC=$PWD/src/assets/mascots/sprout.webp \
+    && FACE_SIZE=720 MASCOT_SRC=$PWD/src/assets/mascots/sprout.webp \
        node /tmp/bake.cjs ../buddyos-stem-display-firmware/main/generated
 
 `MASCOT_SRC` is not optional, whatever the comment in the file says: the command above

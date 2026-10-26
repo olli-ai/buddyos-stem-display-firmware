@@ -20,6 +20,7 @@
 #include "buddy_ble.h"
 #include "setup_ui.h"
 #if CONFIG_BUDDY_SCREEN_FACE
+#include "audio.h"
 #include "face_directive.h"
 #endif
 #include "board_pins.h"
@@ -124,6 +125,43 @@ static bool handle_sleep_directive(const char *data, int len)
     }
     cJSON_Delete(j);
     return false;
+}
+
+/* device.volume: set the speaker's loudness, 0-100.
+ *
+ * Sent by omni when a child asks out loud ("too loud", "I can't hear you"), because a
+ * kit without a touch screen has no other way to be turned down, and a kit with one
+ * should still answer the sentence. `data.volume` is absolute; `data.step` is a
+ * relative nudge, which is what "a bit louder" becomes and saves omni from having to
+ * know where the volume currently is.
+ *
+ * Louder is not free: the microphones sit beside the speaker, and above roughly 60 the
+ * echo reaches the cloud's voice detector as loudly as a child does and barge-in stops
+ * working. That trade belongs to whoever asked, so this obeys rather than second-
+ * guesses -- but it says so in the log, because the next person to wonder why a kit
+ * cannot be interrupted should find it here. */
+static bool handle_volume_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "device.volume");
+    if (!mine) { cJSON_Delete(j); return false; }
+
+    const cJSON *d = cJSON_GetObjectItem(j, "data");
+    const cJSON *abs = d ? cJSON_GetObjectItem(d, "volume") : NULL;
+    const cJSON *rel = d ? cJSON_GetObjectItem(d, "step") : NULL;
+    int was = audio_get_volume(), want = was;
+    if (cJSON_IsNumber(abs))      want = (int)abs->valuedouble;
+    else if (cJSON_IsNumber(rel)) want = was + (int)rel->valuedouble;
+    else ESP_LOGW(TAG, "  device.volume with neither `volume` nor `step`; ignored");
+    cJSON_Delete(j);
+
+    if (want != was) {
+        audio_set_volume(want);          /* clamps to 0-100 and remembers it */
+        ESP_LOGI(TAG, "  volume %d%% -> %d%%%s", was, audio_get_volume(),
+                 audio_get_volume() > 60 ? " (loud enough to cost barge-in)" : "");
+    }
+    return true;
 }
 
 /* Tell the gateway the kit is going, and WAIT for the publish to leave the device.
@@ -267,6 +305,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         sleep_note_activity();
         if (!handle_activate_status(e->data, e->data_len)
             && !handle_sleep_directive(e->data, e->data_len)
+            && !handle_volume_directive(e->data, e->data_len)
 #if CONFIG_BUDDY_SCREEN_FACE
             /* face.update and face.state: the design a child saved on the website,
              * and the expression a conversation asks for. Only this build has

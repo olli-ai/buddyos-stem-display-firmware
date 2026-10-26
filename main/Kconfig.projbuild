@@ -426,13 +426,28 @@ config BUDDY_VOICE_TAP
         that ships.
 
 config BUDDY_SPEAKER_VOLUME
-    int "Speaker volume (ESP32-P4 board), percent"
-    depends on IDF_TARGET_ESP32P4
+    int "Speaker volume a kit starts life with, percent"
     range 0 100
-    default 75
+    default 60
     help
-        The ES8311's output volume. The S3 board's amplifier has no volume control;
-        this one does.
+        Only the starting point. The volume is adjustable at runtime and the choice
+        is kept in NVS, so this is what a kit plays at before anyone has changed it
+        and after an NVS erase. See audio_set_volume().
+
+        On the P4 this is the ES8311's own output volume. The S3's MAX98357A has no
+        volume control, so there it is a digital scale on the samples instead --
+        quieter in exchange for resolution at the bottom of the range.
+
+        It is not only about comfort. The microphones are beside the speaker, so the
+        Buddy's own voice comes back into them and echo cancellation only reduces it.
+        Measured on the P4 2026-10-26 with nobody in the room:
+
+            volume 75   echo scores 0.72-0.96 at the cloud's VAD, self-interrupts
+                        within seconds, and a person cannot interrupt at all
+            volume 50   echo scores 0.609, ran 27 s clean, barge-in works
+
+        So loud costs barge-in. 60 is the compromise this ships at; whoever is holding
+        the kit can move it.
 
 config BUDDY_MIC_GAIN_DB
     int "Microphone gain (ESP32-P4 board), dB"

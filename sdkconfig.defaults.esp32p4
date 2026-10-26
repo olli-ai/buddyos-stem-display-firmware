@@ -84,3 +84,27 @@ CONFIG_CODEC_CJC8910_SUPPORT=n
 # Jarvis, as on the S3 — but here behind echo cancellation (BUDDY_AEC), so it also
 # works while the Buddy is talking.
 CONFIG_SR_WN_WN9_JARVIS_TTS=y
+
+# ---- Barge-in: wake word only, and why ---------------------------------------
+# Echo cancellation does not leave a residue small enough for the cloud's VAD to
+# ignore on this board. Measured 2026-10-26 from omni's own telemetry, with the
+# Buddy speaking and nobody else in the room:
+#
+#     the kit's own echo, reaching omni    vad_score 0.812, 0.957, 0.717
+#     a child speaking (2026-10-22)        vad_score 0.60 - 0.83
+#
+# The echo scores as high as a person, or higher, and it is also the louder signal
+# (-25.5 dBFS against the child's -29.3). So BUDDY_UPLINK_DUCK_DB cannot separate
+# them: it lowers both by the same amount. Its default of 12 stops the kit
+# interrupting itself only by pushing both under Silero's floor, which is the same
+# reason it stops a child interrupting too. 0, 6 and 12 were all tried on hardware;
+# 0 and 6 self-interrupt, 12 kills barge-in, and there is nothing in between.
+# The "echo = 0.44" in that option's help is one 2026-10-23 session; it did not
+# reproduce.
+#
+# So: mute the uplink while the Buddy speaks and let the wake word be the way in.
+# It is deterministic - silence cannot score 0.8 - and "Jarvis" over a reply still
+# cuts it off on the device in ~200 ms (voice.c barge_in(), then omni's flush_audio
+# and interrupted). Real voice barge-in needs omni to stop treating audio sent
+# during its own state=SPEAKING as an interruption; it cannot be fixed from here.
+CONFIG_BUDDY_AEC_KEEP_HALF_DUPLEX=y

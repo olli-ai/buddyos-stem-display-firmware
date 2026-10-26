@@ -9,6 +9,7 @@
 #include "es8311_codec.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include <math.h>
 #include <string.h>
@@ -36,6 +37,7 @@ static i2s_chan_handle_t s_tx, s_rx;
 static esp_codec_dev_handle_t s_spk, s_mic;
 static int s_mic_slot;                         /* the first 'M' in the format */
 static bool s_spk_muted = true;
+static int s_vol = CONFIG_BUDDY_SPEAKER_VOLUME;
 
 
 /* ---- the software echo reference ----------------------------------------------
@@ -115,6 +117,32 @@ void audio_speaker_enable(bool on)
     if (!s_spk || s_spk_muted == !on) return;
     s_spk_muted = !on;
     esp_codec_dev_set_out_mute(s_spk, !on);
+}
+
+/* The chosen volume outlives a reboot: a parent who turned it down at bedtime did
+ * not mean "until the next power cut". BUDDY_SPEAKER_VOLUME is only the value a kit
+ * starts life with, and stays the fallback if NVS has nothing. */
+#define VOL_NS   "buddy"
+#define VOL_KEY  "volume"
+
+static int volume_restore(void)
+{
+    nvs_handle_t h;
+    int32_t v = CONFIG_BUDDY_SPEAKER_VOLUME;
+    if (nvs_open(VOL_NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_i32(h, VOL_KEY, &v) != ESP_OK || v < 0 || v > 100)
+            v = CONFIG_BUDDY_SPEAKER_VOLUME;
+        nvs_close(h);
+    }
+    return (int)v;
+}
+
+static void volume_save(int percent)
+{
+    nvs_handle_t h;
+    if (nvs_open(VOL_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_i32(h, VOL_KEY, percent) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
 }
 
 static int first_slot(char kind)
@@ -223,14 +251,30 @@ bool audio_start(void)
         s_spk = NULL;
         return false;
     }
-    esp_codec_dev_set_out_vol(s_spk, CONFIG_BUDDY_SPEAKER_VOLUME);
+    s_vol = volume_restore();
+    esp_codec_dev_set_out_vol(s_spk, s_vol);
     s_spk_muted = false;
 
-    ESP_LOGI(TAG, "ES8311 out + ES7210 in on I2S0, %d Hz; slots \"%s\", mic %d dB, volume %d%%",
-             AUDIO_SAMPLE_RATE, CONFIG_BUDDY_AFE_INPUT_FORMAT, CONFIG_BUDDY_MIC_GAIN_DB,
-             CONFIG_BUDDY_SPEAKER_VOLUME);
+    ESP_LOGI(TAG, "ES8311 out + ES7210 in on I2S0, %d Hz; slots \"%s\", mic %d dB, volume %d%%%s",
+             AUDIO_SAMPLE_RATE, CONFIG_BUDDY_AFE_INPUT_FORMAT, CONFIG_BUDDY_MIC_GAIN_DB, s_vol,
+             s_vol == CONFIG_BUDDY_SPEAKER_VOLUME ? "" : " (kept from last time)");
     return true;
 }
+
+void audio_set_volume(int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    if (percent == s_vol) return;
+    s_vol = percent;
+    /* The codec takes it immediately; a buffer already inside the DMA plays at the
+     * old level, which is 20 ms and nobody hears the seam. */
+    if (s_spk) esp_codec_dev_set_out_vol(s_spk, s_vol);
+    volume_save(s_vol);
+    ESP_LOGI(TAG, "volume %d%%", s_vol);
+}
+
+int audio_get_volume(void) { return s_vol; }
 
 size_t audio_read_slots(int16_t *frames, size_t count)
 {

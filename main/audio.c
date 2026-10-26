@@ -2,6 +2,7 @@
 #include "board_pins.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include <math.h>
 #include <string.h>
 
@@ -29,6 +30,59 @@ static i2s_chan_handle_t s_tx, s_rx;
  * first live test showed. Both halves are captured and this picks one. LR is tied to
  * GND on this board, so it is the left. */
 static int s_mic_slot = 0;              /* 0 = left (WS low), 1 = right */
+static int s_vol = CONFIG_BUDDY_SPEAKER_VOLUME;
+static int32_t s_vol_q8 = 256;          /* 1.0 in Q8; applied in audio_write() */
+
+/* The chosen volume outlives a reboot: a parent who turned it down at bedtime did
+ * not mean "until the next power cut". BUDDY_SPEAKER_VOLUME is only the value a kit
+ * starts life with, and stays the fallback if NVS has nothing. */
+#define VOL_NS   "buddy"
+#define VOL_KEY  "volume"
+
+static void volume_apply(int percent)
+{
+    /* The MAX98357A has no volume control, so this is a scale on the samples and the
+     * mapping is ours to pick. Percent is linear in dB rather than in amplitude, so
+     * the steps sound evenly spaced: 100%% is untouched and every 10%% down is 4 dB,
+     * reaching -40 dB at 0. Below roughly 20%% the quiet end of each sample is being
+     * thrown away - that is the cost of attenuating in the digital domain instead of
+     * in a codec, and it is why the P4 does this through the ES8311 instead. */
+    float db = (percent - 100) * 0.4f;
+    s_vol_q8 = percent <= 0 ? 0 : (int32_t)(powf(10.0f, db / 20.0f) * 256.0f + 0.5f);
+}
+
+static int volume_restore(void)
+{
+    nvs_handle_t h;
+    int32_t v = CONFIG_BUDDY_SPEAKER_VOLUME;
+    if (nvs_open(VOL_NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_i32(h, VOL_KEY, &v) != ESP_OK || v < 0 || v > 100)
+            v = CONFIG_BUDDY_SPEAKER_VOLUME;
+        nvs_close(h);
+    }
+    return (int)v;
+}
+
+static void volume_save(int percent)
+{
+    nvs_handle_t h;
+    if (nvs_open(VOL_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    if (nvs_set_i32(h, VOL_KEY, percent) == ESP_OK) nvs_commit(h);
+    nvs_close(h);
+}
+
+void audio_set_volume(int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    if (percent == s_vol) return;
+    s_vol = percent;
+    volume_apply(s_vol);
+    volume_save(s_vol);
+    ESP_LOGI(TAG, "volume %d%%", s_vol);
+}
+
+int audio_get_volume(void) { return s_vol; }
 
 void audio_speaker_enable(bool on)
 {
@@ -81,8 +135,12 @@ bool audio_start(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
 
-    ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz",
-             BCLK, WS, SPK_DIN, MIC_SD, AUDIO_SAMPLE_RATE);
+    s_vol = volume_restore();
+    volume_apply(s_vol);
+
+    ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz, volume %d%%%s",
+             BCLK, WS, SPK_DIN, MIC_SD, AUDIO_SAMPLE_RATE, s_vol,
+             s_vol == CONFIG_BUDDY_SPEAKER_VOLUME ? "" : " (kept from last time)");
     return true;
 }
 
@@ -110,12 +168,15 @@ size_t audio_write(const int16_t *samples, size_t count)
     if (!s_tx) return 0;
     /* Widened in 64-sample bites, into the top half of each 32-bit slot. The
      * MAX98357A takes the most significant bits first and ignores what it has no use
-     * for, so a 16-bit sample << 16 plays at exactly the level it did as 16 bits. */
+     * for, so a 16-bit sample << 16 plays at exactly the level it did as 16 bits --
+     * which is what s_vol_q8 of 256 (volume 100) leaves it as. Anything below that
+     * is this board's only way to be quieter; see audio_set_volume(). */
     int32_t wide[64];
     size_t done = 0;
     while (done < count) {
         size_t n = count - done < 64 ? count - done : 64;
-        for (size_t i = 0; i < n; i++) wide[i] = (int32_t)samples[done + i] << 16;
+        for (size_t i = 0; i < n; i++)
+            wide[i] = ((int32_t)samples[done + i] * s_vol_q8 >> 8) << 16;
         size_t written = 0;
         if (i2s_channel_write(s_tx, wide, n * sizeof(int32_t), &written, 1000) != ESP_OK) break;
         done += written / sizeof(int32_t);

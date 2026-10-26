@@ -43,6 +43,30 @@ size_t audio_write(const int16_t *samples, size_t count);
 void audio_speaker_enable(bool on);
 
 /**
+ * The speaker's loudness, 0-100.
+ *
+ * Starts at BUDDY_SPEAKER_VOLUME and is then whatever was last chosen on the device
+ * or sent from the cloud; the choice is kept in NVS and survives a reboot. It takes
+ * effect on the next buffer handed to the codec, not the next utterance.
+ *
+ * This is not only a comfort setting, and it is the reason it is adjustable rather
+ * than fixed. The microphones sit beside the speaker, so what the Buddy plays comes
+ * back into them, and echo cancellation only reduces it. Measured on the P4 board
+ * 2026-10-26, with nobody in the room: at 75 the echo reaches the cloud's voice
+ * detector scoring 0.72-0.96 and the kit interrupts itself within seconds; at 50 it
+ * scores 0.609 and ran 27 s clean, and a person can interrupt it. Loud therefore
+ * costs barge-in, and that is a trade for whoever is holding the kit to make.
+ *
+ * On the P4 this is the ES8311's own output volume. On the S3 the MAX98357A has no
+ * volume control, so it is a digital scale applied on the way to the I2S bus, which
+ * costs resolution at the bottom of the range in a way the codec does not.
+ */
+void audio_set_volume(int percent);
+
+/** What audio_set_volume() last took, 0-100. */
+int audio_get_volume(void);
+
+/**
  * Prove the wiring, once, at boot.
  *
  * Plays a short tone and reports what the microphone heard, in dBFS. A mic that is

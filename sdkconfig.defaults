@@ -29,6 +29,12 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 # The setup screen's serial number, which a parent reads off the glass and picks
 # out of a list on their phone. 20 is a caption; this is the thing being read.
 CONFIG_LV_FONT_MONTSERRAT_28=y
+# The same serial as a QR, so the phone's camera reads it instead of a parent typing
+# `ESP32-e8f60ae99b71` by hand. main/setup_ui.c wraps the whole QR in
+# `#if LV_USE_QRCODE`, and LVGL defaults this off — so without this line the code
+# compiles away and the setup screen silently shows the printed serial alone. It
+# belongs here rather than in a build directory: that is how it went missing once.
+CONFIG_LV_USE_QRCODE=y
 
 # ESP32-S3-WROOM-1-N8R2: 8 MB quad flash, 2 MB **quad** PSRAM. (The R8 variant is
 # octal and takes GPIO 35-37; R2 does not, so the panel pins are clear either way.)
