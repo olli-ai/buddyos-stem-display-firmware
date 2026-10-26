@@ -44,6 +44,7 @@
 #include "gallery.h"
 #endif
 #include "status.h"
+#include "volume_ui.h"
 #include "setup_ui.h"
 #include "mem_report.h"
 #include "net.h"
@@ -97,9 +98,34 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 /* The touch layer as an LVGL pointer: it is what swipes the gallery. A touch also
  * counts as somebody being there, so a child playing with the screen does not have
  * the kit fall asleep under their finger. */
-#if CONFIG_BUDDY_SCREEN_FACE
 static bool s_touched;                   /* a finger is down, for edge detection */
-#endif
+
+/* The volume: tap the icon to open the bar, then drag.
+ *
+ * The icon is always on the glass, so the control is found rather than discovered —
+ * which matters on a kit whose user may not read yet. Tapping it toggles the bar;
+ * while the bar is open a drag anywhere means volume, and while it is shut the glass
+ * belongs to the face and a touch is just a touch.
+ *
+ * Gating the drag on the bar being open is what lets both gestures live on one
+ * screen. The first version had a drag always mean volume, which worked but took the
+ * whole glass away from the face for a control nobody had asked to use yet.
+ *
+ * DRAG_RANGE_PCT is how much of the screen's height covers the full 0-100: 60% of it,
+ * so the range is reachable without lifting off, with room at both ends for a finger
+ * that overshoots. DRAG_DEADZONE_PCT keeps a tap a tap.
+ *
+ * The face's reaction fires on release and only for a tap. It used to fire the moment
+ * a finger landed, which reads better for a poke — but it also fired at the start of
+ * every volume drag, so the Buddy bounced and giggled while you were turning it down.
+ * For a tap the press and release are tens of ms apart and nobody can see it. */
+#define DRAG_DEADZONE_PCT 4
+#define DRAG_RANGE_PCT    60
+
+static int16_t s_press_y;                /* where the finger landed */
+static int s_press_vol;                  /* the volume it landed at */
+static bool s_dragging;                  /* past the deadzone: this is a volume gesture */
+static bool s_on_icon;                   /* this press began on the volume icon */
 
 static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
@@ -110,16 +136,42 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
         sleep_note_activity();
-#if CONFIG_BUDDY_SCREEN_FACE
-        /* On the edge, not for every frame a finger stays down: a reaction is a
-         * response to being touched, not to being held. */
-        if (!s_touched) { s_touched = true; face_view_touch_react(); }
-#endif
+
+        const int32_t h = lv_display_get_vertical_resolution(NULL);
+        if (!s_touched) {
+            s_touched = true;
+            s_press_y = (int16_t)y;
+            s_press_vol = audio_get_volume();
+            s_dragging = false;
+            /* Decided once, on the edge: a finger that slides off the icon mid-press
+             * is still the press that opened it, not the start of a drag. */
+            s_on_icon = volume_ui_icon_hit(x, y);
+            if (s_on_icon) volume_ui_toggle();
+        }
+        if (!s_on_icon && volume_ui_is_open()) {
+            int32_t moved = (int32_t)s_press_y - (int32_t)y;      /* up is louder */
+            int32_t dead = h * DRAG_DEADZONE_PCT / 100;
+            if (!s_dragging && (moved > dead || -moved > dead)) s_dragging = true;
+            if (s_dragging) {
+                int want = s_press_vol + (int)(moved * 100 / (h * DRAG_RANGE_PCT / 100));
+                if (want < 0) want = 0;
+                if (want > 100) want = 100;
+                audio_set_volume(want);      /* in memory only; no flash on a drag */
+                volume_ui_show(want);
+            }
+        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
 #if CONFIG_BUDDY_SCREEN_FACE
-        s_touched = false;
+        /* A tap on the face, not on the icon and not a drag: the Buddy noticed you. */
+        if (s_touched && !s_dragging && !s_on_icon) face_view_touch_react();
 #endif
+        /* One flash write per gesture, not one per touch frame: see
+         * audio_volume_persist(). */
+        if (s_dragging) audio_volume_persist();
+        s_touched = false;
+        s_dragging = false;
+        s_on_icon = false;
     }
 }
 
@@ -223,6 +275,7 @@ void app_main(void)
     gallery_create(scr);
 #endif
     status_create(scr);                  /* after the screen: drawn above it */
+    volume_ui_create(scr);               /* and the volume bar above that */
 #if CONFIG_BUDDY_NET
     /* Last of the three, and before net_start() below: a kit that has never been set
      * up calls setup_ui_set() from the net task the moment that task starts. */

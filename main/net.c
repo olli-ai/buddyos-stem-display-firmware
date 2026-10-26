@@ -127,13 +127,21 @@ static bool handle_sleep_directive(const char *data, int len)
     return false;
 }
 
-/* device.volume: set the speaker's loudness, 0-100.
+/* audio.volume: set the speaker's loudness, 0-100.
  *
  * Sent by omni when a child asks out loud ("too loud", "I can't hear you"), because a
  * kit without a touch screen has no other way to be turned down, and a kit with one
  * should still answer the sentence. `data.volume` is absolute; `data.step` is a
  * relative nudge, which is what "a bit louder" becomes and saves omni from having to
  * know where the volume currently is.
+ *
+ * `audio.`, not `device.`, and that is the whole reason for the name. omni refuses to
+ * publish any directive under device./program./log./firmware./ai./ml. on behalf of a
+ * child's program — `device.reset` would factory-reset the kit — so a verb a program
+ * is meant to reach must live outside those prefixes. `face.rest` is named the way it
+ * is for the same reason; see docs/features/device-skills-from-programs.md in the
+ * planning hub. Volume belongs in a program's reach: it is safe and reversible, which
+ * is precisely the test that doc sets for a skill.
  *
  * Louder is not free: the microphones sit beside the speaker, and above roughly 60 the
  * echo reaches the cloud's voice detector as loudly as a child does and barge-in stops
@@ -144,7 +152,7 @@ static bool handle_volume_directive(const char *data, int len)
 {
     cJSON *j = cJSON_ParseWithLength(data, len);
     const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
-    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "device.volume");
+    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "audio.volume");
     if (!mine) { cJSON_Delete(j); return false; }
 
     const cJSON *d = cJSON_GetObjectItem(j, "data");
@@ -153,11 +161,12 @@ static bool handle_volume_directive(const char *data, int len)
     int was = audio_get_volume(), want = was;
     if (cJSON_IsNumber(abs))      want = (int)abs->valuedouble;
     else if (cJSON_IsNumber(rel)) want = was + (int)rel->valuedouble;
-    else ESP_LOGW(TAG, "  device.volume with neither `volume` nor `step`; ignored");
+    else ESP_LOGW(TAG, "  audio.volume with neither `volume` nor `step`; ignored");
     cJSON_Delete(j);
 
     if (want != was) {
-        audio_set_volume(want);          /* clamps to 0-100 and remembers it */
+        audio_set_volume(want);          /* clamps to 0-100 */
+        audio_volume_persist();          /* one-shot: set and remember together */
         ESP_LOGI(TAG, "  volume %d%% -> %d%%%s", was, audio_get_volume(),
                  audio_get_volume() > 60 ? " (loud enough to cost barge-in)" : "");
     }

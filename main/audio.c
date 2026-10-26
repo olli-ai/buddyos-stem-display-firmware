@@ -31,6 +31,7 @@ static i2s_chan_handle_t s_tx, s_rx;
  * GND on this board, so it is the left. */
 static int s_mic_slot = 0;              /* 0 = left (WS low), 1 = right */
 static int s_vol = CONFIG_BUDDY_SPEAKER_VOLUME;
+static int s_vol_saved = -1;            /* what NVS holds, to not rewrite it */
 static int32_t s_vol_q8 = 256;          /* 1.0 in Q8; applied in audio_write() */
 
 /* The chosen volume outlives a reboot: a parent who turned it down at bedtime did
@@ -77,12 +78,18 @@ void audio_set_volume(int percent)
     if (percent > 100) percent = 100;
     if (percent == s_vol) return;
     s_vol = percent;
-    volume_apply(s_vol);
-    volume_save(s_vol);
-    ESP_LOGI(TAG, "volume %d%%", s_vol);
+    volume_apply(s_vol);        /* flash is not touched here — audio_volume_persist() */
 }
 
 int audio_get_volume(void) { return s_vol; }
+
+void audio_volume_persist(void)
+{
+    if (s_vol == s_vol_saved) return;
+    s_vol_saved = s_vol;
+    volume_save(s_vol);
+    ESP_LOGI(TAG, "volume %d%%", s_vol);
+}
 
 void audio_speaker_enable(bool on)
 {
@@ -135,7 +142,7 @@ bool audio_start(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
 
-    s_vol = volume_restore();
+    s_vol = s_vol_saved = volume_restore();
     volume_apply(s_vol);
 
     ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz, volume %d%%%s",

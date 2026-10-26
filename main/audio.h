@@ -67,6 +67,18 @@ void audio_set_volume(int percent);
 int audio_get_volume(void);
 
 /**
+ * Write the current volume to NVS, if it has moved since the last write.
+ *
+ * Separate from audio_set_volume() because a finger dragging down the screen sets it
+ * forty times a second, and an NVS commit is a flash erase: doing one per touch frame
+ * stalls the task that draws the face, which is visible as a bar that jerks instead of
+ * sliding. So setting is cheap and in-memory, and whoever owns the gesture calls this
+ * once, when the finger lifts. A one-shot change — the cloud's device.volume — sets
+ * and persists in the same breath.
+ */
+void audio_volume_persist(void);
+
+/**
  * Prove the wiring, once, at boot.
  *
  * Plays a short tone and reports what the microphone heard, in dBFS. A mic that is

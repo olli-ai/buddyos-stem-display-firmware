@@ -38,6 +38,7 @@ static esp_codec_dev_handle_t s_spk, s_mic;
 static int s_mic_slot;                         /* the first 'M' in the format */
 static bool s_spk_muted = true;
 static int s_vol = CONFIG_BUDDY_SPEAKER_VOLUME;
+static int s_vol_saved = -1;            /* what NVS holds, to not rewrite it */
 
 
 /* ---- the software echo reference ----------------------------------------------
@@ -251,7 +252,7 @@ bool audio_start(void)
         s_spk = NULL;
         return false;
     }
-    s_vol = volume_restore();
+    s_vol = s_vol_saved = volume_restore();
     esp_codec_dev_set_out_vol(s_spk, s_vol);
     s_spk_muted = false;
 
@@ -268,13 +269,20 @@ void audio_set_volume(int percent)
     if (percent == s_vol) return;
     s_vol = percent;
     /* The codec takes it immediately; a buffer already inside the DMA plays at the
-     * old level, which is 20 ms and nobody hears the seam. */
+     * old level, which is 20 ms and nobody hears the seam. Flash is not touched here
+     * — see audio_volume_persist(). */
     if (s_spk) esp_codec_dev_set_out_vol(s_spk, s_vol);
-    volume_save(s_vol);
-    ESP_LOGI(TAG, "volume %d%%", s_vol);
 }
 
 int audio_get_volume(void) { return s_vol; }
+
+void audio_volume_persist(void)
+{
+    if (s_vol == s_vol_saved) return;
+    s_vol_saved = s_vol;
+    volume_save(s_vol);
+    ESP_LOGI(TAG, "volume %d%%", s_vol);
+}
 
 size_t audio_read_slots(int16_t *frames, size_t count)
 {

@@ -1,5 +1,7 @@
+# volume_ui.c is not under CONFIG_BUDDY_SCREEN_FACE on purpose: the gallery build
+# has the same touch panel and the same speaker, and the drag works there too.
 set(srcs "main.c" "board_i2c.c" "status.c" "voice.c" "touch.c"
-         "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c")
+         "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c" "volume_ui.c")
 
 # The two screens are exclusive (BUDDY_SCREEN in Kconfig), and so are their
 # lip-sync front ends: the face classifier returns a sprite index to draw, the
