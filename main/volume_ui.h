@@ -23,7 +23,7 @@
  * landed on the Buddy's mouth — a design can move a mouth down (face_view.c reads a
  * per-part art_y), so "below the face" is not a place that exists. The right-hand edge
  * is ground the face never claims. The geometry fits inside a circle of diameter
- * min(w, h) whatever BOARD_ROUND says, because the P4 declares 0 and its glass is round.
+ * min(w, h) rather than reading BOARD_ROUND, so it stays right on a square panel too.
  */
 
 /** Build the icon (shown) and the bar (hidden) on `scr`. Call once, after the screen. */

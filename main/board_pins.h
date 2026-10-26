@@ -86,7 +86,16 @@
  */
 #define BOARD_LCD_W     720
 #define BOARD_LCD_H     720
-#define BOARD_ROUND       0
+/* The frame buffer is square and the glass is not: this board's 720x720 sits behind a
+ * round bezel, so the corners are never seen. It said 0 until 2026-10-26, which cost a
+ * volume bar drawn under the frame before anyone noticed. Anything placed near an edge
+ * has to clear a circle of diameter min(w, h), not a rectangle.
+ *
+ * It is not a stand-in for "the small panel". Two things used it that way, because the
+ * S3's 480 was the only round board at the time — the setup screen's font sizes and its
+ * QR — and both now key off BOARD_LCD_W instead. Round says where the edges are; width
+ * says how big to draw. */
+#define BOARD_ROUND       1
 #define PIN_BOOT         35    /* BOOT. Not an LP GPIO: it cannot wake the chip, see sleep.c */
 
 /* ---- JD9365 720x720 MIPI-DSI panel ---------------------------------------- */

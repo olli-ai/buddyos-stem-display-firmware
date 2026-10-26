@@ -10,15 +10,21 @@ static const char *TAG = "setup";
 
 /* 48 on the P4's 720x720, 28 on the S3's 480 round panel, and whatever is actually
  * compiled in if someone trims the font list — a setup screen that fails to build is
- * worse than one in a smaller face. */
-#if LV_FONT_MONTSERRAT_48 && !BOARD_ROUND
+ * worse than one in a smaller face.
+ *
+ * On the WIDTH, not on BOARD_ROUND. This read `!BOARD_ROUND` while the S3's 480 was the
+ * only round board, so the two were the same test by accident; the P4's glass is round
+ * too, and the day its flag was corrected this would have dropped a 720 px screen to the
+ * small panel's fonts. */
+#define BIG_PANEL (BOARD_LCD_W >= 600)
+#if LV_FONT_MONTSERRAT_48 && BIG_PANEL
 #define SERIAL_FONT (&lv_font_montserrat_48)
 #elif LV_FONT_MONTSERRAT_28
 #define SERIAL_FONT (&lv_font_montserrat_28)
 #else
 #define SERIAL_FONT LV_FONT_DEFAULT
 #endif
-#if LV_FONT_MONTSERRAT_28 && !BOARD_ROUND
+#if LV_FONT_MONTSERRAT_28 && BIG_PANEL
 #define BODY_FONT   (&lv_font_montserrat_28)
 #elif LV_FONT_MONTSERRAT_20
 #define BODY_FONT   (&lv_font_montserrat_20)
@@ -168,14 +174,18 @@ void setup_ui_create(lv_obj_t *scr)
      * White quiet zone around it: a scanner needs the margin, and this panel's
      * background is dark enough that without one the finder patterns run into it. */
     s_qr = lv_qrcode_create(col);
-    lv_qrcode_set_size(s_qr, BOARD_ROUND ? 150 : 230);
+    /* Just under a third of the panel, which is what the two hand-picked sizes it
+     * replaces both were — 150 of the S3's 480, 230 of the P4's 720. Written as a
+     * fraction so a round 720 gets a QR a phone can actually resolve rather than the
+     * small panel's, which is what keying this off BOARD_ROUND would now hand it. */
+    lv_qrcode_set_size(s_qr, BOARD_LCD_W * 31 / 100);
     lv_qrcode_set_dark_color(s_qr, lv_color_black());
     lv_qrcode_set_light_color(s_qr, lv_color_white());
     lv_result_t qr = lv_qrcode_update(s_qr, prov_serial(), strlen(prov_serial()));
     ESP_LOGI(TAG, "setup QR for '%s': %s", prov_serial(),
              qr == LV_RESULT_OK ? "ready" : "REFUSED by the encoder");
     lv_obj_set_style_border_color(s_qr, lv_color_white(), 0);
-    lv_obj_set_style_border_width(s_qr, BOARD_ROUND ? 6 : 10, 0);
+    lv_obj_set_style_border_width(s_qr, BOARD_LCD_W / 80, 0);
 #endif
 
     s_step = label(col, BODY_FONT, 0xffb300);
