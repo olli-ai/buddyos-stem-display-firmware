@@ -9,22 +9,27 @@
  * itself with device.activate, which is what creates its row in the gateway. The
  * app learns the outcome from the gateway, not from BLE (ADR 0006).
  *
- * mem_report() is called at each milestone: the faces spec gates this device type
- * on free internal SRAM with the radio up, and these lines are that number.
+ * mem_report() is called at each milestone: free internal SRAM with the radio up is
+ * what decides whether everything else fits, and these lines are that number.
  */
 #include "net.h"
 #include "prov.h"
 #include "mem_report.h"
-#include "face_directive.h"
 #include "sleep.h"
 #include "voice.h"
 #include "buddy_ble.h"
+#include "setup_ui.h"
+#if CONFIG_BUDDY_SCREEN_FACE
+#include "face_directive.h"
+#endif
+#include "board_pins.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
@@ -100,9 +105,7 @@ static void send_activate(esp_mqtt_client_handle_t c)
     ESP_LOGI(TAG, "announced device.activate as %s", prov_serial());
 }
 
-/* device.sleep: put the kit to sleep. Handled here rather than in face_directive.c,
- * which rejects anything whose type is not "face.*" — deliberately, so a malformed
- * directive cannot be mistaken for a design. */
+/* device.sleep: put the kit to sleep. */
 static bool handle_sleep_directive(const char *data, int len)
 {
     cJSON *j = cJSON_ParseWithLength(data, len);
@@ -158,7 +161,7 @@ static void send_awake(esp_mqtt_client_handle_t c)
     ESP_LOGI(TAG, "announced device.awake");
 }
 
-/* Anything that is not the gateway's answer to device.activate is the face's. */
+/* The gateway's answer to device.activate; false for anything else. */
 static bool handle_activate_status(const char *data, int len)
 {
     cJSON *j = cJSON_ParseWithLength(data, len);
@@ -170,12 +173,15 @@ static bool handle_activate_status(const char *data, int len)
             ESP_LOGI(TAG, "activation confirmed by the gateway");
             prov()->activated = true;
             if (!prov()->from_bench) prov_save();
+            setup_ui_set(SETUP_UI_DONE);     /* ignored unless a setup is on screen */
         } else {
             /* The gateway refuses a serial another account already owns: that owner
              * has to release it first. Nothing this kit can do about it but say so. */
             const cJSON *reason = cJSON_GetObjectItem(j, "reason");
             ESP_LOGE(TAG, "activation refused: %s",
                      cJSON_IsString(reason) ? reason->valuestring : "no reason given");
+            setup_ui_detail("Already registered to another account");
+            setup_ui_set(SETUP_UI_FAILED);
         }
     }
     cJSON_Delete(j);
@@ -239,15 +245,6 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
                 send_awake(e->client);
                 s_announced_awake = true;
             }
-#if CONFIG_BUDDY_DESIGN_VIA_EVENT
-            /* A bench path, and an honest one. Publishing to the directive topic is
-             * the gateway's privilege — a device token may only subscribe there —
-             * so testing the whole flow from a laptop needs a topic the same token
-             * can publish to. The event topic is that, and nothing else listens on
-             * it. Off by default; a shipped device takes designs from the gateway. */
-            esp_mqtt_client_subscribe(e->client, s_topic_evt, 1);
-            ESP_LOGW(TAG, "bench: also taking designs from %s", s_topic_evt);
-#endif
             if (!prov()->activated) send_activate(e->client);
         }
         break;
@@ -257,21 +254,28 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         xEventGroupSetBits(s_events, PUBLISHED);
         break;
     case MQTT_EVENT_DATA:
-        /* A design from the website. The payload is the directive envelope; the
-         * handler takes either that or a bare design, because a bench test
-         * publishes one and the gateway publishes the other. */
+        /* A directive from the gateway. This build has no face, so a design or a
+         * face.state is logged and dropped; activation and sleep are acted on. */
         ESP_LOGI(TAG, "directive on %.*s (%d B)", e->topic_len, e->topic, e->total_data_len);
         if (e->current_data_offset != 0 || e->data_len != e->total_data_len) {
-            /* A design split across MQTT fragments would need reassembly, and a
-             * half-parsed face is worse than none. buffer.size is what prevents it. */
+            /* A directive split across MQTT fragments would need reassembly, and a
+             * half-parsed one is worse than none. buffer.size is what prevents it. */
             ESP_LOGW(TAG, "  split across fragments (%d of %d B) — ignored; raise buffer.size",
                      e->data_len, e->total_data_len);
             break;
         }
         sleep_note_activity();
         if (!handle_activate_status(e->data, e->data_len)
-            && !handle_sleep_directive(e->data, e->data_len))
-            face_directive_receive(e->data, e->data_len);
+            && !handle_sleep_directive(e->data, e->data_len)
+#if CONFIG_BUDDY_SCREEN_FACE
+            /* face.update and face.state: the design a child saved on the website,
+             * and the expression a conversation asks for. Only this build has
+             * somewhere to put them — the gallery shows photographs, which cannot
+             * wear a character. */
+            && !face_directive_receive(e->data, e->data_len)
+#endif
+            )
+            ESP_LOGI(TAG, "  nothing here handles that directive; ignored");
         break;
     case MQTT_EVENT_DISCONNECTED: ESP_LOGW(TAG, "mqtt disconnected"); break;
     case MQTT_EVENT_ERROR:
@@ -307,9 +311,12 @@ typedef enum { JOIN_OK, JOIN_WRONG_PASSWORD, JOIN_NOT_FOUND, JOIN_OTHER } join_t
  * to associate cold, and a shorter wait turned a slow network into "wrong password". */
 static join_t wifi_try(const char *ssid, const char *pass, int ms)
 {
+    /* Neither field needs a terminator: a 32-character SSID and a 64-character hex PSK
+     * fill them exactly, and stopping one byte short turned those into a network that
+     * could never be joined. The zeroed struct terminates anything shorter. */
     wifi_config_t wc = { 0 };
-    strncpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid) - 1);
-    strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
+    memcpy(wc.sta.ssid, ssid, strnlen(ssid, sizeof(wc.sta.ssid)));
+    memcpy(wc.sta.password, pass, strnlen(pass, sizeof(wc.sta.password)));
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     s_last_reason = 0;
     s_autoreconnect = false;
@@ -376,6 +383,14 @@ static char *s_setup_result;             /* the verdict, until a central takes i
 /* The NimBLE host task hands messages over and returns: anything that blocks — a
  * scan is ~4 s — must not run on it, or the notification carrying the answer can
  * never be sent. Learned the hard way on an earlier kit. */
+/* A phone or a browser has linked. Only the screen cares: the GATT contract has
+ * nothing to say about it, and the rest of setup is driven by what arrives next. */
+static void on_ble_connect(void *user)
+{
+    (void)user;
+    setup_ui_set(SETUP_UI_LINKED);
+}
+
 static void on_ble_data(const char *json, void *user)
 {
     (void)user;
@@ -401,7 +416,7 @@ static void ble_reply(const char *type, const char *status, const char *message)
 static void ble_send_wifi_list(void)
 {
     /* 24 is what fits a notification stream inside the app's patience. */
-    static wifi_ap_record_t aps[24];
+    EXT_RAM_BSS_ATTR static wifi_ap_record_t aps[24];      /* PSRAM: 2.2 KB, CPU only */
     int n = wifi_scan(aps, 24, NULL);
     cJSON *m = cJSON_CreateObject();
     cJSON *results = cJSON_CreateArray();
@@ -479,7 +494,9 @@ static bool handle_setup_message(const char *json)
         vTaskDelay(pdMS_TO_TICKS(500));
         buddy_ble_enable();
     } else if (cJSON_GetObjectItem(params, "scan_wifi")) {
+        setup_ui_set(SETUP_UI_SCANNING);
         ble_send_wifi_list();
+        setup_ui_set(SETUP_UI_LINKED);    /* the app has the list; the choice is theirs */
     } else if (ssid && ssid[0]) {
         prov_t *p = prov();
         const char *pass = str_of(params, "password");
@@ -501,6 +518,8 @@ static bool handle_setup_message(const char *json)
         if (!gw || !gw[0]) ESP_LOGW(TAG, "setup sent no gateway; using %s", p->gateway);
 
         ESP_LOGI(TAG, "joining '%s' (env %s, gateway %s)", p->ssid, p->env, p->gateway);
+        setup_ui_detail(p->ssid);
+        setup_ui_set(SETUP_UI_JOINING);
         join_t r = wifi_try(p->ssid, p->password, 30000);
         if (r == JOIN_OK) {
             /* Saved only now: a mistyped password is not worth keeping. */
@@ -512,12 +531,22 @@ static bool handle_setup_message(const char *json)
             deliver_setup_result(5);
             /* The chunks were accepted for transmission, not yet sent. */
             vTaskDelay(pdMS_TO_TICKS(500));
+            /* Not "Ready": Wi-Fi is the app's last piece of news, but the kit is not
+             * set up until the gateway has made its row — which is the wait stem-fe
+             * spends polling, and the one nobody could see until this screen. */
+            setup_ui_set(SETUP_UI_REGISTERING);
             done = true;
         } else {
             /* The app shows a different screen per cause, so give it the cause. */
             const char *code = r == JOIN_WRONG_PASSWORD ? "10002"
                              : r == JOIN_NOT_FOUND      ? "10004" : "10006";
             ESP_LOGW(TAG, "setup join failed (code %s, last reason %d)", code, s_last_reason);
+            /* The same three causes the app branches on, in words, because the person
+             * who has to fix it is the one looking at the kit. */
+            setup_ui_detail(r == JOIN_WRONG_PASSWORD ? "Wrong Wi-Fi password"
+                          : r == JOIN_NOT_FOUND      ? "That network is not in range"
+                                                     : "Could not join that network");
+            setup_ui_set(SETUP_UI_FAILED);
             ble_reply("wifi_connection", "failed", code);
         }
     } else {
@@ -531,13 +560,14 @@ static bool handle_setup_message(const char *json)
 static void run_setup(void)
 {
     s_ble_msgs = xQueueCreate(2, sizeof(char *));
-    buddy_ble_init(prov_serial(), on_ble_data, NULL, NULL);
+    buddy_ble_init(prov_serial(), on_ble_data, on_ble_connect, NULL);
     if (buddy_ble_enable() != ESP_OK) {
         ESP_LOGE(TAG, "BLE would not start; this kit cannot be set up (reboot to retry)");
         vTaskDelay(portMAX_DELAY);
     }
     mem_report("ble setup");
     ESP_LOGI(TAG, "waiting to be set up: advertising as %s", prov_serial());
+    setup_ui_set(SETUP_UI_WAITING);   /* and on the glass, for whoever is holding it */
     for (;;) {
         char *msg = NULL;
         xQueueReceive(s_ble_msgs, &msg, portMAX_DELAY);
@@ -552,26 +582,88 @@ static void run_setup(void)
     mem_report("ble down");
 }
 
-#if CONFIG_BUDDY_BOOT_RESET
-/* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
- * gesture our other kits use, on the one button every S3 board has. */
+#if CONFIG_BUDDY_BOOT_BUTTON_SETUP
+/* BOOT while the kit runs. See CONFIG_BUDDY_BOOT_BUTTON_SETUP for why this exists
+ * beside net_boot_reset_check(): on this board no sequence can be holding the pin
+ * down by the time that one reads it, so the only gesture that works is a running
+ * one. GPIO 35 is BOOT and nothing else here, so it is safe to poll with the panel
+ * up — which is exactly what the S3's GPIO 0 is not.
+ *
+ * Polled rather than interrupt-driven: 50 ms is far below anything a thumb can do,
+ * the counter is its own debounce, and an ISR that erases NVS is not a thing to
+ * want. */
 static void boot_button_task(void *arg)
 {
     (void)arg;
-    gpio_config_t in = { .pin_bit_mask = 1ULL << GPIO_NUM_0, .mode = GPIO_MODE_INPUT,
+    gpio_config_t in = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT,
                          .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&in);
+    const int need = CONFIG_BUDDY_BOOT_BUTTON_MS / 50;
     int held = 0;
+    bool armed = false;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        held = gpio_get_level(GPIO_NUM_0) == 0 ? held + 1 : 0;
-        if (held == 10) ESP_LOGW(TAG, "BOOT held: keep holding for setup (5 s)");
-        if (held == 50) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (gpio_get_level(PIN_BOOT) == 0) {          /* active low, pulled up */
+            if (held <= need) held++;
+            if (held == need && !armed) {
+                armed = true;
+                ESP_LOGW(TAG, "BOOT held %d ms: let go to set this kit up again",
+                         CONFIG_BUDDY_BOOT_BUTTON_MS);
+            }
+            continue;
+        }
+        if (armed) {
+            /* Erase and restart, rather than tearing a live session down in place:
+             * the setup path expects to own the radio from a clean boot, and NVS is
+             * read once at startup. */
+            ESP_LOGW(TAG, "BOOT released: erasing this kit's setup and restarting");
             prov_factory_reset();
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(200));           /* let the line leave the UART */
             esp_restart();
         }
+        held = 0;
+        armed = false;
     }
+}
+#endif
+
+#if CONFIG_BUDDY_BOOT_RESET
+/* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
+ * gesture our other kits use, on the one button every S3 board has.
+ *
+ * It used to be a task polling BOOT for as long as the kit ran. It cannot be now: GPIO 0
+ * is DB17, the top bit of red, and configuring it as an input takes it off the RGB bus.
+ * So BOOT is read once, before the panel starts — and the only way to be holding it
+ * then is to have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
+ * ROM's download mode and never reaches here. The gesture is therefore: while the kit
+ * sleeps, press BOOT and keep holding. (Strapping pins are latched on a chip reset, not
+ * on a wake from deep sleep, so a held BOOT does not send the wake to the bootloader —
+ * per the TRM; to be confirmed on the board along with the wake itself.) */
+void net_boot_reset_check(void)
+{
+    gpio_config_t in = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT,
+                         .pull_up_en = GPIO_PULLUP_ENABLE };
+    gpio_config(&in);
+    if (gpio_get_level(PIN_BOOT) != 0) return;
+
+    ESP_LOGW(TAG, "BOOT held: keep holding for setup (5 s)");
+    for (int held = 0; held < 50; held++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (gpio_get_level(PIN_BOOT) != 0) {
+            ESP_LOGI(TAG, "BOOT released: carrying on");
+            return;
+        }
+    }
+    /* net_start() has not run, so NVS is not mounted yet. A second init later is a no-op. */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        err = nvs_flash_init();
+    }
+    if (err == ESP_OK) prov_factory_reset();
+    else ESP_LOGE(TAG, "NVS would not mount (%s): nothing to erase", esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
 }
 #endif
 
@@ -599,11 +691,11 @@ static void net_task(void *arg)
         run_setup();                     /* returns on Wi-Fi, with prov() filled in */
     } else {
         prov_t *p = prov();
-        static wifi_ap_record_t aps[20];
+        EXT_RAM_BSS_ATTR static wifi_ap_record_t aps[20];  /* PSRAM: 1.8 KB, CPU only */
         wifi_scan(aps, 20, p->ssid);
         wifi_config_t wc = { 0 };
-        strncpy((char *)wc.sta.ssid, p->ssid, sizeof(wc.sta.ssid) - 1);
-        strncpy((char *)wc.sta.password, p->password, sizeof(wc.sta.password) - 1);
+        memcpy(wc.sta.ssid, p->ssid, strnlen(p->ssid, sizeof(wc.sta.ssid)));
+        memcpy(wc.sta.password, p->password, strnlen(p->password, sizeof(wc.sta.password)));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
         /* Stored credentials that will not connect: keep trying. A kit switched on
          * before its router must come up on its own; re-setup is BOOT's job. */
@@ -629,8 +721,8 @@ static void net_task(void *arg)
         .session.keepalive = 30,
         /* The device JWT alone is ~1.1 KB, so the default 1 KB buffer cannot hold
          * the CONNECT this client sends — the failure looks like a broker that hangs
-         * up rather than like a buffer that is too small. Doubled again for designs,
-         * which arrive on this socket and must not be split across fragments. */
+         * up rather than like a buffer that is too small. Doubled again for the
+         * website's designs, which still arrive here and must not be split. */
         .buffer.size = 8192,
         .network.reconnect_timeout_ms = 5000,
     };
@@ -668,10 +760,7 @@ static void net_task(void *arg)
 
 void net_start(void)
 {
-    /* NVS first, and here rather than inside the task: the stored design is read
-     * on the next line, and a task that initialises it later leaves the restore
-     * reading from a partition that is not mounted yet. It failed silently, which
-     * is how a Buddy forgets its face over a power cut and nobody sees why. */
+    /* NVS first, and here rather than inside the task: the credentials live there. */
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -679,9 +768,11 @@ void net_start(void)
     }
     ESP_ERROR_CHECK(err);
 
-    /* The face this Buddy was last given, before the radio is even up: a design
-     * that only reappears once the network does is a Buddy that boots as a stranger. */
+#if CONFIG_BUDDY_SCREEN_FACE
+    /* The face this Buddy was last given, before the radio is even up: a design that
+     * only reappears once the network does is a Buddy that boots as a stranger. */
     face_directive_restore();
+#endif
 
     /* Always started when CONFIG_BUDDY_NET is on: with no credentials it runs setup.
      *
@@ -693,7 +784,8 @@ void net_start(void)
      * rig to be wrong. */
     /* 6 KB: setup parses the ~2.4 KB credentials message with cJSON on this stack. */
     xTaskCreate(net_task, "net", 6144, NULL, 5, NULL);
-#if CONFIG_BUDDY_BOOT_RESET
-    xTaskCreate(boot_button_task, "boot_btn", 2560, NULL, 2, NULL);
+#if CONFIG_BUDDY_BOOT_BUTTON_SETUP
+    /* After nvs_flash_init() above: the gesture erases NVS, so it must be mounted. */
+    xTaskCreate(boot_button_task, "bootbtn", 2560, NULL, 3, NULL);
 #endif
 }

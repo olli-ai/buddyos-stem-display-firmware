@@ -1,5 +1,62 @@
 # Change log for esp-sr
 
+# 2.4.6
+- Remove redundant heap check
+
+# 2.4.5
+- Fix the coexistence bug of esp-dl and esp-sr on ESP32-S3.
+- Fix the crash issue of ESP32-P4 in IDF v5.5.1 and IDF v5.5.2.
+
+# 2.4.4
+- Support ESP32-S31
+- Fix some document bugs
+
+# 2.4.3
+- Add Full-Duplex AEC and AFE for esp32s3 and esp32p4
+
+# 2.4.2
+- Add more wake word models
+
+# 2.4.1
+- Experimental support esp-idf v6.0
+- Supports both esp32p4 eco6 and old versions.
+- Added a Kconfig option to load data from external path.
+- Print model loading report during compilation
+
+# 2.4.0
+- add more wakenet models
+- add an afe option to fix output channel
+- fix some afe bugs
+
+# 2.3.0
+- Upgrade esp-dsp to v1.7.0
+- Fix mn5q8 crash
+- Support add more wakenet model in AFE
+
+# 2.2.2
+- Add more wakenet9 models
+
+# 2.2.1
+- Fix AFE error log
+- Add new wakenet9 models
+
+# 2.2.0
+- Support WakeNet9l models
+- Update TTS pipeline v3.0 
+
+## 2.1.5
+- Fix ringbuf bug
+- Add more wakenet9 models
+
+## 2.1.4
+- Fix the bug of multinet duration overflow
+- Fix the memory leak bug in multinet7 and multinet6
+
+## 2.1.3
+- Replace kissfft with dl_fft for wakenet9s
+- Replace esp-dsp fft with dl_fft for wakenet9
+- Add more wakenet9 model
+
 ## 2.1.2
 - Add debug mode
 - Update wakenet trigget to v4
@@ -131,7 +188,7 @@
 
 ## 1.3.0 
 - Update the partition APIs to keep compatible with both IDF v4.4 and IDF v5.0
-- Add a new Chinese MultiNet6 mdoel for air conditioner controller 
+- Add a new Chinese MultiNet6 model for air conditioner controller 
 
 ## 1.2.1
 - Fix bugs in model loader

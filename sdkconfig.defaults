@@ -6,19 +6,29 @@ CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 
 CONFIG_FREERTOS_HZ=1000
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+# LVGL runs on the main task, and drawing an image goes deep: lv_refr -> lv_draw_image ->
+# lv_image_decoder_get_info, plus an interrupt frame on top, measured at ~8.9 KB on the
+# board. At 6144 the gallery overflowed into the heap next to the stack and corrupted
+# TLSF headers and task lists: the swipe-back resets and the screen of stacked frames.
+# The high-water mark did not show it, because a deep frame need not touch every byte.
+# 16 KB is what the fix was proven at.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # LVGL. RGB565 to match the panel; ARGB8888 sprites are decoded to it on the fly.
 CONFIG_LV_COLOR_DEPTH_16=y
-# LVGL reserves this as a static pool in .bss whether it uses it or not. The
-# simulator measures the peak at 13,320 B for a four-state face, so 64 KB was
-# 50 KB of internal SRAM held against nothing. 32 KB keeps ~2.4x headroom for a
-# richer design and hands the rest back to the radio stack, which is what the
-# memory question is actually about.
-CONFIG_LV_MEM_SIZE_KILOBYTES=32
+# LVGL reserves this as a static pool in .bss whether it uses it or not. The gallery
+# peaks at 9.2 KB of it (the photos themselves are in PSRAM, not here), so 16 KB keeps
+# ~1.7x headroom. It was 32 until the voice build ran out of internal SRAM: with the
+# wake word, I2S and two TLS sessions up there is no 16 KB to spare for an empty pool.
+CONFIG_LV_MEM_SIZE_KILOBYTES=16
 CONFIG_LV_USE_PERF_MONITOR=n
-# Rotation and non-uniform scaling of images are what the motion format asks for.
-CONFIG_LV_DRAW_TRANSFORM_USE_MATRIX=y
+# The gallery's JPEG decoder (gallery.c drives TJpgDec directly; nothing else does).
+CONFIG_LV_USE_TJPGD=y
+# The status pill (main/status.c): 14 px is unreadable on a 720 px panel at arm's length.
+CONFIG_LV_FONT_MONTSERRAT_20=y
+# The setup screen's serial number, which a parent reads off the glass and picks
+# out of a list on their phone. 20 is a caption; this is the thing being read.
+CONFIG_LV_FONT_MONTSERRAT_28=y
 
 # ESP32-S3-WROOM-1-N8R2: 8 MB quad flash, 2 MB **quad** PSRAM. (The R8 variant is
 # octal and takes GPIO 35-37; R2 does not, so the panel pins are clear either way.)
@@ -32,6 +42,16 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # the panel buffers, and the parts of the TLS path that must be internal. Worth
 # measuring with this off as well, since that is the pessimistic case.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Wi-Fi's static RX buffers are internal (the radio DMAs into them), ~1.6 KB each, held
+# from esp_wifi_init() on. 16 is the PSRAM default and sized for iperf; this kit moves a
+# voice stream of a few KB/s. 8 hands back ~13 KB, and the BA window follows it, as the
+# IDF help asks (window <= static buffers).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_RX_BA_WIN=8
+# Lets EXT_RAM_BSS_ATTR put a zero-initialised static in PSRAM. Used for the buffers only
+# the CPU touches and never from an ISR: the gallery's photo table, the Wi-Fi scan lists,
+# the voice PCM scratch.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # mbedTLS allocates from PSRAM rather than internal SRAM. This is the single
 # largest lever measured on this board, and it decides whether the voice path fits:
@@ -48,7 +68,7 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # at 160 MHz and -Og, 776 us with these two lines. 2.3x for no code and no memory —
 # internal free actually went *up*, because -O2 lays the image out differently.
 #
-# The voice path has to fit alongside the face on this part, so headroom that costs
+# The voice path has to fit alongside the display on this part, so headroom that costs
 # nothing should not be left on the table while anyone argues about whether a codec
 # fits.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
@@ -79,3 +99,10 @@ CONFIG_BT_NIMBLE_GATT_MAX_PROCS=4
 # The host's allocations to PSRAM, of which this board has 8 MB going spare:
 # internal RAM is what TLS and DMA are short of, so move what can be moved.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# ST7701S RGB panel. Its interrupt refills the bounce buffers and must keep running
+# while the flash is busy, and if it ever does fall behind, the frame restarts at the
+# next VSYNC rather than drifting — a picture shifted sideways forever is the failure
+# without it. The board needs the octal N16R8 module: see sdkconfig.defaults.n16r8.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y

@@ -2,14 +2,23 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "sdkconfig.h"
 
 /**
- * The ears and the mouth: an INMP441 microphone and a MAX98357A amplifier, both I²S.
+ * The ears and the mouth.
  *
- * Two separate I²S controllers rather than one shared bus. They run at different
- * times and could share, but a full-duplex call needs capture and playback running
- * at once, and sharing one controller means one of them waits — which is heard as a
- * gap rather than seen as a bug.
+ * ESP32-P4 (Waveshare 4C board, audio_p4.c): an ES8311 codec into the speaker
+ * amplifier and an ES7210 four-channel ADC behind two microphones, on one I2S
+ * controller — TDM in, standard out. Same API, same 16 kHz mono, plus the raw slots
+ * for echo cancellation below.
+ *
+ * ESP32-S3 (audio.c): an INMP441 microphone and a MAX98357A amplifier, both I²S.
+ *
+ * One I²S controller in full duplex: the two parts share a bit clock and a word clock
+ * on this board, so capture and playback are the RX and TX halves of the same
+ * controller and run at the same time without either waiting. The shared clock forces
+ * one slot width on both, 32 bits, which the microphone needs; audio.c does the
+ * widening and narrowing so callers still see 16-bit samples.
  *
  * Everything here is 16 kHz mono, which is what the voice path wants end to end:
  * Opus encodes it directly, and the one place a higher rate would help — music — is
@@ -28,16 +37,9 @@ size_t audio_read(int16_t *samples, size_t count);
 /** Play mono 16-bit PCM. Blocks until the buffer is handed to the DMA engine. */
 size_t audio_write(const int16_t *samples, size_t count);
 
-typedef enum {
-    AUDIO_GAIN_QUIET,   /* 9 dB: GAIN floating */
-    AUDIO_GAIN_LOUD,    /* 12 dB: GAIN held low */
-} audio_gain_t;
-
-/** Amplifier gain, set through the MAX98357A's GAIN pin. */
-void audio_set_gain(audio_gain_t gain);
-
 /** Power the amplifier. Off between utterances: the MAX98357A draws current and
- *  hisses faintly with nothing to play, which on a device beside a bed is noticed. */
+ *  hisses faintly with nothing to play, which on a device beside a bed is noticed.
+ *  A no-op on the current board, whose SD pin is strapped on; see audio.c. */
 void audio_speaker_enable(bool on);
 
 /**
@@ -48,3 +50,21 @@ void audio_speaker_enable(bool on);
  * easy to tell apart in a log and impossible to tell apart by staring at the board.
  */
 void audio_selftest(void);
+
+#if CONFIG_IDF_TARGET_ESP32P4
+/** The ES7210's TDM slots, in order. What each carries — microphone, the codec's
+ *  playback loopback, or nothing — is CONFIG_BUDDY_AFE_INPUT_FORMAT, and the self-test
+ *  prints the evidence for choosing it. */
+#define AUDIO_IN_SLOTS 4
+
+/** Fill `frames` frames of AUDIO_IN_SLOTS interleaved 16-bit samples. Blocks until full.
+ *  Returns how many frames were read. Use this or audio_read(), not both. */
+size_t audio_read_slots(int16_t *frames, size_t count);
+
+/** The software echo reference, for a board with no loopback slot: once enabled, every
+ *  sample audio_write() plays is kept, delayed by the TX DMA queue, and handed back
+ *  here in step with the microphone — `count` samples, zeros when nothing is playing.
+ *  Call from the same task as audio_read_slots(), once per read, with the same count. */
+void audio_ref_enable(bool on);
+size_t audio_ref_read(int16_t *out, size_t count);
+#endif

@@ -49,3 +49,24 @@ void face_view_tick(uint32_t elapsed_ms);
  * is not lost — releasing puts the designed shape straight back.
  */
 void face_view_set_live_mouth(int16_t sprite);
+
+/** Wear a named expression over the current state's eyes and brows, until the turn
+ *  ends. The mouth is left to the design and to lip-sync, because the mouth is the
+ *  part a child designs. `parts` is {browL, eyeL, browR, eyeR, mouth} — the mouth is
+ *  stored but not drawn — or NULL to take the expression off.
+ *  Safe from any task: it records, and the render tick applies it. */
+void face_view_request_expression(const int16_t parts[5]);
+
+/** Play every state once, about a second each, then go back to the one showing now.
+ *  What a child gets for pressing Save: the faces they just designed, which they
+ *  would otherwise only meet one at a time in the middle of a conversation. Anything
+ *  that asks for a state — a conversation, a directive — cancels it. */
+void face_view_preview_states(void);
+
+/** The Buddy noticed being touched. Plays the reaction the design chose, once.
+ *  Safe from any task; ignored while one is already playing. */
+void face_view_touch_react(void);
+
+/** Which reaction a touch plays, by the website's id. Unknown ids turn it off, which
+ *  is also what a design that says nothing gets. */
+void face_view_set_touch_react(const char *id);
