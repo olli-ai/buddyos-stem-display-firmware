@@ -1,7 +1,5 @@
 #include "face_directive.h"
 #include "face_view.h"
-#include "voice.h"
-#include "face_motion.h"
 #include "face_catalogue.h"
 #include "face_lipsync.h"
 #include "generated/face_assets.h"
@@ -12,7 +10,6 @@
 #include "esp_err.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 static const char *TAG = "design";
 
@@ -37,229 +34,6 @@ static int16_t sprite_of(const char *layer, const char *part)
         if (!strcmp(face_sprites[i].layer, layer) && !strcmp(face_sprites[i].part, part))
             return (int16_t)i;
     return -1;
-}
-
-/* ── a design's own motion ────────────────────────────────────────────────────
- *
- * The website authors tracks of exactly the shape the baker produces, so this is a
- * conversion rather than an interpreter: names to indices, floats to the baked
- * fixed-point units, and the keys handed to face_motion.c to sample like any other.
- *
- * What the hardware can do with them differs by property, and that is worth knowing
- * before reading a bug report. Every layer's transform is LVGL's, so brows, eyes and
- * the mouth take all of it. The *body* is composited by the PPA (face_view.c), which
- * translates to the pixel but cannot rotate by less than a quarter turn or scale by
- * less than a sixteenth — so on a whole-head track, `x` and `y` move the body and
- * `rotation` and `scale` move only the features over it. `shake` is a rotation
- * track, so it shakes the face without shaking the head.
- */
-
-/* The website's lists, in its order: these indices are the wire format. */
-static const char *MOTION_LAYERS[] = { "face", "browL", "eyeL", "browR", "eyeR", "mouth" };
-static const char *MOTION_PROPS[]  = { "x", "y", "scale", "scaleY", "rotation", "opacity" };
-static const char *MOTION_EASINGS[] = { "step", "linear", "easeIn", "easeOut",
-                                        "easeInOut", "back", "bounce" };
-
-static int index_of(const char *const *list, int n, const char *s)
-{
-    if (!s) return -1;
-    for (int i = 0; i < n; i++) if (!strcmp(list[i], s)) return i;
-    return -1;
-}
-#define N_OF(a) ((int)(sizeof(a) / sizeof(*(a))))
-
-/* One numeric value into the units the baker uses. Clamped rather than wrapped: a
- * design is network input, and an int16 that rolls over draws a face inside out. */
-static int16_t fixed(uint8_t prop, double v)
-{
-    double scaled;
-    switch (prop) {
-        case 0: case 1: scaled = v * 16.0;    break;   /* x, y: face units */
-        case 2: case 3: scaled = v * 1024.0;  break;   /* scale, scaleY */
-        case 4:         scaled = v * 64.0;    break;   /* rotation, degrees */
-        default:        scaled = v * 255.0;   break;   /* opacity */
-    }
-    if (scaled > 32767.0) scaled = 32767.0;
-    if (scaled < -32768.0) scaled = -32768.0;
-    return (int16_t)lround(scaled);
-}
-
-/* `extra.motion.states` — the child's own loops, replacing the baked ones per state. */
-static void apply_motion(const cJSON *motion)
-{
-    face_motion_design_clear();
-    if (!motion) return;                 /* no motion authored: the baked loops, as always */
-    const cJSON *states = cJSON_IsObject(motion) ? cJSON_GetObjectItem(motion, "states") : NULL;
-    if (!cJSON_IsObject(states)) {
-        ESP_LOGW(TAG, "this design has a motion key with no states in it");
-        return;
-    }
-
-    int added = 0, refused = 0;
-    for (int st = 0; st < face_state_count; st++) {
-        const cJSON *sm = cJSON_GetObjectItem(states, face_states[st].name);
-        if (!cJSON_IsObject(sm)) continue;
-        const cJSON *dur = cJSON_GetObjectItem(sm, "duration");
-        const cJSON *tracks = cJSON_GetObjectItem(sm, "tracks");
-        if (!cJSON_IsNumber(dur) || dur->valuedouble <= 0 || !cJSON_IsArray(tracks)) continue;
-        uint16_t duration = (uint16_t)(dur->valuedouble > 65535 ? 65535 : dur->valuedouble);
-
-        const cJSON *tr;
-        cJSON_ArrayForEach(tr, tracks) {
-            if (!cJSON_IsObject(tr)) continue;
-            int layer = index_of(MOTION_LAYERS, N_OF(MOTION_LAYERS),
-                                 cJSON_GetStringValue(cJSON_GetObjectItem(tr, "layer")));
-            const char *pname = cJSON_GetStringValue(cJSON_GetObjectItem(tr, "prop"));
-            const cJSON *keys = cJSON_GetObjectItem(tr, "keys");
-            if (layer < 0 || !pname || !cJSON_IsArray(keys)) { refused++; continue; }
-            bool is_sprite = !strcmp(pname, "sprite");
-            int prop = is_sprite ? 255 : index_of(MOTION_PROPS, N_OF(MOTION_PROPS), pname);
-            if (prop < 0) { refused++; continue; }
-
-            face_key_t buf[48];
-            int n = 0;
-            const cJSON *k;
-            cJSON_ArrayForEach(k, keys) {
-                if (n >= (int)(sizeof buf / sizeof *buf) || !cJSON_IsObject(k)) break;
-                const cJSON *kt = cJSON_GetObjectItem(k, "t");
-                if (!cJSON_IsNumber(kt)) continue;
-                int16_t v;
-                if (is_sprite) {
-                    /* A sprite key names a part, as the design's states do. Resolved
-                     * against this layer, so `closed` means the closed *eye*. */
-                    v = sprite_of(MOTION_LAYERS[layer],
-                                  cJSON_GetStringValue(cJSON_GetObjectItem(k, "id")));
-                    if (v < 0 && v != FACE_PART_ARTWORK) continue;
-                } else {
-                    const cJSON *kv = cJSON_GetObjectItem(k, "v");
-                    if (!cJSON_IsNumber(kv)) continue;
-                    v = fixed((uint8_t)prop, kv->valuedouble);
-                }
-                int e = index_of(MOTION_EASINGS, N_OF(MOTION_EASINGS),
-                                 cJSON_GetStringValue(cJSON_GetObjectItem(k, "e")));
-                buf[n++] = (face_key_t){
-                    .t = (uint16_t)(kt->valuedouble > 65535 ? 65535 : kt->valuedouble),
-                    .v = v,
-                    .e = (uint8_t)(e < 0 ? 4 : e),      /* the website's own default */
-                };
-            }
-            if (!n) { refused++; continue; }
-
-            const cJSON *every = cJSON_GetObjectItem(tr, "every");
-            uint16_t ev = cJSON_IsNumber(every) && every->valuedouble > 0
-                        ? (uint16_t)(every->valuedouble > 65535 ? 65535 : every->valuedouble) : 0;
-            if (face_motion_design_add(st, duration, (uint8_t)layer, (uint8_t)prop, buf, n, ev))
-                added++;
-            else
-                refused++;
-        }
-    }
-    if (added) {
-        /* Which states the child re-authored, by name — the states they did not keep
-         * the baked loop, and that distinction is invisible otherwise. */
-        char named[96] = "";
-        for (int st = 0; st < face_state_count; st++)
-            if (face_motion_state_has_design(st)) {
-                strlcat(named, named[0] ? "," : "", sizeof named);
-                strlcat(named, face_states[st].name, sizeof named);
-            }
-        ESP_LOGI(TAG, "this design brings its own motion: %d tracks over %s%s",
-                 added, named, refused ? " (some refused)" : "");
-    } else if (refused) {
-        ESP_LOGW(TAG, "this design's motion could not be read; the built-in loops stay");
-    } else {
-        ESP_LOGW(TAG, "this design's motion names no state this device has");
-    }
-}
-
-/* ── expressions ──────────────────────────────────────────────────────────────
- *
- * The face presets from `PRESETS` in ../buddyos-stem-fe/src/data/faceParts.ts, which
- * is the source of truth for all three lists that have to agree: these triples, the
- * ids omni gives the model (`KIT_EXPRESSIONS` in
- * ../buddyos-omni/app/plugins/visual_face_emotion/face_context.py), and the parts
- * baked into face_sprites.
- *
- * Transcribed rather than generated, which is a debt — but not a silent one. The kit
- * advertises exactly these ids and omni refuses any it does not know, logging
- * `not a kit expression`, so a drift between the two shows up in a log line on the
- * first conversation rather than as a face that never changes.
- *
- * All eighteen. omni used to take the first ten and drop the rest where nobody could
- * see it happen; it no longer caps a kit at all, because a kit's vocabulary is a
- * closed set — every id has to be a key of KIT_EXPRESSIONS over there, so the list is
- * bounded by that table rather than by anything a device claims.
- *
- * `original` stays first because it is also the resting face, and the rest run from
- * the expressions a conversation reaches for most often to the ones it rarely does.
- * Order no longer decides what survives, but it is still the order the model reads.
- */
-typedef struct { const char *id, *eyes, *brows, *mouth; } expression_t;
-
-static const expression_t EXPRESSIONS[] = {
-    { "original",  "artwork", "none",    "artwork"   },
-    { "happy",     "sparkle", "none",    "grin"      },
-    { "curious",   "wide",    "oneup",   "tinyu"     },
-    { "surprised", "wide",    "raised",  "gasp"      },
-    { "sad",       "tear",    "sad",     "frown"     },
-    { "silly",     "wink",    "oneup",   "tongue"    },
-    { "confused",  "lookup",  "oneup",   "squiggle"  },
-    { "thinking",  "lookup",  "furrow",  "flatsmile" },
-    { "love",      "heart",   "raised",  "smile"     },
-    { "sleepy",    "closed",  "none",    "snore"     },
-    { "neutral",   "round",   "none",    "flatsmile" },
-    { "talking",   "round",   "none",    "open"      },
-    { "focused",   "squint",  "furrow",  "neutral"   },
-    { "cool",      "squint",  "flat",    "smirk"     },
-    { "starry",    "star",    "raised",  "laugh"     },
-    { "angry",     "angry",   "angry",   "bigfrown"  },
-    { "dizzy",     "spiral",  "worried", "wave"      },
-    { "ko",        "cross",   "worried", "squiggle"  },
-};
-#define N_EXPRESSIONS (sizeof EXPRESSIONS / sizeof *EXPRESSIONS)
-
-size_t face_expressions_advertise(char *buf, size_t n)
-{
-    /* omni reads this as a `register_tools` control message and hands the contexts
-     * to its plugins; the gateway passes it through, having first checked that a kit
-     * is advertising nothing but `face2d`. */
-    int w = snprintf(buf, n,
-                     "{\"type\":\"register_tools\",\"client_tools\":[],"
-                     "\"ui_context\":[{\"type\":\"face2d\",\"resting\":\"original\","
-                     "\"emotions\":[");
-    if (w < 0 || (size_t)w >= n) return 0;
-    for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
-        int k = snprintf(buf + w, n - w, "%s\"%s\"", i ? "," : "", EXPRESSIONS[i].id);
-        if (k < 0 || (size_t)(w + k) >= n) return 0;
-        w += k;
-    }
-    int k = snprintf(buf + w, n - w, "]}]}");
-    if (k < 0 || (size_t)(w + k) >= n) return 0;
-    return (size_t)(w + k);
-}
-
-bool face_expression_wear(const char *id)
-{
-    if (!id) return false;
-    for (unsigned i = 0; i < N_EXPRESSIONS; i++) {
-        if (strcmp(EXPRESSIONS[i].id, id)) continue;
-        const expression_t *e = &EXPRESSIONS[i];
-        /* No fallback here, unlike a design: an expression this firmware advertised
-         * is one whose every part it has, so a miss is a bug rather than a choice a
-         * child made that cannot be drawn.
-         *
-         * The mouth is resolved and stored but not drawn — face_view's part_of()
-         * leaves that layer to the design. Kept so the table stays the whole preset
-         * and the policy lives in one place rather than two. */
-        int16_t parts[5] = {
-            sprite_of("browL", e->brows), sprite_of("eyeL", e->eyes),
-            sprite_of("browR", e->brows), sprite_of("eyeR", e->eyes),
-            sprite_of("mouth", e->mouth),
-        };
-        face_view_request_expression(parts);
-        return true;
-    }
-    return false;
 }
 
 /** ADR 0009's fallback, out loud. */
@@ -335,25 +109,6 @@ bool face_directive_apply(const char *json, size_t len)
         return false;
     }
 
-    /* `face.rest` — what a child's "bye bye" turns into. The Buddy settles and stays
-     * settled until it is spoken to again, which is the whole difference between this
-     * and the quiet timer: saying goodbye is itself a sound, and the timer would wake
-     * the face a second after the skill rested it.
-     *
-     * Deliberately not `device.sleep`, which this firmware also implements. On this
-     * board deep sleep can only be undone with the RESET button — the P4 wakes from an
-     * LP GPIO and BOOT is GPIO 35, which is not one — so a Buddy that deep-slept on
-     * "bye bye" would need an adult to revive it. A face that settles and wakes when
-     * spoken to is the behaviour a child means. */
-    if (cJSON_IsString(type) && !strcmp(type->valuestring, "face.rest")) {
-        const cJSON *data = cJSON_GetObjectItem(root, "data");
-        const cJSON *r = data ? cJSON_GetObjectItem(data, "rest") : NULL;
-        bool rest = cJSON_IsBool(r) ? cJSON_IsTrue(r) : true;   /* asking means rest */
-        voice_face_rest(rest);
-        cJSON_Delete(root);
-        return true;
-    }
-
     /* Which face to wear right now. A conversation moves through these faster than
      * anything redraws a design: listening while the child speaks, thinking while
      * the answer is found, speaking while it is said. The design says what each one
@@ -391,7 +146,6 @@ bool face_directive_apply(const char *json, size_t len)
         ESP_LOGI(TAG, "design cleared — back to the built-in face");
         s_cleared = true;
         face_view_reset_parts();
-        face_motion_design_clear();      /* back to the loops this kit was built with */
         face_lipsync_set_mouths(face_viseme_sprite);
         cJSON_Delete(root);
         forget();
@@ -475,17 +229,11 @@ bool face_directive_apply(const char *json, size_t len)
 
     apply_talk(cJSON_GetObjectItem(extra, "talk"));
 
-    apply_motion(cJSON_GetObjectItem(extra, "motion"));
-
-    /* What a touch does. One id, because the reaction itself is built from parts this
-     * firmware already has — see TOUCH_REACTS. A design that does not mention `touch`
-     * leaves the setting alone, so an older design does not silently switch off a
-     * behaviour the kit shipped with; `"none"` is how a child turns it off. */
-    const cJSON *touch = cJSON_GetObjectItem(extra, "touch");
-    if (touch) {
-        const cJSON *react = cJSON_IsObject(touch) ? cJSON_GetObjectItem(touch, "react") : touch;
-        face_view_set_touch_react(cJSON_GetStringValue(react));
-    }
+    /* Motion is not applied yet: the keyframe tracks are baked, and reading them
+     * from a design means an interpreter that builds tracks at runtime. Saying so
+     * beats a face that silently keeps the factory's blink. */
+    if (cJSON_GetObjectItem(extra, "motion"))
+        ESP_LOGW(TAG, "this design has motion; the device still plays the built-in loops");
 
     s_is_design = true;
     cJSON_Delete(root);
@@ -504,29 +252,6 @@ static void forget(void)
 
 /** Keep it, so the face survives a power cut. Stored raw: the thing that arrived is
  *  the thing that gets replayed, and no second format can drift from the first. */
-/* Is this the design the kit is already wearing?
- *
- * It matters because `face.update` is a *retained* MQTT message: the broker replays
- * it on every connect, so face_directive_receive() runs at each boot with exactly
- * what face_directive_restore() has just applied from NVS. Without this the kit
- * would parade all seven states every time it powered on, and the preview would
- * stop meaning "your design arrived" — which is the only thing it is for. */
-static bool same_as_kept(const char *json, size_t len)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
-    size_t kept = 0;
-    bool same = false;
-    if (nvs_get_blob(h, NVS_KEY, NULL, &kept) == ESP_OK && kept == len && len) {
-        char *buf = malloc(len);
-        if (buf && nvs_get_blob(h, NVS_KEY, buf, &kept) == ESP_OK)
-            same = memcmp(buf, json, len) == 0;
-        free(buf);
-    }
-    nvs_close(h);
-    return same;
-}
-
 static void remember(const char *json, size_t len)
 {
     if (len > DESIGN_MAX) { ESP_LOGW(TAG, "design too large to keep (%u B)", (unsigned)len); return; }
@@ -544,22 +269,10 @@ static void remember(const char *json, size_t len)
 
 bool face_directive_receive(const char *json, size_t len)
 {
-    /* Asked before applying, because applying is what makes it the current one. */
-    bool unchanged = same_as_kept(json, len);
     bool ok = face_directive_apply(json, len);
     /* Only an actual design is kept, and not one that was just cleared — storing
      * that would only put it straight back. */
     if (ok && s_is_design && !s_cleared) remember(json, len);
-    /* And show it, if it is new. A design that *changes* is a child who just pressed
-     * Save and is watching the kit; the same design arriving again is the broker
-     * replaying a retained message, which happens at every boot.
-     *
-     * `s_is_design` is what keeps `face.state` and `face.rest` out of this. They
-     * arrive on the same topic and apply cleanly, so without it a skill that settled
-     * the face also set off a seven-state parade — seen on the board as a stray
-     * `state -> idle` a few milliseconds after `a skill asks the face to settle
-     * down`, which was the sweep's first step before the next status cancelled it. */
-    if (ok && s_is_design && !s_cleared && !unchanged) face_view_preview_states();
     return ok;
 }
 

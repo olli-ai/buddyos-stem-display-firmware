@@ -96,20 +96,11 @@ config BUDDY_SLEEP_IDLE_S
         what a classroom or a demo table wants.
 
 config BUDDY_SLEEP_WAKE_GPIO
-    int "GPIO that wakes the kit (RTC GPIO; -1 on the P4 for RESET only)"
+    int "GPIO that wakes the kit (RTC GPIO, 0-21)"
     depends on BUDDY_SLEEP
-    range 0 21 if !IDF_TARGET_ESP32P4
-    range -1 15 if IDF_TARGET_ESP32P4
-    default 0 if !IDF_TARGET_ESP32P4
-    default -1
+    range 0 21
+    default 0
     help
-        ESP32-P4: waking from deep sleep needs an LP GPIO (0-15), through ext1. The
-        Waveshare board's BOOT button is GPIO 35, which is not one, and nothing else
-        on the board is a button — so the default is -1, no wake pin, and the kit's
-        RESET button wakes it. Waking is a cold boot either way, so RESET loses
-        nothing a wake pin would have kept. Wire a button from an LP GPIO to GND and
-        name it here to have one.
-
         Must be an **RTC GPIO**: waking from deep sleep uses ext0, which the ESP32-S3
         supports only on GPIO 0-21 (SOC_RTCIO_PIN_COUNT is 22). GPIO 47 cannot do it
         at any speed.
@@ -122,50 +113,30 @@ config BUDDY_SLEEP_WAKE_GPIO
         mode. A press-and-release to wake should be clear of the latch, but this has
         not been confirmed on hardware.
 
-        On the ST7701S board GPIO 0 is ALSO DB17 of the panel bus. It still works
-        here because the panel is dark by the time ext0 is armed and sleep_now()
-        takes the pin back first. There is no fallback any more: every RTC GPIO is
-        in use — 0-18 by the panel and audio, 19/20 by native USB, 21 by PCLK. If
-        BOOT misbehaves as a wake pin, the answer is a different panel pin-out, not
-        a different number here.
+        **If that test fails, use GPIO 21.** On this board the RTC range (0-21) is
+        otherwise spoken for: 4-13 and 15-18 are the mic, amp and panel, 0 and 3 are
+        strapping pins, and 19/20 are native USB — which leaves 1, 2, 14 and 21.
+        21 is the pick of them: 14 sits between the amp block (9-13) and the panel
+        block (15-18) and is the one you would want back for a peripheral, and 1 and 2
+        are neighbours of strapping pin 3, where a jumper one pin over is a boot
+        failure that looks like nothing at all. Nothing adjoins 21.
+
+        The cost of moving is a button and a pull-up to wire by hand, where GPIO 0 is
+        already on every devkit — so test GPIO 0 first and only move if it misbehaves.
+
+config BUDDY_SLEEP_FACE_MS
+    int "Milliseconds to show the asleep face before the panel blanks"
+    depends on BUDDY_SLEEP
+    range 0 5000
+    default 800
+    help
+        A Buddy closing its eyes reads as a character going to sleep; a screen that
+        simply blanks reads as a fault. 0 to skip.
 
 config BUDDY_BOOT_RESET
     bool "Hold BOOT (GPIO 0) for 5 s to erase setup and re-enter BLE setup"
     depends on BUDDY_NET
     default y
-    help
-        On the ST7701S board BOOT is DB17 of the panel bus and cannot be read while
-        the panel runs, so it is read once at boot, before the panel starts. A cold
-        reset with BOOT held is the ROM's download mode, so in practice the gesture
-        is: while the kit SLEEPS, press BOOT and keep holding for 5 s. An awake kit
-        has to sleep first (a device.sleep directive, or the idle timer).
-
-config BUDDY_BOOT_BUTTON_SETUP
-    bool "Press BOOT while running to set the kit up again"
-    depends on BUDDY_NET && IDF_TARGET_ESP32P4
-    default y
-    help
-        The boot-time gesture above cannot be reached on this board, so this is the
-        one that works here: while the kit runs, hold BOOT, then let go.
-
-        BUDDY_BOOT_RESET reads the pin once, as the first thing app_main does, which
-        means something must already be holding it down by then. On the S3 that is a
-        press that woke the kit from sleep. The P4's BOOT is GPIO 35: not an LP GPIO,
-        so it cannot wake the chip, and holding it through a reset lands in the ROM's
-        download mode rather than in the firmware. No sequence reaches the check.
-
-        GPIO 35 is BOOT and nothing else on this board, so unlike the S3's GPIO 0 —
-        which is a panel data line while the display runs — it is safe to read at
-        any time.
-
-config BUDDY_BOOT_BUTTON_MS
-    int "...how long BOOT must be held, ms"
-    depends on BUDDY_BOOT_BUTTON_SETUP
-    range 500 10000
-    default 2000
-    help
-        Long enough that a knock cannot wipe a kit, short enough to count out loud.
-        The erase happens on RELEASE, so letting go early is how you change your mind.
 
 config BUDDY_MQTT_AWS_ROOT
     bool "Verify the broker with the embedded Amazon Root CA 1"
@@ -176,104 +147,17 @@ config BUDDY_MQTT_AWS_ROOT
         against the full bundle's 65 KB. Turn this off to reach a broker with some
         other publicly-trusted certificate, which costs the whole bundle.
 
-choice BUDDY_SCREEN
-    prompt "What the panel shows"
-    default BUDDY_SCREEN_FACE
-    help
-        The face is the product; the gallery is the football demo. They are exclusive
-        because each wants the whole panel, and because only one of them can own the
-        mouth that lip-sync drives.
-
-config BUDDY_SCREEN_FACE
-    bool "The Buddy's face"
-    help
-        Sprites composited per layer - face, brows, eyes, mouth - with eyes and brows
-        animating from the authored motion while the mouth follows the audio being
-        spoken. Costs what the artwork costs: ARGB8888 baked at the panel's own size,
-        about 4 MB at 720x720, which is why the P4 carries a 32 MB partition table.
-
-config BUDDY_SCREEN_GALLERY
-    bool "A photo gallery"
-    help
-        Photos swiped through by touch, each able to drop its jaw if gallery/mouths.csv
-        says where its mouth is. No eyes: a photograph's cannot move.
-
-endchoice
-
-config BUDDY_FACE_ASLEEP_S
-    int "Seconds of quiet before the face rests (0 keeps it awake)"
-    depends on BUDDY_SCREEN_FACE && BUDDY_WAKE_WORD
-    range 0 600
-    default 45
-    help
-        A kit between conversations sits in the `idle` state and stays there, because
-        the face belongs to the conversation from the moment the wake word arms. That
-        is right until a child designs an idle face that MOVES — the website's shake,
-        say — and then a Buddy nobody is talking to shakes its head for hours.
-
-        After this many seconds with no sound in the room, the face wears `asleep`
-        instead, which is the state the designer intends for a Buddy at rest. Any
-        sound brings `idle` straight back, and the wake word starts a conversation as
-        it always did.
-
-        This is the *face* resting, not the kit: BUDDY_SLEEP_IDLE_S is the one that
-        turns the panel off and deep-sleeps, and it should stay comfortably longer
-        than this so a Buddy is seen to doze before it goes dark.
-
-config BUDDY_FACE_MOTION_DEMO
-    bool "Cycle the website's whole-head motion presets"
-    depends on BUDDY_SCREEN_FACE
+config BUDDY_DESIGN_VIA_EVENT
+    bool "Also accept designs on the device's own event topic"
+    depends on BUDDY_NET
     default n
     help
-        Plays nod, bounce, shake and breathe on the head in turn, six seconds each,
-        naming each one on the console as it starts. For looking at what the panel
-        can do with each: on the P4 the body is composited by the PPA, which
-        translates exactly but cannot rotate by less than a quarter turn or scale by
-        less than a sixteenth - so nod and bounce move the body and shake and
-        breathe move only the features. A fifth preset, shake-x, is the same rhythm
-        as a translation, which is what a head shake can be on this hardware.
+        A bench path. Publishing to the directive topic is the gateway's privilege —
+        a device token may only subscribe there — so testing the web-to-device flow
+        from a laptop needs a topic the device's own token can publish to. Nothing
+        else listens on the event topic.
 
-        A demo, not a product behaviour: it talks over the state machine's own
-        motion, so leave it off unless that is what you want to see.
-
-config BUDDY_AEC_NLP_LEVEL
-    int "Echo suppression (AEC NLP): 0 normal, 1 aggressive, 2 very aggressive"
-    depends on BUDDY_AEC
-    range 0 2
-    default 2
-    help
-        How hard the echo canceller suppresses what the linear filter leaves behind —
-        which, on a full-duplex kit, is the Buddy's own voice arriving back through
-        its microphones. Too little and the far end hears the kit and takes it for
-        the child, so the Buddy interrupts itself mid-sentence.
-
-        It is a knob rather than a constant because the two failures it sits between
-        are both real on this board, and which one bites depends on the enclosure,
-        the volume and the room:
-
-        0 (normal) - the kit hears its own speaker and interrupts itself.
-        1 (aggressive) - the ESP-SR default.
-        2 (very aggressive) - the strongest available, and the default here.
-
-        Measured on this board, echo left in the microphone while the Buddy talks,
-        against a reference slot at about 15000/32768:
-
-            1 (aggressive)        M:83/833
-            2 (very aggressive)   M:37/536
-
-        so turning it to the top roughly halves what leaks through. Its cost did not
-        show up in wake-word reliability: 3 of 4 at aggressive against 5 of 6 at very
-        aggressive, which is too small a sample to separate but is certainly not the
-        collapse the note below warns about.
-
-        The cost of turning it up: NLP suppresses whoever is *quieter* during
-        playback, and that is the child as well as the speaker. This board's
-        microphone delivers speech at about -47 dBFS where voice.c reckons arm's
-        length to be -25, so WakeNet already runs near its threshold, and turning
-        suppression up is what made the wake word intermittent when this was last
-        measured. If the kit stops waking, come back down. The real fix is level,
-        not suppression - see the mic gain note in voice.c.
-
+        Off by default: a shipped device takes its designs from the gateway.
 
 config BUDDY_AUDIO
     bool "Bring up the microphone and amplifier"
@@ -301,7 +185,7 @@ config BUDDY_VOICE
     default n
     help
         Streams the microphone to the gateway's voice route as Opus and plays the
-        Buddy's replies. See main/voice.c.
+        Buddy's replies, with its face following the conversation. See main/voice.c.
 
 config BUDDY_VOICE_TOKEN
     string "Bench user token the voice route resolves the persona with"
@@ -322,76 +206,6 @@ config BUDDY_WAKE_WORD
         Only then does the kit open its voice session, and it closes it again after
         BUDDY_VOICE_IDLE_S of quiet. Off: the session opens at boot and never
         closes, which is how the pipeline was first brought up.
-
-config BUDDY_UPLINK_GAIN_DB
-    int "Digital gain on the audio sent to the cloud, dB"
-    depends on BUDDY_VOICE
-    range 0 40
-    default 30
-    help
-        Applied to the microphone AFTER the front end and BEFORE the Opus encoder, so
-        it lifts only what the cloud hears. WakeNet is not affected: it runs inside
-        the AFE, upstream of this.
-
-        It exists because this kit is quiet, and quiet turned out to be the whole
-        story behind "the device cannot be interrupted". Measured against staging
-        omni's own VAD telemetry (2026-10-22), with a working Heymates device on the
-        same cluster for comparison:
-
-                                    loudness     Silero score   speech episodes
-          kit, no uplink gain       -62.9 dBFS   0.03           none in 114 s
-          kit, +30 dB               -29.3 dBFS   0.60-0.83      start/end, 2.8 s
-          HHMST26330000006          -22.5 dBFS   0.91-0.97      normal
-
-        Silero was not rejecting the kit's audio for being 16 kHz upsampled to 48,
-        which was the standing theory. It simply never heard speech at -63 dBFS. At
-        -29 it does, barge-in works on the fast VAD path, and the kit interrupts
-        mid-reply the way a browser does: speaking_started 30951, flush_audio 45219,
-        interrupted 45268.
-
-        An earlier note here said "whatever stops that VAD firing is not level",
-        concluded from an 18 dB test that saw no change. 18 dB reaches about
-        -45 dBFS, still 20 dB short of where Silero starts scoring speech, so that
-        experiment was simply too small to move the thing it was testing. Raising a
-        setting partway and seeing nothing is not evidence that the setting is
-        irrelevant.
-
-        Raising the ES7210's analogue gain is still NOT the way to do this. Tried at
-        37 dB on the bench, it lifted the playback reference slot some twenty times
-        rather than the microphones, and AEC then cancelled against an echo that was
-        not there and deafened the wake word entirely. This gain is digital, applied
-        to one copy of the audio, and leaves both the reference and WakeNet alone.
-
-        Headroom: peaks sit roughly 30 dB below full scale before this, and the
-        multiply saturates rather than wraps, so 30 is about the most that is clean.
-        Past that, expect clipping on loud speech and a worse transcript, not a
-        louder one.
-
-config BUDDY_UPLINK_DUCK_DB
-    int "dB to take off the uplink gain while the Buddy is speaking"
-    depends on BUDDY_VOICE && BUDDY_UPLINK_GAIN_DB > 0
-    range 0 40
-    default 12
-    help
-        The uplink gain lifts everything the cloud hears, including the echo the
-        canceller did not remove. That is fine until the gain is large: at +30 dB the
-        residue reached omni at about -25 dBFS, which is as loud as a person, and its
-        VAD interrupted the Buddy mid-sentence on the Buddy's own voice.
-
-        Measured 2026-10-23 on this board, from omni's own VAD telemetry:
-
-            echo while speaking   vad_score 0.44 at -25.5 dBFS
-            a child speaking      vad_score 0.58 - 0.89
-
-        which is far too close together to separate with a threshold. So the gain is
-        reduced by this much while the Buddy speaks: both the echo and a child trying
-        to interrupt come down equally, but only the echo was near the line, so the
-        echo drops under it and a real voice stays over.
-
-        0 disables the ducking. If the kit still interrupts itself, raise it; if a
-        child can no longer barge in over the Buddy, lower it. Turning the whole
-        uplink gain down instead is not the trade - that is what made the kit
-        inaudible to VAD in the first place.
 
 config BUDDY_VOICE_IDLE_S
     int "Seconds of quiet that end a conversation"
@@ -425,78 +239,17 @@ config BUDDY_VOICE_TAP
         offline without anyone having to repeat themselves. Off in any build
         that ships.
 
-config BUDDY_SPEAKER_VOLUME
-    int "Speaker volume (ESP32-P4 board), percent"
-    depends on IDF_TARGET_ESP32P4
-    range 0 100
-    default 75
-    help
-        The ES8311's output volume. The S3 board's amplifier has no volume control;
-        this one does.
-
-config BUDDY_MIC_GAIN_DB
-    int "Microphone gain (ESP32-P4 board), dB"
-    depends on IDF_TARGET_ESP32P4
-    range 0 37
-    default 30
-    help
-        The ES7210's analogue gain on every microphone slot. A loopback slot ('R' in
-        BUDDY_AFE_INPUT_FORMAT) is left at 0 dB: it carries the codec's own output,
-        which is already full scale.
-
-config BUDDY_AFE_INPUT_FORMAT
-    string "ES7210 slot layout (ESP32-P4 board)"
-    depends on IDF_TARGET_ESP32P4
-    default "MRMN"
-    help
-        What each of the ES7210's four TDM slots carries, one letter each, in ESP-SR's
-        notation: M a microphone, R the playback loopback (the echo reference), N
-        nothing. The first M is the one audio_read() returns. If no slot is R, the
-        echo reference is made in software from what the firmware plays, delayed by
-        the I2S queue.
-
-        audio_selftest() prints each slot's level in silence and under a test tone.
-        A loopback slot reads near-digital silence until the tone and then far louder
-        than either microphone; a slot that never moves is N.
-
-config BUDDY_AEC
-    bool "Acoustic echo cancellation (ESP-SR AFE)"
-    depends on IDF_TARGET_ESP32P4 && BUDDY_WAKE_WORD
+config BUDDY_LIPSYNC_DEMO
+    bool "Lip-sync the face to an embedded speech clip"
     default y
     help
-        Feed the microphones and the echo reference through ESP-SR's audio front end:
-        echo cancellation, then blind source separation across the two microphones,
-        then WakeNet. With it, the kit can hear "Jarvis" — and the child — while the
-        Buddy is talking, so the microphone is no longer muted during playback.
-        Off: the S3 behaviour, one microphone and half duplex.
+        This device has no audio hardware yet, so the only way to see the mouth
+        follow real speech is to play a recording through the same classifier the
+        product will feed from the decoder. Costs ~75 KB of flash for 2.4 s of
+        Vietnamese and English from the shipped Omnivoice voices.
 
-config BUDDY_AEC_KEEP_HALF_DUPLEX
-    bool "Still mute the upstream audio while the Buddy speaks"
-    depends on BUDDY_AEC
-    default n
-    help
-        Echo cancellation leaves a residue, and the cloud's own voice activity
-        detection may hear it as the child talking. If the Buddy keeps interrupting
-        itself, turn this on: the wake word still works during playback (barge-in),
-        but nothing is streamed until the Buddy is done.
-
-config BUDDY_LIPSYNC_LEAD_MS
-    int "Lip-sync: how far behind the codec the speaker is (ms)"
-    range 0 1000
-    default 100
-    help
-        The photos' mouths follow the Buddy's speech, classified as the PCM is
-        handed to the codec, and that PCM is heard a DMA queue later. Each mouth
-        shape is shown this long after it was classified. Too small and the mouth
-        moves before the sound; too large and after. Measure it on the board:
-        film the screen and the speaker together and count frames.
-
-config BUDDY_LIPSYNC_DEMO
-    bool "Lip-sync: babble without a voice session (bench only)"
-    default n
-    help
-        The current photo talks all the time, from a fixed pattern of mouth
-        shapes, so the jaw can be judged without starting a conversation. Off in
-        any build that ships.
+        Off strips the classifier from the image entirely — which is the honest
+        baseline, and also the trap: an earlier measurement here looked wonderful
+        because the linker had quietly dropped the whole networking stack.
 
 endmenu

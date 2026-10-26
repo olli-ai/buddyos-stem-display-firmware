@@ -29,7 +29,6 @@ typedef enum {
     DET_MODE_2CH_95 = 3,
     DET_MODE_3CH_90 = 4,
     DET_MODE_3CH_95 = 5,
-	DET_MODE_90_COPY_PARAMS = 6,       // Aggressive
 } det_mode_t;
 
 typedef struct {
@@ -38,7 +37,7 @@ typedef struct {
 } wake_word_info_t;
 
 /**
- * @brief Easy function type to initialize a model instance with a detection mode and specified wake word coefficient
+ * @brief Easy function type to initialze a model instance with a detection mode and specified wake word coefficient
  *
  * @param model_name  The specified wake word model coefficient
  * @param det_mode    The wake words detection mode to trigger wake words, DET_MODE_90 or DET_MODE_95

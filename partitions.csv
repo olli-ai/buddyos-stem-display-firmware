@@ -2,9 +2,8 @@
 # board are chosen — see README.
 #
 # Two app slots because an OTA that cannot roll back is not an OTA.
-# `faces` was the face catalogue's partition. This build has no face and never reads
-# it; it is kept so `model` stays where it is and a board flashed with master needs
-# no re-flash of the wake word.
+# `faces` is the catalogue partition of ADR 0009: artwork delivered and replaced
+# without a firmware release, so a new hat does not become an OTA for every device.
 # `model` holds the wake-word model only (ESP-SR's srmodels.bin, ~300 KB for one
 # WakeNet9 word; the name is ESP-SR's and cannot change). This device type still
 # carries no offline *image* model, which is what makes the screen affordable.

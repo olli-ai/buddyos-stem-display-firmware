@@ -2,7 +2,7 @@
 /**
  * The measurement this whole device type is gated on.
  *
- * What matters is free internal SRAM *with the radio up*, because that is
+ * The faces spec asks for free internal SRAM *with the radio up*, because that is
  * where this product line has been bitten before: on the robokit the BLE host task
  * failed to start with 1,351 B of internal SRAM left while PSRAM sat free. So every
  * figure here is reported per-capability, never as one "free heap" number, and the

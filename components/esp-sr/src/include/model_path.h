@@ -32,11 +32,11 @@ typedef struct {
 #define MODEL_NAME_MAX_LENGTH 64
 
 /**
- * @brief Return all available models in flash.
+ * @brief Return all avaliable models in flash.
  *
  * @param partition_label    The spiffs label defined in your partition file used to save models.
  *
- * @return all available models,save as srmodel_list_t.
+ * @return all avaliable models,save as srmodel_list_t.
  */
 srmodel_list_t *esp_srmodel_init(const char *partition_label);
 
@@ -45,25 +45,9 @@ srmodel_list_t *esp_srmodel_init(const char *partition_label);
  *
  * @param models    The srmodel_list_t point allocated by esp_srmodel_init function.
  *
- * @return all available models in spiffs,save as srmodel_list_t.
+ * @return all avaliable models in spiffs,save as srmodel_list_t.
  */
 void esp_srmodel_deinit(srmodel_list_t *models);
-
-
-/**
- * @brief Deinitialize with reference count
- * 
- * This function uses a reference count mechanism to defer the actual deinitialization
- * until it is safe to do so, preventing premature release while other modules
- * are still using the model.
- * 
- * @param models Pointer to the model list to be deinitialized
- * 
- * @note Behavior:
- *       - When init count <= 1: performs actual deinitialization
- *       - When init count > 1: only decrements the count without actual cleanup
- */
-void esp_srmodel_deinit_with_refcount(srmodel_list_t *models);
 
 /**
  * @brief Return the first model name containing the specified keywords
@@ -101,11 +85,11 @@ int esp_srmodel_exists(srmodel_list_t *models, char *model_name);
 char *esp_srmodel_get_wake_words(srmodel_list_t *models, char *model_name);
 
 /**
- * @brief Initialize and mount SPIFFS filesystem, return all available models in spiffs.
+ * @brief Initialize and mount SPIFFS filesystem, return all avaliable models in spiffs.
  *
  * @param part    The spiffs partition.
  *
- * @return all available models in spiffs,save as srmodel_list_t.
+ * @return all avaliable models in spiffs,save as srmodel_list_t.
  */
 #ifdef ESP_PLATFORM
 srmodel_list_t *srmodel_spiffs_init(const esp_partition_t *part);
@@ -116,7 +100,7 @@ srmodel_list_t *srmodel_spiffs_init(const esp_partition_t *part);
  *
  * @param models    The srmodel_list_t point allocated by srmodel_spiffs_init function.
  *
- * @return all available models in spiffs,save as srmodel_list_t.
+ * @return all avaliable models in spiffs,save as srmodel_list_t.
  */
 void srmodel_spiffs_deinit(srmodel_list_t *models);
 
@@ -141,24 +125,11 @@ srmodel_list_t *get_static_srmodels(void);
  *
  * @param root   The binary model data.
  *
- * @return all available models,save as srmodel_list_t.
+ * @return all avaliable models,save as srmodel_list_t.
  */
 srmodel_list_t *srmodel_load(const void *root);
 
-/**
- * @brief Initialize and load model from binary file in host.
- * 
- * @param filename    The binary model file name.
- */
-srmodel_list_t *srmodel_host_init(const char* filename);
 
-
-/**
- * @brief Deinitialize the model list loaded by srmodel_load function.
- * 
- * @param models    The srmodel_list_t point allocated by srmodel_load function.
- */
-void srmodel_host_deinit(srmodel_list_t *models);
 
 #ifdef ESP_PLATFORM
 #include "dl_lib_coefgetter_if.h"

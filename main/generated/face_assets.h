@@ -11,9 +11,7 @@
 #include <stdint.h>
 #include "lvgl.h"
 
-/** One rasterised part, with where it sits in the face. The face is the panel:
- *  SIZE in tools/bake_face.ts, 720 for the P4's JD9365, 240 for the old GC9A01.
- *  The art is vector, so changing it re-rasterises rather than upscales. */
+/** One rasterised part, with where it sits in the 240x240 face. */
 typedef struct {
     const char *layer;              /* "eyeL", "mouth", ... */
     const char *part;               /* catalogue part id */

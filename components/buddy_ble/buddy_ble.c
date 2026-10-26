@@ -24,16 +24,6 @@
 
 static const char *TAG = "ble";
 
-#if CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI
-/*
- * The ESP32-P4 board's controller is the C6's, reached through esp_hosted. esp_hosted
- * 1.4.7 supplies ble_transport_ll_init() for that link but not the _deinit() that IDF
- * 5.5's nimble_port_deinit() calls. There is nothing to undo: the transport is the
- * same SDIO link Wi-Fi keeps using after BLE shuts down, so it must stay up.
- */
-void ble_transport_ll_deinit(void) {}
-#endif
-
 #define MANUFACTURER_ID   0x4F4C
 /*
  * Notification payload sizing.
