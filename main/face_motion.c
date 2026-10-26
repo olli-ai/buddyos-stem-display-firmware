@@ -12,7 +12,10 @@
  *    some other eye entirely.
  */
 #include "face_motion.h"
+#include "esp_log.h"
 #include <string.h>
+
+static const char *TAG = "motion";
 
 /* Fixed-point divisors, matching the baker. */
 #define FP_XY 16.0f
@@ -34,9 +37,9 @@ static float ease(uint8_t e, float u)
 
 /* The easing of a segment comes from the keyframe that *starts* it: the curve says
  * how you leave here for there. Before the first key and after the last, hold. */
-static float sample_numeric(const face_track_t *tr, uint32_t t)
+static float sample_numeric(const face_key_t *base, const face_track_t *tr, uint32_t t)
 {
-    const face_key_t *k = &face_keys[tr->first_key];
+    const face_key_t *k = &base[tr->first_key];
     if (tr->n_keys == 0) return 0.0f;
     if (t <= k[0].t) return (float)k[0].v;
     const face_key_t *last = &k[tr->n_keys - 1];
@@ -48,9 +51,9 @@ static float sample_numeric(const face_track_t *tr, uint32_t t)
     return (float)k[i].v + ((float)k[i + 1].v - (float)k[i].v) * ease(k[i].e, u);
 }
 
-static int16_t sample_sprite(const face_track_t *tr, uint32_t t)
+static int16_t sample_sprite(const face_key_t *base, const face_track_t *tr, uint32_t t)
 {
-    const face_key_t *k = &face_keys[tr->first_key];
+    const face_key_t *k = &base[tr->first_key];
     if (tr->n_keys == 0) return -1;
     int16_t cur = k[0].v;
     for (int i = 0; i < tr->n_keys; i++) {
@@ -60,6 +63,63 @@ static int16_t sample_sprite(const face_track_t *tr, uint32_t t)
     return cur;
 }
 
+/* ── a design's own motion ───────────────────────────────────────────────────── */
+
+static face_track_t s_rt_tracks[FACE_RT_TRACKS];
+static face_key_t   s_rt_keys[FACE_RT_KEYS];
+static uint16_t     s_rt_n_tracks, s_rt_n_keys;
+/* Per state: where its tracks start, how many, and the loop length it asked for.
+ * n_tracks 0 means "this state has no design motion" — fall back to the baked loop,
+ * which is how a design that only re-authors `speaking` leaves `idle` alone. */
+static struct { uint16_t first, n; uint16_t duration; } s_rt_state[8];
+
+void face_motion_design_clear(void)
+{
+    s_rt_n_tracks = s_rt_n_keys = 0;
+    memset(s_rt_state, 0, sizeof s_rt_state);
+}
+
+bool face_motion_has_design(void)
+{
+    for (unsigned i = 0; i < sizeof s_rt_state / sizeof *s_rt_state; i++)
+        if (s_rt_state[i].n) return true;
+    return false;
+}
+
+bool face_motion_state_has_design(int state)
+{
+    return state >= 0 && state < (int)(sizeof s_rt_state / sizeof *s_rt_state)
+           && s_rt_state[state].n > 0;
+}
+
+bool face_motion_design_add(int state, uint16_t duration, uint8_t layer, uint8_t prop,
+                            const face_key_t *keys, int n_keys, uint16_t every)
+{
+    if (state < 0 || state >= (int)(sizeof s_rt_state / sizeof *s_rt_state)) return false;
+    if (n_keys <= 0 || layer >= FACE_LAYER_COUNT) return false;
+    if (s_rt_n_tracks >= FACE_RT_TRACKS || s_rt_n_keys + n_keys > FACE_RT_KEYS) {
+        ESP_LOGW(TAG, "design motion does not fit (%u tracks, %u keys); the rest is dropped",
+                 (unsigned)s_rt_n_tracks, (unsigned)s_rt_n_keys);
+        return false;
+    }
+    /* Tracks of one state must be contiguous, so a state can only be filled while it
+     * is the one being built. The parser walks states in order, which is the only
+     * caller; anything else is a bug and is refused rather than silently interleaved. */
+    if (s_rt_state[state].n == 0) s_rt_state[state].first = s_rt_n_tracks;
+    else if (s_rt_state[state].first + s_rt_state[state].n != s_rt_n_tracks) return false;
+
+    memcpy(&s_rt_keys[s_rt_n_keys], keys, (size_t)n_keys * sizeof *keys);
+    s_rt_tracks[s_rt_n_tracks] = (face_track_t){
+        .layer = layer, .prop = prop,
+        .first_key = s_rt_n_keys, .n_keys = (uint16_t)n_keys, .every = every,
+    };
+    s_rt_n_keys += n_keys;
+    s_rt_n_tracks++;
+    s_rt_state[state].n++;
+    s_rt_state[state].duration = duration;
+    return true;
+}
+
 void face_motion_sample(int state, uint32_t t, face_values_t out[FACE_LAYER_COUNT])
 {
     for (int i = 0; i < FACE_LAYER_COUNT; i++) {
@@ -67,20 +127,30 @@ void face_motion_sample(int state, uint32_t t, face_values_t out[FACE_LAYER_COUN
                                   .rotation = 0, .opacity = 1, .sprite = -1 };
     }
     if (state < 0 || state >= face_state_count) return;
-    const face_state_t *st = &face_states[state];
-    if (st->duration == 0) return;
 
-    uint32_t local = t % st->duration;
-    for (int i = 0; i < st->n_tracks; i++) {
-        const face_track_t *tr = &face_tracks[st->first_track + i];
+    /* A design's motion for this state wins whole, not track by track: mixing the
+     * child's tracks with the factory's would have two blink tracks fighting over the
+     * same eye. A state the design says nothing about keeps the baked loop. */
+    bool design = state < (int)(sizeof s_rt_state / sizeof *s_rt_state)
+                  && s_rt_state[state].n > 0;
+    const face_track_t *tracks = design ? &s_rt_tracks[s_rt_state[state].first]
+                                        : &face_tracks[face_states[state].first_track];
+    const face_key_t *keys = design ? s_rt_keys : face_keys;
+    int n_tracks = design ? s_rt_state[state].n : face_states[state].n_tracks;
+    uint16_t duration = design ? s_rt_state[state].duration : face_states[state].duration;
+    if (duration == 0) return;
+
+    uint32_t local = t % duration;
+    for (int i = 0; i < n_tracks; i++) {
+        const face_track_t *tr = &tracks[i];
         if (tr->layer >= FACE_LAYER_COUNT) continue;
         /* A track with its own period repeats inside the state's loop — which is what
          * lets a 480 ms talking mouth live inside a 4 s blink. */
-        uint16_t period = (tr->every && tr->every < st->duration) ? tr->every : st->duration;
-        uint32_t tt = (period < st->duration) ? (local % period) : local;
+        uint16_t period = (tr->every && tr->every < duration) ? tr->every : duration;
+        uint32_t tt = (period < duration) ? (local % period) : local;
         face_values_t *v = &out[tr->layer];
-        if (tr->prop == 255) { v->sprite = sample_sprite(tr, tt); continue; }
-        float raw = sample_numeric(tr, tt);
+        if (tr->prop == 255) { v->sprite = sample_sprite(keys, tr, tt); continue; }
+        float raw = sample_numeric(keys, tr, tt);
         switch (tr->prop) {
             case 0: v->x = raw / FP_XY; break;
             case 1: v->y = raw / FP_XY; break;

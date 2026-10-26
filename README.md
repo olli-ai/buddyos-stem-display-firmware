@@ -1,47 +1,39 @@
 # buddyos-stem-display-firmware
 
-ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**: the kit that shows the
-Buddy a child designed on the website, drawn with LVGL, lip-syncing to the voice it speaks
-with, and animated from the child's own keyframes.
+ESP-IDF firmware for the **screen-equipped BuddyOS STEM device**: a round screen showing
+the Buddy a child designed on the website, and behind it the same kit as ever — BLE
+Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice conversation that starts when you
+say "Jarvis".
+
+**The face is the default build** (`BUDDY_SCREEN_FACE`). A design saved on the website
+arrives over MQTT, is applied to all seven states and survives a reboot; the character
+comes from the catalogue partition; the mouth follows the audio being spoken; and the
+model can change the expression mid-sentence. The **photo gallery** — footballers you
+swipe between — is the other half of the same firmware and is chosen with
+`BUDDY_SCREEN_GALLERY` in `menuconfig`. The two are exclusive: one screen, one job.
 
 **You can build one.** The parts are off-the-shelf modules on a breadboard, this firmware is
 Apache-2.0, and a kit you flashed yourself joins the BuddyOS cloud exactly like one that came
-in a box — same provisioning, same studio, same face designer. See
-**[Build one yourself](#build-one-yourself)**.
+in a box — same provisioning, same voice. See **[Build one yourself](#build-one-yourself)**.
 
-> **This README is an engineering record**, not a tutorial. It is long on purpose: every
-> measurement here was taken on real hardware, and most of the surprising ones cost a bench
-> day. If you only want to get a kit working, read [Build one yourself](#build-one-yourself)
-> and [Setting a kit up](#setting-a-kit-up), then stop. The rest is here for when something
-> does not behave.
+> **This README is an engineering record**, not a tutorial. Every measurement here was
+> taken on real hardware. If you only want to get a kit working, read [Build one
+> yourself](#build-one-yourself), [The gallery](#the-gallery) and [Setting a kit
+> up](#setting-a-kit-up), then stop.
 
 ## What this repo is for
 
-1. **Panel bring-up** — driver, LVGL, a frame on the glass.
-2. **The face renderer** — composite catalogue sprites into a face from a few hundred bytes
-   of the child's choices. Never pixels over the wire; part ids and colours.
-3. **The `.buddy` motion interpreter** — walk keyframe tracks, drive `lv_anim`. The format
-   is defined by the website's own implementation, and its behaviour is pinned by a set of
-   conformance fixtures. **Those fixtures are the contract**: this firmware is correct when
-   it reproduces them, including the per-easing LUT checksums. The goldens are vendored
-   here as `main/generated/` and `tools/`, so `tools/xcheck.sh` runs with nothing but this
-   repo — see [Holding it to the website's answer](#holding-it-to-the-websites-answer).
-4. **The catalogue partition** — artwork delivered and updated without a firmware
-   release: a presigned URL streamed to flash and CRC-checked before it is committed.
-5. **Lip-sync** — the mouth follows the audio the Buddy is speaking, never its text. See
-   **Lip-sync** below.
+1. **Panel bring-up** — the ST7701S RGB panel, LVGL, the capacitive touch layer.
+2. **The gallery** — photos baked into the app, decoded on demand into PSRAM, one swipe
+   apart. See [The gallery](#the-gallery).
+3. **The kit around it, unchanged** — BLE Wi-Fi setup, MQTT to the gateway, the wake word
+   and the voice path, and deep sleep.
 
 ## What this repo is *not*
 
-**It is a face, a voice and a screen — nothing else.** The whole 2 MB app image goes on the
-panel driver, the face renderer and its catalogue, the motion interpreter, the wake word
-and the voice path, and that is already a tight fit: see [Static
-sizes](#static-sizes) for where every kilobyte goes.
-
-The only inference on the device is the wake word (ESP-SR WakeNet, in its own partition)
-and the lip-sync classifier, which is a 512-point FFT and a few thresholds rather than a
-model. Anything heavier than that does not fit beside what is here, and the measurements
-in this README are the argument.
+**It is a gallery, a voice and a screen — nothing else.** The only inference on the device
+is the wake word (ESP-SR WakeNet, in its own partition). Anything heavier does not belong
+beside the voice path, and the measurements in this README are the argument.
 
 ## Build one yourself
 
@@ -50,15 +42,18 @@ Everything here is a common module and a breadboard. No PCB, no reflow, no custo
 | Part | What to get | Notes |
 | --- | --- | --- |
 | MCU | **ESP32-S3-WROOM-1-N16R8** devkit — 16 MB flash, 8 MB PSRAM | **Not the N8R2.** See below. |
-| Display | **GC9A01** 1.28" 240×240 round TFT, SPI | The bring-up module has no backlight pin; one that exposes it is better. |
+| Display | **HD21001C40** 2.1" 480×480 round IPS, ST7701S, 16-bit RGB + SPI init | Backlight hardwired on. Needs the octal-PSRAM N16R8 for its frame buffer. |
+| Touch | **HCY-CTP00021-A0** capacitive, I²C | Shares its reset with the panel. |
 | Microphone | **INMP441** I²S MEMS breakout | The same part the Robot Kit uses. |
 | Amplifier | **MAX98357A** I²S breakout | |
 | Speaker | 4 Ω, 2–3 W, small | |
 | Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
 
-**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) runs the face fine, but its
-2 MB app slots cannot hold the voice path *and* BLE setup together; the build fails at link
-time. The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 2.14 MB.
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) cannot drive this panel: an
+RGB panel is refreshed from a 460 KB frame buffer in PSRAM, continuously, and quad PSRAM
+at 80 MHz does not have the bandwidth to spare. Its 2 MB app slots also cannot hold the
+voice path *and* BLE setup together; the build fails at link time.
+The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 1.50 MB.
 
 **Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
 the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
@@ -68,36 +63,53 @@ your board behaves strangely the moment audio starts, this is why.
 ### Wiring
 
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
-the file is right. As wired on the N16R8 bench board:
+the file is right. As wired on the N16R8 bench board with the HD21001C40 panel:
 
-| Signal | GPIO | Module pin |
+| Signal | GPIO | Panel / module pin |
 | --- | --- | --- |
-| **GC9A01** SCLK | 15 | `SCL` |
-| MOSI | 16 | `SDA` |
-| DC | 17 | `DC` |
-| CS | 18 | `CS` |
-| RST | 8 | `RST` |
-| **MAX98357A** SD | 13 | shutdown — high enables, low mutes |
-| GAIN | 12 | see `audio_set_gain()` |
-| DIN | 11 | |
-| BCLK | 10 | |
-| LRC | 9 | |
-| **INMP441** SD | 4 | the mic's data *out*, an input to us |
-| SCK | 5 | |
-| WS | 6 | |
-| L/R | 7 | held low = left channel |
+| **ST7701S** SPI CS | 42 | `CS`, 10 k pull-up to 3V3 |
+| SPI SCK | 1 | `SCK` — shared with DB1 |
+| SPI SDA | 2 | `SDA` — shared with DB2 |
+| RESET | 41 | `RESET` **and** `TP_RST` |
+| PCLK | 21 | |
+| DE | 38 | |
+| VSYNC | 39 | |
+| HSYNC | 40 | |
+| DB1–DB5 (blue) | 1, 2, 3, 8, 9 | DB0 to GND |
+| DB6–DB11 (green) | 10, 11, 12, 13, 14, 15 | |
+| DB13–DB17 (red) | 16, 17, 18, 46, 0 | DB12 to GND |
+| **HCY-CTP00021-A0** SDA | 47 | 4.7 k pull-up |
+| SCL | 48 | 4.7 k pull-up |
+| **I²S** BCLK | 5 | MAX98357A `BCLK` **and** INMP441 `SCK` |
+| WS | 6 | MAX98357A `LRC` **and** INMP441 `WS` |
+| MAX98357A DIN | 7 | |
+| INMP441 SD | 4 | the mic's data *out*, an input to us |
 
-Plus 3V3 and GND to the panel and the mic, and **5 V** to the amplifier.
+Hardwired, not driven: the panel backlight (LEDA to 5 V, LEDK1/2 to GND through a
+resistor each — **it cannot be dimmed or switched off**; sleep blanks the panel with
+DISPOFF/SLPIN instead), the amplifier's `SD` (100 k to VIN: on, left channel), its `GAIN`
+(floating: 9 dB) and the mic's `L/R` (GND: left). VCI, IOVCC and TP_VCI are 3V3; the
+amplifier's VIN is **5 V**.
 
-These pins were chosen around what the S3 reserves on this module — octal PSRAM (35–37),
-native USB (19/20), flash (26–32) and the strapping pins (0, 3, 45, 46). **GPIO 3 especially:**
-it is sampled at reset, and an I²S word clock on it was the first suspect when an earlier
-board would not boot cleanly.
+The amp and the mic share BCLK and WS, so they are one I²S controller in full duplex
+(`main/audio.c`), not two.
 
-The original N8R2 bench board was wired differently (panel SCK 14, MOSI 10, DC 11, CS 12,
-RST 13; amp SD 5, DIN 4, BCLK 6, LRC 7; mic SD 17, SCK 16, WS 9, LR 18). Those numbers appear
-in older notes and in the header's history comment — they will not work with this build
-without editing `board_pins.h`.
+This panel takes almost every pin the S3 has. Three consequences, all deliberate:
+
+- **GPIO 0, 3 and 46 are strapping pins and carry panel data.** That is why DB0 and DB12 —
+  the least significant bits of blue and red — are tied to GND rather than given pins.
+  The panel is idle at reset, so the straps read their pull resistors as usual.
+- **BOOT (GPIO 0) is DB17.** While the panel runs it is an LCD output and cannot be read.
+  It still wakes the kit from sleep (the panel is dark by then) and is read once at boot
+  for the factory reset — see [Going to sleep](#going-to-sleep-and-waking-up). **Do not
+  press BOOT while the screen is on:** it shorts a driven output to GND. Harmless for
+  a moment, and the top bit of red flickers, but it is not a button while awake.
+- **SCK and SDA double as DB1 and DB2.** The ST7701S is set up over SPI before the RGB
+  bus starts; `st7701_set_on()` borrows the two pins back for DISPOFF/SLPIN with CS held
+  high the rest of the time, so the panel ignores the pixel data crossing them.
+
+The GC9A01 bench board before this one used SPI on 15–18/8, a muted, gain-switched amp on
+9–13 and the mic on 4–7. Those numbers are in older notes and will not work with this build.
 
 ### Flash it
 
@@ -119,14 +131,6 @@ looks like a hardware fault.
 `build/flash_args` is written by the build and is the authoritative list of offsets for
 whatever you just built; if it and this README ever disagree, the file is right.
 
-**`face_catalogue.bin` is deliberately not in that list.** It is extra character artwork,
-it is *not* produced by `idf.py build` (which is why it is absent from `flash_args`), and
-esptool aborts the whole command if any file is missing — so including it would mean
-flashing nothing at all. Without it the `faces` partition reads as blank, the mount says so
-in the log, and the kit draws the Buddy baked into the firmware. See [The characters live
-in their own partition](#the-characters-live-in-their-own-partition) if you want to build
-one.
-
 esptool does not come with the Docker build — the container cannot see a USB port, so
 flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
 not `esptool.py` and `write_flash`**: esptool 5 deprecated both older spellings (they warn
@@ -139,7 +143,7 @@ Your port will not be `/dev/ttyUSB0` on every machine — on macOS it is a
 `idf.py build` prints the command with the right offsets for whichever partition table you
 built against.
 
-With nothing else done, the kit boots, shows the built-in Buddy and cycles through its states.
+With nothing else done, the kit boots straight into the gallery.
 To put it on the network, carry on to [Setting a kit up](#setting-a-kit-up).
 
 ### Bringing it onto BuddyOS
@@ -147,16 +151,16 @@ To put it on the network, carry on to [Setting a kit up](#setting-a-kit-up).
 The firmware is free; the cloud it talks to is a paid service, and that is the deal. Register
 at the BuddyOS STEM website, then follow the **display-kit setup guide** in its *Documents*
 section — it is written for people holding a board, kept in step with this repo, and available
-in English and Vietnamese. It covers creating the account, provisioning over Bluetooth,
-designing a face and what cloud usage costs.
+in English and Vietnamese. It covers creating the account, provisioning over Bluetooth
+and what cloud usage costs. (Its face-designer pages do not apply: this build shows no
+face, so a design saved in the studio arrives and is ignored.)
 
 Two things to know before you start:
 
 - **A kit you built is not offered firmware updates over the air.** Your partition table may
   not match ours, and a brick you cannot recover is a bad first day. Update by reflashing.
 - **A device token may only subscribe to its own directive topic.** Publishing there is the
-  gateway's privilege, so bench tools like `tools/send_face.py` reach the device by a
-  different route (see [Which face, during a conversation](#which-face-during-a-conversation)).
+  gateway's privilege.
 
 ### Talking to it
 
@@ -178,16 +182,17 @@ Two known rough edges, both on the detector rather than the pipeline:
 
 ### Going to sleep, and waking up
 
-After **three minutes of quiet** (`CONFIG_BUDDY_SLEEP_IDLE_S`, 0 disables) the kit shows
-its `asleep` face, tells the gateway, blanks the panel and enters **deep sleep**. A
+After **three minutes of quiet** (`CONFIG_BUDDY_SLEEP_IDLE_S`, 0 disables) the kit tells
+the gateway, blanks the panel and enters **deep sleep**. Touching the screen counts as
+somebody being there, so a child swiping through the photos keeps it awake. A
 `device.sleep` directive does the same thing on demand. **Press BOOT to wake it.**
 
 **While it is asleep, "Jarvis" does nothing.** Deep sleep has no microphone, so the button
 is the only way back. That is the trade for microamps, and it is the thing most likely to
 surprise somebody — on a bench, set `CONFIG_BUDDY_SLEEP_IDLE_S=0`.
 
-Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The design is
-restored from NVS before the radio is up, so the face is back long before the network is.
+Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The gallery
+is drawn before the radio starts, so the photos are back long before the network is.
 
 Two details that are deliberate rather than incidental:
 
@@ -206,21 +211,211 @@ selects download mode. A press-and-release to wake should be clear of the latch,
 nobody has checked. It is a minute to test: let the kit sleep, press BOOT, and see whether
 it boots or lands in the bootloader.
 
-**If it misbehaves, use GPIO 21.** The RTC range is 0–21 and most of it is spoken for here
-— 4–13 and 15–18 are the mic, amp and panel, 0 and 3 are strapping pins, 19/20 are native
-USB — which leaves **1, 2, 14 and 21**. 21 is the pick: 14 sits between the amp and panel
-blocks and is the pin you would want back for a peripheral, while 1 and 2 are neighbours of
-strapping pin 3, where a jumper one position over fails to boot in a way that looks like
-nothing at all. Nothing adjoins 21.
+**There is no fallback pin any more.** On the GC9A01 board GPIO 21 was the spare to move
+to if BOOT misbehaved. With the ST7701S every RTC GPIO is spoken for — 0–18 by the panel
+and the audio, 19/20 by native USB, 21 by PCLK — and BOOT works at all only because
+`sleep_now()` blanks the panel and takes GPIO 0 back from the LCD peripheral (it is DB17)
+before arming `ext0`. If BOOT turns out not to work as a wake pin, the fix is a different
+panel pin-out that frees an RTC GPIO, not a different number in `menuconfig`.
 
-It costs a button and a pull-up to wire, where BOOT is already on the board — so test
-GPIO 0 first.
+### The gallery
 
-### Try it before you buy anything
+The screen is your photos, one page each, with the name and a row of page dots. Swipe left
+and right. This build ships with two Como 1907 players:
 
-If you have not bought anything yet, the [simulator](#simulator) builds the same face
-renderer, motion interpreter and lip-sync classifier for your own machine and serves them in
-a browser. It is the cheapest way to see what you would be building.
+```
+gallery/01-cesc_fabregas.jpg         -> "Cesc Fabregas"
+gallery/02-nico_paz.png              -> "Nico Paz"
+```
+
+**The photos are not in the repo** — `gallery/` is gitignored, because it is other people's
+pictures. **Nor are the generated mouth and eye variants** (see below): a clean clone has
+no `gallery/` at all, the build fails on purpose until you make one, and everything in it
+has to be regenerated. Put photos in `gallery/` (any size; JPEG, PNG, BMP or GIF; the
+leading number only sets the order), then bake them:
+
+    powershell -ExecutionPolicy Bypass -File tools\bake_gallery.ps1   # Windows
+    python3 tools/bake_gallery.py --in gallery --side 720             # macOS/Linux
+
+The Python baker is the one to use anywhere but Windows — `bake_gallery.ps1` needs
+System.Drawing — and it is also the only one that packs variants. It needs ImageMagick
+(`magick`) on PATH.
+
+It turns each one upright, crops it square (keeping more of a portrait's top, where the face
+is), sizes it to 480×480 and re-encodes it as a baseline JPEG, which is the only kind the
+device's decoder reads. `-Demo` packs five named placeholder cards instead, to try the swipe
+before choosing any photos. **The build fails without `gallery/gallery.bin`**, on purpose,
+with a message saying so; a pack that is present but damaged degrades to fewer photos, or
+to a line of text on the glass, never to a fault.
+
+The pack is embedded in the app: 35–90 KB a photo, so the two come to 79 KB. A decoded
+photo is 460 KB of PSRAM, so only the page showing and its two neighbours are kept.
+Measured with the radio up: **~180 ms** to decode one, with PSRAM at 80 MHz, and that
+happens after a swipe settles, never during one.
+
+### Making a photo talk, and blink
+
+A photograph has one expression and no eyelid interior, so by default all it can do is
+puppet its jaw — slide the chin down over an invented dark hole. To do better, give a
+photo **variants of itself**: the same frame with only the mouth, or only the eyes,
+redrawn. The baker keeps just the rectangle that changed, and the device swaps it.
+
+Two optional things live beside the photos. Neither is in the repo; both are yours to make.
+
+**1. `gallery/mouths.csv`** — where each mouth is, for the jaw puppet. One line per photo,
+as fractions of the square crop the baker makes (**not** of your original):
+
+```
+stem,x,y,w,jaw
+01-cesc_fabregas,0.555,0.605,0.130,0.125
+02-nico_paz,0.583,0.458,0.090,0.105
+```
+
+`x,y` is the middle of the lips' seam, `w` the mouth's width, `jaw` the seam down to the
+bottom of the chin. Measure them off a baked crop, not the original photo — the crop is
+what the device draws. A quick way: bake once, pull the JPEG back out of the pack, and
+overlay a 10% grid with ImageMagick.
+
+**2. `gallery/variants/<stem>/`** — the redrawn frames. `<stem>` is the photo's filename
+without its extension, so `02-nico_paz.png` takes `gallery/variants/02-nico_paz/`:
+
+```
+_base.png     the neutral frame the device DISPLAYS (closed, relaxed mouth)
+mbp.png  small.png  mid.png  wide.png  round.png  pucker.png  teeth.png
+blink.png  smile.png  surprised.png
+```
+
+The seven mouth files are the viseme classes in `VISEMES` order (see `lipsync.h`), minus
+REST — REST has no file because it *is* `_base.png`. All of them must be the same size as
+each other and pixel-aligned with `_base.png`: the baker stores only the difference, so
+anything that shifts the head, the crop or the lighting shows up as a visible patch.
+
+These were produced with an image model, from one source photo each, prompted one file at
+a time: *"the same photo, with ONLY the mouth changed to …; everything else pixel-identical
+— same framing, crop, head position, hair, clothing, background, lighting and skin tone;
+blend seamlessly with no visible edge or halo; output exactly 720×720."* Five faults were
+worth naming explicitly, because they all appeared on the first attempt and all went away
+when the prompt called them out: a pucker drawn as a cartoon kiss-face, a smudged `mbp`, a
+`teeth` that was just a smile instead of the lower lip tucked under the upper teeth, a
+`mid` barely different from the neutral frame, and a `surprised` that changed the subject's
+eye colour and bulged the eyes alarmingly.
+
+Check the result before baking: every variant's difference from `_base.png` should be a
+small box over the feature it names. If a mouth's box reaches the eyes, the model redrew
+the face and that frame will ghost — regenerate it rather than ship it.
+
+#### Doing it, step by step
+
+What follows is exactly how the two shipped players were made, on a Mac, with the
+[Codex CLI](https://github.com/openai/codex) for the image generation. Any image tool that
+can edit one region of a photo and leave the rest alone will do; the prompt matters more
+than the tool.
+
+**1. Crop the source square first.** Generate *from the baked crop*, not the original
+photo, so the variants are aligned with what the device actually draws:
+
+    python3 tools/bake_gallery.py --in gallery --side 720     # bakes the plain photos
+    python3 - <<'EOF'
+    import io, struct
+    b = io.open('gallery/gallery-720.bin','rb').read()
+    n, = struct.unpack('<I', b[4:8]); off = 8
+    for i in range(n):
+        o, sz = struct.unpack('<II', b[off:off+8]); off += 40
+        io.open('crop%d.jpg' % i, 'wb').write(b[o:o+sz])
+    EOF
+
+**2. Set up one directory per photo** with the crop as `base.jpg`, and generate into it:
+
+    mkdir -p work/02-nico_paz && cp crop1.jpg work/02-nico_paz/base.jpg
+    cd work/02-nico_paz
+    codex exec --skip-git-repo-check -C "$PWD" -s workspace-write 'You have base.jpg, a
+    720x720 photo of a person facing the camera. Using your image generation tool, produce
+    these 720x720 PNG files in this directory. Each is the SAME photo with ONLY the named
+    feature changed.
+
+    MOUTH SHAPES (eyes stay open and identical in all of these):
+      mouth_closed.png  lips relaxed and closed, neutral
+      v_mbp.png         lips closed and pressed together for "m"/"b"/"p" - crisp, not smudged
+      v_small.png       lips barely parted, a small narrow gap
+      v_mid.png         clearly half-open, vowel "eh", a visible gap and a little darkness
+                        inside - must be clearly MORE open than mouth_closed.png
+      v_wide.png        open wide, jaw dropped, as in "ah", teeth and dark interior visible
+      v_round.png       lips rounded into an O, as in "oh"
+      v_pucker.png      SUBTLE: lips lightly pushed forward and narrowed for the "oo" in
+                        "food". A small natural speech shape, NOT an exaggerated kiss-face
+      v_teeth.png       the LOWER LIP tucked up under the UPPER FRONT TEETH, as when saying
+                        "f" or "v". The upper teeth rest visibly on the lower lip. NOT a smile
+
+    EYES (mouth stays exactly as in base.jpg):
+      eyes_closed.png   both eyes gently closed, relaxed lids, natural lashes
+
+    EXPRESSIONS:
+      smile.png         a warm closed-lip smile
+      surprised.png     eyebrows raised SLIGHTLY, eyes a little wider but NOT bulging - no
+                        white above the iris - mouth slightly open. Gentle curious surprise,
+                        not fright. Keep the iris colour exactly as base.jpg
+
+    CRITICAL for every file: everything outside the changed feature must be pixel-identical
+    to base.jpg - same framing, crop, head position and angle, hair, clothing, background,
+    lighting and skin tone. Blend seamlessly: NO visible circular edge or halo where your
+    edit meets the original. Do not zoom, rotate, crop or restyle. Output exactly 720x720.'
+
+**3. Check every file before you trust it.** The difference from `base.jpg` must be a small
+box over the named feature. This prints one line per variant:
+
+    for f in mouth_closed v_mbp v_small v_mid v_wide v_round v_pucker v_teeth \
+             eyes_closed smile surprised; do
+      magick base.jpg $f.png -compose difference -composite -colorspace gray \
+             -threshold 12% -morphology close disk:2 /tmp/d.png
+      printf "%-14s %s\n" "$f" "$(magick /tmp/d.png -format '%@' info:)"
+    done
+
+A mouth variant should report something like `75x47+388+309` — tens of pixels, over the
+mouth. Hundreds of pixels, or a box reaching the eyes, means the model redrew the face:
+regenerate that one with the fault named in the prompt. Then look at them, side by side,
+large — the box test catches ghosting, not ugliness.
+
+**4. Put them where the baker expects**, renaming to the role names:
+
+    V=../../gallery/variants/02-nico_paz && mkdir -p $V
+    cp mouth_closed.png $V/_base.png
+    for m in mbp small mid wide round pucker teeth; do cp v_$m.png $V/$m.png; done
+    cp eyes_closed.png $V/blink.png
+    cp smile.png $V/smile.png
+    cp surprised.png $V/surprised.png
+
+Note `mouth_closed.png` becomes `_base.png`: the neutral closed mouth is what the kit
+shows when it is not speaking, and every patch is a difference from *that*.
+
+Then bake as above. The baker prints each patch's size and position, which is the quickest
+sanity check there is:
+
+```
+02-nico_paz.png:
+  mbp         60x42  at 394,312     7.4 KB
+  wide        66x64  at 391,312    12.4 KB
+  blink      126x62  at 361,232    22.9 KB
+```
+
+A mouth shape costs ~5–12 KB and **no decode at all** — the patch is RGB565A8, which is
+LVGL's own layout, so the device points an image descriptor straight at flash. That is the
+whole reason for the format: a re-encoded full frame costs 60 KB and a 180 ms decode, and
+visemes change far faster than that decode could finish. Faces fill frames differently, so
+a face that fills more of the shot costs proportionally more (the two shipped here differ
+by 3–5×).
+
+A photo with no `variants/` directory still works — it just uses the jaw puppet, or sits
+still if it has no `mouths.csv` line either.
+
+**Swiping needs the 16 KB main stack** (`sdkconfig.defaults`). LVGL draws on the main
+task, and its image path — `lv_refr` → `lv_draw_image` → `lv_image_decoder_get_info`,
+with an interrupt frame on top — measured ~8.9 KB on the board. At the old 6144 it ran off
+the end of the stack into the heap beside it: corrupt TLSF headers and task lists, which
+showed up as a reset on the second swipe and, once Wi-Fi was allocating in the damaged
+region, as a screen of half-drawn frames stacked a few dozen pixels apart. The stack's
+high-water mark never said so, because a deep frame does not have to write every byte it
+skips over. Proven by moving LVGL to a 16 KB task: forty seconds of automatic swiping, no
+corruption, 7.4 KB of the stack still untouched.
 
 ## Building
 
@@ -232,13 +427,15 @@ registry:
     docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw \
         espressif/idf:v5.2.2 idf.py -DIDF_TARGET=esp32s3 build
 
-`components/lvgl` is a shallow clone of LVGL 9.2 (cloned by `sim/build.sh` on first run,
-shared by both builds). `components/esp_lcd_gc9a01` is copied from esp-bsp with its two
-esp-bsp cmake-helper lines commented out and the version triple supplied directly.
+`components/lvgl` is not committed. Clone it once, before the first build:
+
+    git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
+
+and bake `gallery/gallery.bin` ([The gallery](#the-gallery)) — the build needs both.
 
 The panel driver glue is written here rather than pulled from `esp_lvgl_port`: a display,
-two DMA-capable partial buffers, a flush that waits on the panel's completion callback,
-and a tick from `esp_timer`. About sixty lines, and one fewer dependency.
+one partial draw buffer in internal RAM, a flush that copies into the PSRAM frame buffer
+(`main/st7701.c`), and a tick from `esp_timer`. One fewer dependency.
 
 ## Setting a kit up
 
@@ -260,241 +457,385 @@ is the complete implementation), so the website drives it unchanged:
 `gateway` is new with this kit: the stem-gateway host its voice socket dials
 (`wss://<gateway>/v1/stem/voice/stream`), sent by stem-fe from
 `VITE_STEM_DEVICE_GATEWAY_HOST`. Setup credentials always win over the bench ones in
-`sdkconfig`, which are used only when nothing was provisioned. **Hold BOOT for 5 s**
-to erase the setup and come back up advertising, even on a bench build.
+`sdkconfig`, which are used only when nothing was provisioned. **Hold BOOT for 5 s** to
+erase the setup and come back up advertising, even on a bench build. BOOT is a panel data
+line on this board, so it is read only at boot: let the kit sleep, then press BOOT and
+**keep holding** — it wakes, sees the button still down, and resets after 5 s. (Holding
+BOOT through a cold reset lands in the ROM bootloader instead.)
 
 ### Flashing the N16R8 board
 
 It uses `partitions-16mb.csv` (3 MB app slots; BLE did not fit beside voice in 2 MB), so
-faces and the wake-word model moved to new offsets. **After changing the partition table,
-flash all five images** — app alone leaves the old table in place and the kit looks for its
-catalogue where it no longer is. The command is in [Flash it](#flash-it).
+the wake-word model moved to a new offset. **After changing the partition table, flash all
+five images** — app alone leaves the old table in place and the kit looks for its model
+where it no longer is. The table still has the old `faces` partition; this build never
+reads it, and it stays so `model` does not move. The command is in [Flash it](#flash-it).
 
-## Watching it without hardware
+## The Waveshare ESP32-P4 board
 
-`sim/` builds the same `face_view.c` / `face_motion.c` / `face_assets.c` for the host and
-renders them into a memory buffer. See **Simulator** below.
+The same firmware also builds for the **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C**: an
+ESP32-P4 (rev 3, 32 MB PSRAM, 16 MB flash), a 4" 720×720 JD9365 MIPI-DSI panel, GT911
+touch, an ES8311 DAC with its amplifier, an ES7210 four-channel ADC with two microphones,
+and an **ESP32-C6** for Wi-Fi 6 and BLE. Nothing is wired by hand — every pin is the
+board's (`main/board_pins.h`, from Waveshare's BSP).
+
+What differs from the S3 kit:
+
+| | ESP32-S3 bench kit | ESP32-P4 board |
+| --- | --- | --- |
+| Panel | ST7701S RGB, `main/st7701.c` | JD9365 MIPI-DSI, `main/lcd_p4.c` |
+| Photos | `gallery/gallery.bin` (480) | `gallery/gallery-720.bin` — bake with `-Side 720` |
+| Audio | INMP441 + MAX98357A, `main/audio.c` | ES7210 + ES8311 through `esp_codec_dev`, `main/audio_p4.c` |
+| Wake word | WakeNet on the raw mic, half-duplex | ESP-SR AFE with **echo cancellation** (`BUDDY_AEC`) |
+| Wi-Fi, BLE | on-chip | the C6, over SDIO, via `esp_hosted` + `esp_wifi_remote` |
+| Wake from sleep | BOOT | **RESET** (BOOT is GPIO 35, not an LP GPIO) |
+
+Build — IDF 5.5, with `ESP_IDF_VERSION=5.5` in the environment (esp_wifi_remote's
+Kconfig picks its files by that variable; without it the Wi-Fi remote menu silently
+vanishes and esp_hosted falls back to SPI). IDF layers `sdkconfig.defaults.esp32p4`
+over `sdkconfig.defaults` by itself:
+
+    idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
+
+The C6 must run esp_hosted's slave firmware; Waveshare ships it so.
+
+This board uses `partitions-32mb.csv` and 32 MB of flash, because the face is baked for
+its own panel and that costs what the pixels cost — see below. Everything in that table
+stays under 16 MB: a first cut pushed `model` past that line, esptool wrote and verified
+it there, and the firmware then read the partition back as garbage through the flash
+cache and boot-looped inside ESP-SR's model loader. Proving out >16 MB mapping is its
+own job; until someone does it, the top half of the chip is unused.
+
+### Re-baking the face for a panel
+
+`main/generated/face_assets.c` is committed, so the firmware builds without the baker —
+but it is baked for one size, and that size is `SIZE` in `tools/bake_face.ts`: **720**
+for this board's JD9365, 240 for the old GC9A01. The art is vector, so changing it
+re-rasterises rather than upscales. The cost is area, in ARGB8888: 465 KB at 240, about
+4.1 MB at 720, which is the whole reason for the 32 MB table above.
+
+`tools/bake_face.ts` is deliberately untracked (it imports from `../buddyos-stem-fe` and
+cannot compile without it), so if you have it, edit `SIZE` and run:
+
+    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_face.ts \
+        --bundle --platform=node --format=cjs --outfile=/tmp/bake.cjs \
+        --loader:.webp=text --loader:.png=text \
+    && MASCOT_SRC=$PWD/src/assets/mascots/sprout.webp \
+       node /tmp/bake.cjs ../buddyos-stem-display-firmware/main/generated
+
+`MASCOT_SRC` is not optional, whatever the comment in the file says: the command above
+bundles to CJS, where `import.meta.url` is `undefined`, so the relative path the baker
+would otherwise derive throws `ERR_INVALID_URL`. Needs `rsvg-convert` and `magick`.
+
+### The characters, and why they are baked at 384
+
+`main/face_catalogue.c` reads the characters out of the `faces` partition and
+memory-maps them, so they cost no RAM; `tools/bake_catalogue.ts` generates that
+image. Neither the partition's contents nor the baker are in the repo — the baker is
+untracked for the same reason `bake_face.ts` is, and the partition is written by
+hand — so a kit shows the one character baked into the firmware until someone bakes
+and flashes the rest:
+
+    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_catalogue.ts \
+        --bundle --platform=node --format=cjs --outfile=/tmp/cat.cjs \
+        --loader:.webp=dataurl --loader:.png=dataurl \
+    && node /tmp/cat.cjs face_catalogue.bin
+
+    esptool --chip esp32p4 -p PORT write-flash 0xd12000 face_catalogue.bin
+
+The offset is the `faces` partition's; `partitions-32mb.csv` is the authority and it
+moves if the table changes. The kit says what it found at boot — `3 characters
+mapped from flash, 1506 KB, no RAM` — and names them.
+
+**`SIZE` in that baker is 384, and that is forced by arithmetic.** A background is
+RGB565A8 at SIZE², so at the panel's own 720 one character is 1,519 KB and three are
+5,295 KB — 345% of a 1,536 KB partition. At 384 the three come to 1,506 KB, which is
+98% of it. The firmware resamples each character up to the panel once, when it is
+worn, so the cost is paid at a character change rather than per frame. More than
+three characters, or a sharper one, needs the partition re-cut — which in turn needs
+the 4.1 MB of baked artwork out of the app slot, since everything on this board must
+stay under 16 MB.
+
+### Drawing a face this panel can move
+
+LVGL cannot animate this face, and that is structural rather than a tuning problem: its
+hardware draw units are nxp, renesas and vg_lite — there is none for Espressif — so on
+the P4 it is software by construction. Measured on the board, 720×720:
+
+| | cost per frame |
+| --- | --- |
+| LVGL, scaling the body | 250–460 ms |
+| LVGL, opaque full-screen blit, no scaling | 48–62 ms |
+| **PPA, the same move** | **13–15 ms** |
+
+So the body is composited by the **PPA** (`main/face_ppa.c`), straight into the frame
+buffer LVGL is about to draw into, and LVGL draws only the features over it. During
+motion a frame costs 23–33 ms, of which the body is 14–18 and the features the rest —
+roughly 30–40 fps for a face moving as a whole.
+
+Three things the hardware decides, all of which show up as product behaviour:
+
+- **Translation is exact.** `PPA_SR_SCAL_X_FRAG` is four bits, so scale quantises to
+  sixteenths and a breath of 1.025 rounds to nothing — but a nod or a lean is pixel
+  accurate.
+- **Rotation does not exist in hardware**, only quarter turns. The website's `shake` is
+  a ±6° rotation, so the turn is rendered *before* the frame needs it: seven copies of
+  the body at 2° steps, built the first time a design asks the head to turn (3.7 s and
+  7 MB of PSRAM, once per character). An earlier attempt kept them at the 384 bake and
+  let the PPA upscale — same information, cheaper blit, and visibly wrong: the PPA's
+  scaler is cruder than a CPU bilinear pass and drew concentric rings across the body's
+  gradient. The rotation and the upscale now happen in one CPU pass.
+- **Whole screens, not dirty areas.** The body is what erases the previous frame, so a
+  partial redraw would leave the last frame's eyes standing where the body had erased
+  around them. `LV_DISPLAY_RENDER_MODE_FULL`; LVGL still renders only when something
+  changed.
+
+### What the face does on its own
+
+- **A design previews when it arrives.** Press Save and the kit wears all seven states,
+  about a second each, then returns. Only on a *change* — `face.update` is retained, so
+  the broker replays it at every boot and a parade on every power-up would stop meaning
+  anything.
+- **Parts follow the character.** Drawn parts are authored for the built-in face, which
+  is Sprout. On Pip a designed eye sat 14 px high and a designed mouth 57 px high, which
+  is the mouth crowding up between the eyes. Each character now carries one offset per
+  feature, measured when it is worn, so switching a state between `artwork` and a drawn
+  part no longer moves the feature.
+- **Baked loops come home to the design.** A sprite track names absolute sprites, and
+  the face it was generated from is the factory's — so every time a blink or the 480 ms
+  talking cycle came home it overwrote the child's eyes. Home now means "whatever the
+  design says".
+- **A design brings its own motion.** `extra.motion` is interpreted at runtime, per
+  state and whole: re-author `speaking` and `idle` keeps the loop it was built with.
+- **The face rests when the room is quiet** (`BUDDY_FACE_ASLEEP_S`, 45 s). Without it an
+  idle state a child gave a lively loop would run for hours at nobody.
+
+### Expressions, chosen by the model
+
+omni's `visual_face_emotion` plugin can change the face mid-sentence. The kit advertises
+what it can wear when the voice socket opens — a `face2d` context listing the preset ids
+it has artwork for — and omni supplies the wording the model is given for each. A device
+sends ids; it never sends prompt text.
+
+An expression is a **second axis from state**: a Buddy can be `speaking` and `surprised`
+at once. It takes the eyes and brows and leaves the mouth, because the mouth is the part
+a child designs and letting the model overwrite it meant a designed speaking face lasted
+only until the first tag. It is cleared at the start of the next turn, not at the next
+state change — the expression arrives while omni is still `thinking`, so clearing on a
+state change wiped it the moment the state became `speaking`.
+
+Timing comes from the audio, not the text. omni reports `at_ms`, the tag's position in
+the turn, and the kit holds each expression until *its own* playback reaches that point —
+measured across one 51 s reply, every expression landed within 7–20 ms of its due point,
+which is one Opus packet.
+
+### Skills: what a program can ask this kit to do
+
+A child's program is **not run on the kit**. omni injects it into the model's prompt and
+the model decides when to act, then publishes an MQTT directive. The kit implements two
+things a program may name:
+
+| directive | effect |
+| --- | --- |
+| `face.state` | wear one of `idle · listening · thinking · speaking · busy · error · asleep` |
+| `face.rest` | settle until spoken to again |
+
+`face.rest` is what "bye bye" should mean here. It settles the face at the first lull —
+not during `speaking`, since the goodbye should be said with a face on — and **ends the
+voice session**, because resting the face alone left the socket open and the kit went on
+answering anything said near it while looking asleep.
+
+Deliberately **not** `device.sleep`, which this firmware also implements: `device.` is a
+reserved prefix omni refuses from a program (`device.reset` factory-resets a kit), and on
+this board deep sleep is undone only by the RESET button — the P4 wakes from an LP GPIO,
+BOOT is GPIO 35, and the touch panel is polled with no interrupt line. A Buddy that
+deep-slept on "bye bye" would need an adult to revive it.
+
+The user-facing version of this list is a published guide in the gateway,
+`display-kit-program-actions`.
+
+### Setting up by camera
+
+The setup screen shows the serial as a **QR** as well as text (`CONFIG_LV_USE_QRCODE`;
+LVGL vendors the widget, so there is no new component). It carries the serial alone, not
+a URL: stem-fe's `ScanCode` step hands whatever it decodes straight through as the
+serial, so a URL would fail the BLE name filter downstream — an empty chooser with
+nothing to debug. The printed serial stays above it, because a camera that will not focus
+is not a reason to be unable to set a kit up.
+
+### Echo cancellation and the microphone slots
+
+The ES7210 hands the P4 four TDM slots. `BUDDY_AFE_INPUT_FORMAT` says what each one is,
+in ESP-SR's letters — `M` microphone, `R` playback reference, `N` unused — and defaults
+to `MRMN`: mic, reference, mic, nothing, as Espressif's P4 boards wire it. If the board
+has **no** hardware reference (no `R` in the string), the firmware turns the first `N`
+into a software reference: every sample written to the speaker is also queued, aligned
+by the DMA depth, and fed to the AFE in that slot. A hardware loopback is better — it
+hears the amplifier, not the intention — so prove which one the board has before
+trusting either.
+
+`BUDDY_AUDIO_SELFTEST` is how: it prints each slot's level in silence, then plays a
+440 Hz tone and prints them again. The slot that rises most is the reference; it warns
+if that is not the one the format string calls `R`. Then it shows a live four-slot meter
+for ten seconds — talk at each microphone to find which slots they are.
+
+With AEC on, WakeNet listens to the AFE's cleaned output, so "Jarvis" works while the
+Buddy is talking, and the microphone stays open during replies. `BUDDY_AEC_KEEP_HALF_DUPLEX`
+puts the old behaviour back — mic muted while the Buddy speaks — if the cancellation
+turns out not to be enough for the gateway's speech detector.
+
+An open microphone is also what lets the child interrupt **without** the wake word: the
+cloud hears them over the reply and stops on its own, then sends a `flush_audio` status.
+The kit empties its playback queue on that, because the cloud cannot — half a second of
+the abandoned sentence is already here, queued and in the codec's DMA, and playing it
+out would sound exactly like not having been heard. Saying "Jarvis" still works and is
+still faster, since it needs no round trip. Whether the cloud interrupts itself at all
+depends on the persona: `profile_settings.interruption` must not be `none`.
+
+> **The kit needs `BUDDY_UPLINK_GAIN_DB` for any of this to work**, and until
+> 2026-10-22 it did not have it. Without the gain the kit was audible to omni's
+> recogniser and invisible to its interrupter, which looked like "barge-in is broken"
+> and was really "the audio is 40 dB too quiet".
+>
+> Measured against staging omni's own VAD telemetry, with a working Heymates device on
+> the same cluster for comparison:
+>
+> | | loudness | Silero score | speech episodes |
+> | --- | --- | --- | --- |
+> | kit, no uplink gain | -62.9 dBFS | 0.03 | none in 114 s |
+> | kit, +30 dB | -29.3 dBFS | 0.60-0.83 | start/end, 2.8 s |
+> | `HHMST26330000006` | -22.5 dBFS | 0.91-0.97 | normal |
+>
+> With the gain, barge-in works on the **fast VAD path**, with `vad_processor` loaded
+> and left on its defaults — `speaking_started` 30951, `flush_audio` 45219,
+> `interrupted` 45268. Talking over the Buddy stops it, as it does in a browser.
+>
+> Two theories this killed, both of which had been written down as fact. Silero was
+> **not** rejecting the kit for being 16 kHz upsampled to 48 — it simply never heard
+> speech at -63 dBFS. And `loudness_at_onset` was never the blocker: the editor's
+> "Very sensitive" removes that gate and changes nothing, because a 0.03 score fails
+> the probability threshold long before any loudness gate is consulted.
+
+### How hard to suppress the echo
+
+`CONFIG_BUDDY_AEC_NLP_LEVEL` — 0 normal, 1 aggressive, 2 very aggressive, **default 2**.
+It is a knob rather than a constant because the failures either side of it are both real
+on this board, and which one bites depends on the enclosure, the volume and the room.
+
+Too low and the kit hears its own speaker: omni's speech detector takes the Buddy's
+voice for the child and the Buddy interrupts itself mid-sentence. Caught in a log at
+NORMAL — `speaking_started` 45410, `interrupted` 47819, two and a half seconds into its
+own reply.
+
+Measured on the board, echo left in the microphone while the Buddy talks, against a
+reference slot at about 15000/32768:
+
+| `BUDDY_AEC_NLP_LEVEL` | residue in the mic |
+| --- | --- |
+| 1 aggressive | `M:83/833` |
+| 2 very aggressive | `M:37/536` |
+
+Turning it to the top roughly halves what leaks through. The cost it is supposed to
+carry — NLP suppresses whoever is quieter, and the child is quieter — did not show up:
+the wake word was heard 3 of 4 times at aggressive and 5 of 6 at very aggressive. Both
+samples are far too small to separate, which is the honest reading; what they do rule
+out is the collapse that made this NORMAL in the first place.
+
+**The real fix is level, not suppression.** This board's microphone delivers speech at
+about -47 dBFS where `voice.c` reckons arm's length to be -25 — roughly 22 dB quiet.
+That is what puts WakeNet near its threshold at *any* NLP setting, what puts the child
+below omni's -30 dB VAD gate, and so what forces the trade at all. Note that raising
+`CONFIG_BUDDY_MIC_GAIN_DB` is **not** that fix: 30 -> 37 lifted the *reference* slot
+about twentyfold rather than the microphones, wrecking the cancellation it was meant to
+help. It wants the ES7210's per-channel gain instead.
+
+**What bring-up found** (2026-10-21, one board, P4 silicon v3.2):
+
+- **Ran on the board as written:**
+  - the JD9365 panel (ID `93 65 04`);
+  - the GT911 at `0x5D`;
+  - the C6's hosted firmware over SDIO;
+  - BLE setup through the C6;
+  - Wi-Fi and MQTT;
+  - the AFE pipeline (`AEC → BSS → WakeNet`, slots `MRMN`).
+- **The chip revision decides which ESP-SR links.** v3 changed the encoding of the P4's
+  vector (PIE) instructions:
+  - ESP-SR 2.1.2's P4 libraries were built for older chips. WakeNet's model load faulted
+    (`MCAUSE 0x1f` in `dl_esp32p4_memcpy`).
+  - The voice session starts once Wi-Fi is up, so the kit rebooted every time it got
+    online. From outside, that looked like setup failing.
+  - The fix was to move to ESP-SR 2.4.7 (`components/esp-sr/VENDORED.md`).
+- **The board has two USB-C ports:**
+  - one is the P4's own USB-Serial/JTAG;
+  - the other is a CH343 UART.
+  - Either one flashes and shows the log, and Windows gives them different COM numbers.
+- **Not yet measured:** whether "Jarvis" is heard over the Buddy's own voice, and how much
+  of the AEC claim survives a real room. With the AFE running, the internal heap's largest
+  free block is about 30 KB, so watch it when a session opens.
 
 ## Status
 
-**It runs on a panel.** First hardware bring-up 2026-09-27: an ESP32-S3-WROOM-1-N8R2
-(8 MB flash, 2 MB embedded PSRAM, chip rev v0.2) driving a GC9A01 240×240 round module over
-SPI at 40 MHz. The Buddy appears, in the child's colours, and cycles idle → listening →
-thinking → speaking with the mouth following the embedded speech clip.
+**It runs on the bench board**: an ESP32-S3-WROOM-1-N16R8 driving the ST7701S 480×480
+round panel and its touch layer, with the gallery up, Wi-Fi and the product broker
+connected, and the wake word listening. Measured on it, 2026-10-20, on a kit already set
+up (so BLE is down), with `CONFIG_BUDDY_AUDIO` and `CONFIG_BUDDY_VOICE` on:
 
-That board was wired SCK 14, MOSI 10, DC 11, CS 12, RST 13, with no backlight line. **The
-current bench board is an N16R8, rewired 2026-09-28, and its pins are different** — see
-[Wiring](#wiring), and `main/board_pins.h`, which is the only place that is kept correct.
+| Stage | Internal free | min-ever | largest block | PSRAM free | LVGL used |
+| --- | --- | --- | --- | --- | --- |
+| boot | 259,295 | 227,264 | 163,840 | 6,521,364 | — |
+| gallery up (two photos decoded) | 215,287 | 179,156 | 139,264 | 5,125,504 | 8,108 of 14,644 |
+| wifi connected | 112,723 | 76,548 | 34,816 | 5,058,520 | 8,108 |
+| mqtt connected (TLS + JWT, WakeNet loaded) | 66,487 | 39,672 | 31,744 | 4,519,932 | 8,108 |
+| running, 40 s later | 66,587 | 39,672 | 31,744 | 4,519,764 | 8,108, peak 8,660 |
+
+**Voice did not fit at first.** The same build with the first settings reached `mqtt
+connected` with 14,907 B internal free, a largest block of 6,144 and a min-ever of 1,732:
+the wake word fired, the 8 KB WebSocket task stack could not be allocated, and the gallery
+could not get 4 KB to decode a photo. Against the voice-off figures below, voice costs
+~66 KB of internal SRAM — ~21 KB of ESP-SR statics, ~23 KB of I2S DMA (six 20 ms
+buffers each way, 32-bit slots), the rest WakeNet and the voice tasks. What gave it back:
+
+- **LVGL pool 32 → 16 KB.** It peaks at 9.2 KB here.
+- **Wi-Fi static RX buffers 16 → 8**, BA window with them. Internal and DMA-capable,
+  ~1.6 KB each, held from `esp_wifi_init()`; this kit streams a few KB/s of voice.
+- **`EXT_RAM_BSS_ATTR` on the CPU-only statics** — the gallery's photo table, the Wi-Fi
+  scan lists, the voice PCM scratch — with `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`.
+- **The gallery's 4 KB decode work area falls back to PSRAM** when internal says no: a
+  slower decode beats a photo that never appears.
+
+Wi-Fi itself is the largest single consumer, ~90 KB from `esp_wifi_init()` to connected;
+the panel's draw buffer and bounce buffers are another 44 KB, taken before the radio.
+
+For comparison, with `CONFIG_BUDDY_AUDIO` off and the first settings (LVGL 32 KB, 16 RX
+buffers), as the bench build had it:
+
+| Stage | Internal free | min-ever | PSRAM free | LVGL used |
+| --- | --- | --- | --- | --- |
+| boot | 237,807 | 205,776 | 6,949,976 | — |
+| gallery up (two photos decoded) | 193,799 | 157,668 | 5,554,104 | 8,108 of 30,896 |
+| wifi connected | 101,791 | 69,496 | 5,487,992 | 8,108 |
+| mqtt connected (TLS + JWT) | 80,763 | 42,416 | 5,455,224 | 8,108 |
+| running, 50 s later | 80,863 | 42,416 | 5,455,056 | 8,108, peak 8,660 |
+
+The app image is **1.82 MB** with voice in a 3 MB slot (39% free); 1.50 MB without.
 
 ### What only hardware found
 
-Three things, none of which the simulator could have caught — worth stating, because the
-simulator is otherwise so good that it is tempting to trust it further than it goes:
+On the first, GC9A01 board — worth keeping, because each would have cost the next person
+the same bench day:
 
 - **A reset loop on the very first boot.** `mem_report("boot")` asks LVGL for a heap
   monitor *before* `lv_init()`, and LVGL 9.2 walks an empty pool list, leaves `total_size`
-  at 0 and divides by it. The simulator only ever reports after init, so it never asked the
-  question at a moment when the answer was fatal.
-- **Every colour wrong.** LVGL stores RGB565 low byte first; the panel clocks the high byte
-  first. The face was pixel-perfect in shape and cyan-green with purple contour bands. The
-  simulator renders into host memory and displays from host memory, so the two endiannesses
-  cancel and it has always looked right. Confirmed *before* touching the board by applying
-  the same swap to a simulator frame and matching it against the photograph.
-- **The lip-sync classifier cost 134% of a core.** See below.
+  at 0 and divides by it.
+- **Every colour wrong on an SPI panel.** LVGL stores RGB565 low byte first; the GC9A01
+  clocked the high byte first. The ST7701S is fed 16 data lines at once, so this build
+  does not swap — see `flush_cb` in `main/main.c`.
+- **240 MHz and `-O2` were never turned on.** 2.3x for no code and no memory; they are in
+  `sdkconfig.defaults` now.
 
-### Lip-sync on silicon
-
-| | µs of CPU per frame | per 16 ms of audio |
-| --- | --- | --- |
-| First measurement | 21,433 | **134%** of a core |
-| After the ring buffer | 1,777–1,865 | ~11% of a core |
-| At 240 MHz with `-O2` | 776–815 | **~4.9%** of a core |
-
-The first version slid its analysis window with a 511-sample `memmove` for **every arriving
-sample** — 16 MB/s of copying to advance an audio pointer. A ring buffer walked once per hop
-does the same arithmetic in the same order, so the conformance golden did not move: still
-149 of 149 frames.
-
-The first two figures were at **160 MHz with `-Og`** — the part's own frequency and the
-compiler's optimiser were simply never turned on. Turning both on is 2.3x for no code and
-no memory; internal free went *up*, because `-O2` lays the image out differently. They are
-in `sdkconfig.defaults` now.
-
-**27x separates the first measurement from the current one**, and only the first factor of
-twelve was a bug. The rest was headroom nobody had claimed.
-
-### Static sizes
-
-As of 2026-09-26, ESP32-S3 with Wi-Fi and MQTT linked in, PSRAM enabled:
-
-| | face only | with Wi-Fi + MQTT | + lip-sync |
-| --- | --- | --- | --- |
-| Static IRAM | 68,582 B | 94,566 B (26.1%) | 94,566 B |
-| Static D/IRAM | 46,808 B | 68,512 B (19.8%, **277,344 B free**) | 75,736 B (21.9%, **270,120 B free**) |
-| App image | 669,673 B | 1,332,841 B (of a 2 MB partition) | 1,432,989 B |
-
-The lip-sync column is the demo build (`CONFIG_BUDDY_LIPSYNC_DEMO`), so its flash figure
-carries 76,800 B of embedded speech that a product build would not. What the classifier
-itself costs is **2,094 B of code and 7,204 B of RAM** — three 512-float arrays and the
-sample window, static rather than heap so the cost is visible here instead of arriving
-during a call. Halving `FRAME` would halve the RAM and the arithmetic; it would also halve
-the frequency resolution, which is what separates /i/ from /u/, so it is not free.
-
-RAM cost of the radio, by archive: `libpp` 13,942 B, `libnet80211` 11,997 B, `liblwip`
-3,721 B, `libesp_wifi` 862 B, `libmbedtls` 266 B, `libmqtt` 0 B (all flash).
-
-### Runtime, from the board
-
-The figure the planning docs kept asking for, measured 2026-09-27:
-
-| Stage | Internal free | min-ever | largest block | PSRAM free |
-| --- | --- | --- | --- | --- |
-| boot | 283,919 | 283,919 | 188,416 | 2,094,528 |
-| face up | 259,167 | 259,167 | 163,840 | 2,094,244 |
-| wifi init | 176,563 | 176,563 | 81,920 | 2,033,072 |
-| wifi started | 176,327 | 174,523 | 81,920 | 2,031,500 |
-| wifi connected | 175,939 | 174,523 | 81,920 | 2,030,596 |
-| mqtt started | 166,667 | 166,667 | 69,632 | 2,029,964 |
-| mqtt connected | 171,711 | 166,135 | 69,632 | 2,029,764 |
-
-…the same run over **TLS** to a public test broker, and then to **the product's own EMQX**
-with a device JWT:
-
-| Stage | Internal free | min-ever | largest block |
-| --- | --- | --- | --- |
-| mqtt connected, TLS (mosquitto) | 137,863 | 130,175 | 36,864 |
-| **mqtt connected, TLS + JWT (EMQX)** | **129,895** | **126,459** | **32,768** |
-
-The real broker costs ~8 KB more than the test one — a 4 KB client buffer for the token, the
-token itself, and a longer client id — and that is the configuration the product will ship,
-so **32,768 B is the largest contiguous internal block a feature can actually ask for.**
-
-LVGL's own heap: **6,744 B used of 31,112, peak 6,744, 1% fragmented** with the face up —
-against the 13,320 B the simulator predicted, so the 32 KB pool has room to spare.
-
-**The whole face costs 24,752 B of internal SRAM at runtime**, almost all of it the two DMA
-draw buffers. Bringing the radio up costs another ~82,700 B and, more importantly, **halves
-the largest contiguous block** from 163,840 to 81,920 B — which is the number to watch,
-because it is contiguity rather than total free that kills a DMA allocation.
-
-### A face designed on the website, on the device
-
-The flow the whole stack was built toward, working on 2026-09-27:
-
-    studio saves  ->  gateway stores and publishes  ->  kit redraws
-                      {env}/stem/device/{serial}/directive
-
-**616 bytes** crossed the wire for a complete redesign — **all seven states** the website
-authors, the eyes, mouth and brows of each, and how the Buddy talks. Never pixels. The
-artwork is already here, baked from the same catalogue the website draws with, which is the
-whole premise of the faces spec and what makes a redesign feel instant rather than feel
-like a download.
-
-The device carries all seven — `idle`, `listening`, `thinking`, `speaking`, `busy`,
-`error`, `asleep` — because a conversation passes through more than four, and a state the
-device does not carry is one a child can design and never see. The built-in face is the
-front end's own `defaultFaceStates()`, imported rather than retyped, so a kit nobody has
-designed for looks exactly like a design nobody has touched.
-
-    design: idle: eyes=star mouth=grin brows=raised
-    design: listening: eyes=star mouth=grin brows=raised
-    design: thinking: eyes=star mouth=grin brows=raised
-    design: speaking: eyes=star mouth=grin brows=raised
-    design: talks in the 'cheeky' style
-    design: kept this design (426 B)
-
-It is kept in NVS and re-applied before the radio is even up, so a Buddy that loses
-power does not come back as a stranger.
-
-### Which face, during a conversation
-
-A design says what each state looks like. A **`face.state`** directive says which one to
-wear, and a conversation moves through them far faster than anything redraws a design:
-
-    {"type": "face.state", "data": {"state": "listening"}}
-
-    python3 tools/send_face.py --state thinking
-    python3 tools/send_face.py --conversation     # listening -> thinking -> speaking -> idle
-
-These are commands, not state: **never retained**, or every reconnect would replay a mood
-from an exchange that finished long ago. They are not stored either — an early version kept
-every one of them in NVS, which quietly overwrote the design a child had made, so the next
-power cut would have lost it while the log cheerfully said it was restoring their design.
-
-The demo cycle stops the moment anything drives the face, rather than talking over whoever
-is in charge. When the voice path arrives it should drive these directly from the pipeline's
-own status, which is where they will come from anyway.
-
-**The whole catalogue is baked** — 20 eyes, 8 brows, 30 mouths, 86 sprites — because a
-design arrives at runtime and may name any part in it. Baking only what the built-in
-states use would mean every second face a child made fell back to a default, which is
-ADR 0009's rule working correctly and looking exactly like a bug. It costs 1,725,456 B
-of the 2 MB app partition; the long-term home is still the `faces` partition that ADR
-0009 reserves, and this is the version that fits without it.
-
-A part this firmware does not have falls back to what the state already showed, and
-says so in the log. Motion is the one piece not applied yet: the tracks are baked, and
-reading them from a design needs an interpreter that builds tracks at runtime.
-
-    # send a face without the gateway, from a device token
-    export STEM_MQTT_USER=… STEM_MQTT_PASS=…
-    python3 tools/send_face.py --preset star --style cheeky
-    python3 tools/send_face.py --file whatever-the-studio-saved.json
-
-A device token may only *subscribe* to its directive topic — publishing there is the
-gateway's privilege — so that bench path publishes to the device's own event topic and
-needs `CONFIG_BUDDY_DESIGN_VIA_EVENT`. It reaches the same handler.
-
-**Turn the bench path off once the gateway is doing this for real, and clear anything it
-left behind.** `send_face.py` publishes retained, like the gateway, which means a test
-design keeps arriving on every reconnect — and it arrives *after* the gateway's, so it
-silently wins. That cost a confusing round of "the device is not updating" when the log
-showed the real design applying and being overwritten 80 ms later by a week-old test.
-A zero-length retained publish to the same topic is how MQTT forgets one:
-
-    python3 tools/send_face.py --clear --no-retain   # stop sending it
-    # and to delete what is already retained there, publish an empty retained payload
-
-### The characters live in their own partition
-
-**Three characters ship on this panel — Sprout, Pip and Leaf** — and the artwork lives in
-the `faces` partition ADR 0009 reserves (**589 KB of 1,536 KB**), **memory-mapped rather
-than loaded**. The pixels stay in flash and LVGL draws from where they lie, so
-six characters cost **no RAM at all**. That is the only reason they are affordable, and
-it is also why a new character is a catalogue image rather than an OTA for every device.
-
-The partition image is built by an internal tool from **character artwork that is not
-published** — so `face_catalogue.bin` cannot be produced from this repo, is not an output
-of `idf.py build`, and is deliberately absent from the flash command in
-[Flash it](#flash-it). A kit without it mounts a blank `faces` partition, says
-so in the log, and draws the Buddy compiled into the firmware. Everything else works.
-
-Flashing one, if you have built it:
-
-    # The `faces` offset depends on which partition table you built against — the
-    # tables declare sizes, not offsets, so it moves. `idf.py partition-table` prints
-    # yours. It is 0x612000 with partitions-16mb.csv and 0x412000 with partitions.csv.
-    esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash 0x612000 build/face_catalogue.bin
-
-Each character carries its body (RGB565A8, so it can be tinted) and the face its artist
-drew — the `artwork` part ids, which are bitmaps rather than shapes anything can compute.
-The drawn catalogue stays in the app: those are the same curves on every character. With
-no catalogue written, the partition reads as blank flash, the mount says so, and the kit
-shows the character baked into the firmware.
-
-**The other three are deliberately not here.** Sprout, Pip and Leaf are *heads*: they
-fill the frame and their features sit where `paint` says, so the baker erases the
-original face and a child's chosen eyes land where the old ones were. Cardboard, Robot
-and Board are objects that happen to have a face — a box on wheels, a robot with arms, a
-dev board — worn as a printed sticker or a lit screen, nothing like those ellipses. On a
-240 px round panel their bodies win the circle, their eyes come out a few pixels across,
-and the patch misses their real features so drawn parts land beside them rather than over
-them. Framing each on its head was tried and made Robot show *two* faces.
-
-They stay on the website, where a kit card is the right place for a picture of the kit. A
-kit whose design names one shows the built-in character and says so in the log. Give them
-head-first artwork and they belong here too — `ON_DEVICE` in the generator is the only
-thing that would change.
+On this board: the **main-task stack overflow** described under [The
+gallery](#the-gallery), and **PSRAM cannot run at 120 MHz** — the board's flash has no
+high-performance mode, so it stays at 80 MHz.
 
 ### Audio, proven on hardware 2026-09-28
 
@@ -583,6 +924,9 @@ the broker's* — and that fear was misplaced.
 
 ### What TLS costs, which is the number to carry forward
 
+*Measured on the GC9A01 / N8R2 board, before this build; "face up" was the screen's own
+cost then. The lesson — contiguity, not total free — still holds.*
+
 A connected plaintext broker leaves 171,711 B free with a 69,632 B largest block. The same
 broker over TLS leaves **137,863 B** free with a **36,864 B** largest block, and the
 low-water mark through the handshake is **130,175 B** — so a single MQTT TLS session costs
@@ -623,8 +967,9 @@ container cannot see the serial port: build in Docker, then flash from the host
 prints. A `mqtts://` broker URI switches on certificate verification against IDF's bundled
 public roots; nothing else needs changing.
 
-Every milestone logs one `mem` line — `boot`, `face up`, `wifi init`, `wifi started`,
-`wifi connected`, `mqtt started`, `mqtt connected`, then `running` periodically:
+Every milestone logs one `mem` line — `boot`, `gallery up`, `wifi init`, `wifi started`,
+`wifi connected`, `mqtt started`, `mqtt connected`, then `running` periodically and
+`gallery pN` after every swipe:
 
     I (mem) [mqtt connected] internal: free N, min-ever N, largest N | dma: free N, largest N
     I (mem) [mqtt connected] psram:    free N, min-ever N
@@ -639,98 +984,13 @@ Worth running twice, with `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` on and off: on 
 answer for this board, off is the pessimistic case and tells you how much of the margin is
 really PSRAM's doing.
 
-## Lip-sync
+## Open questions
 
-The mouth shape comes from **the audio, never the text**. This product speaks Vietnamese
-and English and switches between them inside a sentence; text would mean grapheme-to-
-phoneme rules per language, while a vowel's formants are the same in either and a
-fricative is noise in both. `main/face_lipsync.c` is a transcription of the website's own
-viseme classifier, and the thresholds are **generated** into
-`main/generated/face_assets.c` by the baker rather than copied — the same discipline as the
-easing table.
-
-Two rules in that file carry most of the weight, and both were learned the expensive way:
-
-- **Loudness is relative.** Every persona has a cloned voice at whatever level the child
-  recorded, so a fixed gate leaves one Buddy mute and another chewing on room noise.
-- **A fricative is noise, not brightness.** "Energy above 4 kHz" fires on half of a bright
-  voice's vowels. Zero-crossing rate and spectral flatness ask the right question.
-
-`face_view_set_live_mouth()` overrides **the mouth only** — brows, eyes and the head keep
-the motion the child authored, so a Buddy that blinks and tilts while it talks goes on
-doing both.
-
-Feed it the PCM on its way to the speaker, never the microphone. A device with both would
-otherwise lip-sync to the room, and to itself.
-
-### Holding it to the website's answer
-
-    docker run --rm -v "$PWD":/fw -w /fw espressif/idf:v5.2.2 bash tools/xcheck.sh
-
-Two generated goldens, both emitted from the website's own TypeScript and **committed
-here** so this check runs with nothing but this repo: `main/generated/xcheck.txt` for
-motion sampling, `lipsync-xcheck.txt` for the classifier over
-`tools/lipsync-fixture.pcm` — 2.4 s of real Omnivoice speech, Vietnamese then English in
-one utterance, because code-switching is the case the design exists for. The C is fed in
-173-sample chunks that divide neither the frame nor the hop, since the decoder will not
-hand over tidy buffers either.
-
-Currently **149 of 149 frames agree**. If the two sides ever diverge, the same face
-lip-syncs differently in the studio and on the kit, and a child is the one who finds it.
-
-![lip-sync frames](docs/lipsync-strip.png)
-
-Those are simulator frames, 96 ms apart, through the fixture. Rendering them is not
-decoration: an earlier bug had two classes drawing the *same* mouth, which every number in
-the harness called healthy and only a picture showed.
-
-### What is not measured
-
-**CPU.** A 512-point FFT and a spectral flatness every 16 ms of audio is the one part of
-this that could plausibly not fit, and it has never run on silicon. The demo build logs
-`lip-sync: N us per frame` every hundred frames — that line is the measurement, and it
-needs a panel and a board to exist.
-
-## Simulator
-
-    docker run --rm -p 8080:8080 -v "$PWD":/fw -w /fw espressif/idf:v5.2.2 \
-        bash sim/build.sh --serve
-
-Then open <http://localhost:8080/>. It uses the container's *host* gcc, not the Xtensa
-toolchain, so none of the IDF-version trouble applies. LVGL is cached as a static library
-after the first build. Without `--serve` it writes one PPM per sampled moment instead —
-`docs/sim-states.png` is made that way.
-
-It plays `tools/lipsync-fixture.pcm` through the classifier while the face is in its
-speaking state, with the audio clock tied to the sim clock — so a paused frame shows a real
-mouth shape for a real instant of speech. `FACE_PCM=<file>` plays something else.
-
-It runs the same two partial draw buffers `main.c` gives the device, and reports what a
-face costs: draw buffers, LVGL heap used and peak, fragmentation, and the sprite bytes
-that live in flash rather than RAM. What it cannot see: the internal-versus-PSRAM split,
-DMA-capable memory, a 240 MHz Xtensa doing the blending, and the radio taking cycles.
-
-## Open questions blocking real work
-
-- ~~**Which panel?**~~ **Answered 2026-09-27**: GC9A01 240×240 round on SPI at 40 MHz, on
-  the bench and drawing. The draw buffers and `partitions.csv` sizing are no longer
-  provisional for this module. A *production* panel may still differ, and the one open
-  request stands: **bring the backlight out to a GPIO**, which this module does not have.
-- ~~**Which SoC and how much flash?**~~ **Answered on the bench**: ESP32-S3-WROOM-1-N8R2,
-  8 MB flash, 2 MB embedded PSRAM — the module the hardware doc already named as the current
-  choice. The 8 MB partition table is no longer a placeholder. Whether *2 MB* of PSRAM is
-  enough is a voice question, not a face one, and is still open.
-- **IDF version.** Pinned to v5.2.2 to match the org's existing Docker workflow. Note the
-  v5.5 problem we hit elsewhere was an I²C `driver_ng` conflict raised by a peripheral
-  driver this firmware does not use — so that constraint is inherited by convention here,
-  not by necessity. It may well build on a newer IDF; nobody has tried.
-
-## Design notes
-
-The product reasoning behind this firmware — why a face is part ids rather than pixels, why
-the catalogue gets its own partition, why motion is keyframes over catalogue layers — lives
-in a private planning repo and is not published. The decisions it reaches are recorded in
-this README where they affect the code, which is the part you need to work on it.
+- **IDF version.** The team pins v5.2.2; this bench builds with v5.5.5. The v5.5 problem
+  hit elsewhere was an I²C `driver_ng` conflict from a camera driver this firmware does not
+  have, so the pin is convention rather than necessity.
+- **BOOT as a wake pin** is not yet confirmed on hardware — see [Going to
+  sleep](#going-to-sleep-and-waking-up).
 
 ## Licence and support
 

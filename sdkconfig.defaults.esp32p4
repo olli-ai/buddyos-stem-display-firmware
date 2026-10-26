@@ -1,0 +1,86 @@
+# Waveshare ESP32-P4-WIFI6-Touch-LCD-4C. IDF layers this over sdkconfig.defaults by
+# itself whenever the target is esp32p4:
+#
+#   idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
+#
+# Everything in sdkconfig.defaults that names an S3 part (octal PSRAM, the RGB panel's
+# ISR, the on-chip BLE controller) either does not exist on the P4 and is ignored, or is
+# overridden here.
+
+# The board's P4 is a v3 chip (v3.2 on the bench). IDF 5.5 defaults to "v3.1 or later"
+# and refuses to boot a v3.0; asking for v3.0 runs on both. It also fixes which esp-sr
+# libraries link: v3 changed the PIE instruction encoding, and the pre-v3 build faults
+# (MCAUSE 0x1f) on the first vector instruction — components/esp-sr/VENDORED.md.
+CONFIG_ESP32P4_REV_MIN_300=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# The P4's bootloader at INFO is 0x60c0 bytes, 192 over the 0x6000 that fits below the
+# partition table at 0x8000. Quietening it is cheaper than moving the table, which
+# partitions-16mb.csv shares with the S3 build.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# 16 MB flash, and the same 3 MB app slots as the N16R8 build: partitions-16mb.csv.
+# 32 MB, which is what the board has — the bootloader was warning that the image
+# header asked for half of it. The face is baked for this panel (720x720 ARGB8888,
+# ~4.1 MB) and rides inside the app, so the slots are 8 MB; see partitions-32mb.csv.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-32mb.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions-32mb.csv"
+
+# 32 MB of PSRAM in the package, at 200 MHz — the speed Espressif's own P4 boards ship
+# at. (250 MHz exists, behind IDF's experimental features; not worth a bench day yet.)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+# The L2 cache is carved out of the P4's 768 KB of internal RAM, so 256 KB of cache
+# left ~70 KB free with the AFE running — and every Wi-Fi frame to the C6 takes a
+# 1.6 KB DMA buffer from that. A conversation on a slow link ran it dry and
+# esp_hosted asserted (2026-10-21). 128 KB is IDF's default.
+CONFIG_CACHE_L2_CACHE_128KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# The panel is MIPI-DSI with its frame buffer in PSRAM; the DPI peripheral reads it on
+# its own, so there is no bounce-buffer ISR to keep in IRAM as the S3's RGB panel needed.
+# LVGL gets more room here: internal RAM is 768 KB and the screen is 2.25x the pixels.
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# 720x720, not 480x480: the serial gets the bigger face and the rest moves up one.
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# ---- Wi-Fi and BLE: the ESP32-C6 beside the P4 -------------------------------------
+# The P4 has no radio. esp_wifi_remote presents the C6's Wi-Fi as the ordinary esp_wifi
+# API over esp_hosted (SDIO, the board's wiring is esp_hosted's P4 default), so net.c
+# does not know. The C6 must run esp_hosted's slave firmware — Waveshare ships it so.
+CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+
+# BLE setup is the same NimBLE host as on the S3, but its controller is the C6's, reached
+# through esp_hosted as a virtual HCI. So: no local controller, no UART transport.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+
+# ---- Audio ---------------------------------------------------------------------
+# esp_codec_dev builds every codec driver it has by default; this board has two.
+CONFIG_CODEC_ES8311_SUPPORT=y
+CONFIG_CODEC_ES7210_SUPPORT=y
+CONFIG_CODEC_ES8388_SUPPORT=n
+CONFIG_CODEC_ES8156_SUPPORT=n
+CONFIG_CODEC_ES7243_SUPPORT=n
+CONFIG_CODEC_ES7243E_SUPPORT=n
+CONFIG_CODEC_ES8374_SUPPORT=n
+CONFIG_CODEC_ES8389_SUPPORT=n
+CONFIG_CODEC_TAS5805M_SUPPORT=n
+CONFIG_CODEC_ZL38063_SUPPORT=n
+CONFIG_CODEC_AW88298_SUPPORT=n
+CONFIG_CODEC_CJC8910_SUPPORT=n
+
+# Jarvis, as on the S3 — but here behind echo cancellation (BUDDY_AEC), so it also
+# works while the Buddy is talking.
+CONFIG_SR_WN_WN9_JARVIS_TTS=y

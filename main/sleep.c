@@ -1,22 +1,33 @@
 /* Sleep and wake. See sleep.h for the shape and why the button is GPIO 0. */
 #include "sleep.h"
 
-#include <string.h>
-
+#include "board_pins.h"
 #include "driver/gpio.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "driver/rtc_io.h"
+#endif
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "display.h"
-#include "face_assets.h"
-#include "face_view.h"
 #include "net.h"
 #include "voice.h"
 
 static const char *TAG = "sleep";
+
+#if CONFIG_IDF_TARGET_ESP32P4
+/* Let go of the C6's reset line, held low through deep sleep (sleep_now() below). This
+ * cannot wait for app_main: esp_hosted starts the C6 from a constructor of its own,
+ * and a numbered constructor runs before every unnumbered one. A no-op on a cold boot. */
+static void __attribute__((constructor(101))) c6_reset_release(void)
+{
+    gpio_hold_dis(PIN_C6_RESET);
+}
+#endif
 
 #if CONFIG_BUDDY_SLEEP
 
@@ -29,19 +40,6 @@ void sleep_note_activity(void) { s_last_activity_ms = now_ms(); }
 
 bool sleep_woke_from_deep(void) { return s_woke_from_deep; }
 
-/* The `asleep` state the website already authors — a Buddy closing its eyes reads as a
- * character going to sleep, where a screen that simply blanks reads as a fault. Skipped
- * silently if a design does not carry one. */
-static void show_asleep_face(void)
-{
-    for (int i = 0; i < face_state_count; i++)
-        if (!strcmp(face_states[i].name, "asleep")) {
-            face_view_request_state(i);
-            vTaskDelay(pdMS_TO_TICKS(CONFIG_BUDDY_SLEEP_FACE_MS));
-            return;
-        }
-}
-
 void sleep_now(const char *reason)
 {
     if (!reason) reason = "manual";
@@ -51,8 +49,65 @@ void sleep_now(const char *reason)
     for (int waited = 0; voice_active() && waited < 30000; waited += 250)
         vTaskDelay(pdMS_TO_TICKS(250));
 
+    const int pin = CONFIG_BUDDY_SLEEP_WAKE_GPIO;
+
+#if CONFIG_IDF_TARGET_ESP32P4
+    /* The Waveshare P4 board: no LP GPIO button, so by default no wake pin at all and
+     * RESET wakes it — a cold boot, which is what a wake is anyway. See the Kconfig. */
+    if (pin >= 0 && !esp_sleep_is_valid_wakeup_gpio((gpio_num_t)pin)) {
+        ESP_LOGE(TAG, "GPIO %d cannot wake from deep sleep — staying awake. "
+                      "CONFIG_BUDDY_SLEEP_WAKE_GPIO must be an LP GPIO, 0-15, or -1.", pin);
+        sleep_note_activity();
+        return;
+    }
     ESP_LOGI(TAG, "going to sleep (%s)", reason);
-    show_asleep_face();
+    net_publish_sleeping(reason, 3000);
+    display_set_on(false);
+
+    /* A preprocessor test, not `if (pin >= 0)`: with the default -1 the shift below
+     * would still be compiled, and a negative shift count is a warning even when dead. */
+#if CONFIG_BUDDY_SLEEP_WAKE_GPIO >= 0
+    {
+        gpio_reset_pin((gpio_num_t)pin);
+        for (int waited = 0; gpio_get_level((gpio_num_t)pin) == 0 && waited < 5000; waited += 50)
+            vTaskDelay(pdMS_TO_TICKS(50));
+        rtc_gpio_pullup_en((gpio_num_t)pin);
+        rtc_gpio_pulldown_dis((gpio_num_t)pin);
+        esp_err_t err = esp_sleep_enable_ext1_wakeup_io(1ULL << pin, ESP_EXT1_WAKEUP_ANY_LOW);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "ext1 on GPIO %d refused (%s) — restarting rather than sleeping blind",
+                     pin, esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(50));
+            esp_restart();
+        }
+    }
+#endif
+
+    /* The radio is a whole second chip. Left alone the C6 stays up, associated and
+     * drawing tens of milliamps beside a P4 in microamps; held in reset it draws
+     * almost nothing. The hold survives deep sleep and is let go at boot (below),
+     * before esp_hosted pulses this same line to start the C6. */
+    gpio_set_direction(PIN_C6_RESET, GPIO_MODE_OUTPUT);
+    gpio_set_level(PIN_C6_RESET, 0);
+    gpio_hold_en(PIN_C6_RESET);
+
+    if (pin >= 0) ESP_LOGI(TAG, "deep sleep now; press GPIO %d or RESET to wake", pin);
+    else ESP_LOGI(TAG, "deep sleep now; press RESET to wake");
+    vTaskDelay(pdMS_TO_TICKS(50));           /* let the log line drain */
+    esp_deep_sleep_start();                  /* does not return */
+#else
+    /* Checked before anything is torn down, because past the next few lines the wake
+     * pin may no longer be a panel data line and there is no putting it back. Only
+     * reachable if somebody sets the wake pin outside GPIO 0-21: ext0 needs an RTC
+     * GPIO. Staying awake is a far better failure than sleeping with no way back. */
+    if (!esp_sleep_is_valid_wakeup_gpio(pin)) {
+        ESP_LOGE(TAG, "GPIO %d cannot wake from deep sleep — staying awake. "
+                      "CONFIG_BUDDY_SLEEP_WAKE_GPIO must be an RTC GPIO, 0-21.", (int)pin);
+        sleep_note_activity();
+        return;
+    }
+
+    ESP_LOGI(TAG, "going to sleep (%s)", reason);
 
     /* Tell the gateway BEFORE the radio goes, and wait for the publish to actually
      * leave. This firmware already learned the lesson once, on the BLE provisioning
@@ -62,7 +117,10 @@ void sleep_now(const char *reason)
 
     display_set_on(false);
 
-    const gpio_num_t pin = (gpio_num_t)CONFIG_BUDDY_SLEEP_WAKE_GPIO;
+    /* BOOT (GPIO 0) is also DB17 of the panel bus, driven by the LCD peripheral and
+     * unreadable while it is. The panel is dark now, so take the pin back: input with
+     * its pull-up, ready for ext0. Harmless for a wake pin the panel does not use. */
+    gpio_reset_pin(pin);
 
     /* Wake on the button going LOW (it idles high through its pull-up). If it is still
      * held from whatever triggered this, sleeping now would wake instantly — so wait for
@@ -72,19 +130,19 @@ void sleep_now(const char *reason)
 
     esp_err_t err = esp_sleep_enable_ext0_wakeup(pin, 0);
     if (err != ESP_OK) {
-        /* Only reachable if somebody sets the wake pin outside GPIO 0-21: ext0 needs an
-         * RTC GPIO. Staying awake is a far better failure than sleeping with no way back. */
-        ESP_LOGE(TAG, "GPIO %d cannot wake from deep sleep (%s) — staying awake. "
-                      "CONFIG_BUDDY_SLEEP_WAKE_GPIO must be an RTC GPIO, 0-21.",
+        /* The pin was checked above, so this is not supposed to happen. The panel has
+         * lost a data line and cannot be given it back from here: a restart is the
+         * clean way to stay awake. */
+        ESP_LOGE(TAG, "ext0 on GPIO %d refused (%s) — restarting rather than sleeping blind",
                  (int)pin, esp_err_to_name(err));
-        display_set_on(true);
-        sleep_note_activity();
-        return;
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_restart();
     }
 
     ESP_LOGI(TAG, "deep sleep now; press GPIO %d to wake", (int)pin);
     vTaskDelay(pdMS_TO_TICKS(50));           /* let the log line drain */
     esp_deep_sleep_start();                  /* does not return */
+#endif
 }
 
 static void idle_task(void *arg)
@@ -102,7 +160,7 @@ static void idle_task(void *arg)
 void sleep_init(void)
 {
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    s_woke_from_deep = (cause == ESP_SLEEP_WAKEUP_EXT0);
+    s_woke_from_deep = (cause == ESP_SLEEP_WAKEUP_EXT0 || cause == ESP_SLEEP_WAKEUP_EXT1);
     if (s_woke_from_deep)
         ESP_LOGI(TAG, "woke from deep sleep on GPIO %d", CONFIG_BUDDY_SLEEP_WAKE_GPIO);
 

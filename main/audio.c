@@ -1,110 +1,88 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "driver/i2s_std.h"
-#include "driver/gpio.h"
 #include "esp_log.h"
 #include <math.h>
 #include <string.h>
 
 static const char *TAG = "audio";
 
-/* Wiring lives in board_pins.h. The two `SD` pins are unrelated despite sharing a
- * name: on the amplifier it is shutdown (driven high to enable), on the microphone
- * it is the data line (an input to us). Getting those the same way round is the
- * wiring mistake this comment exists to prevent. */
-#define SPK_SD    PIN_SPK_SD
-#define SPK_GAIN  PIN_SPK_GAIN
+/* Wiring lives in board_pins.h. The amplifier and the microphone share one bit clock
+ * and one word clock, so both directions are the two halves of ONE I2S controller in
+ * full duplex. Two controllers — what this file used to run — would each drive their
+ * own clock onto the same wire.
+ *
+ * Sharing a clock means sharing a slot width, and the microphone dictates it: the
+ * INMP441 is a 24-bit part that wants 32-bit slots. So the speaker side is 32-bit too,
+ * and audio_write() widens each 16-bit sample into the top of a 32-bit slot, which the
+ * MAX98357A reads as the same value. */
+#define BCLK      PIN_I2S_BCLK
+#define WS        PIN_I2S_WS
 #define SPK_DIN   PIN_SPK_DIN
-#define SPK_BCLK  PIN_SPK_BCLK
-#define SPK_LRC   PIN_SPK_LRC
-
 #define MIC_SD    PIN_MIC_SD
-#define MIC_SCK   PIN_MIC_SCK
-#define MIC_WS    PIN_MIC_WS
-#define MIC_LR    PIN_MIC_LR
 
 static i2s_chan_handle_t s_tx, s_rx;
 /* Which half of the I2S frame carries the microphone. The INMP441 drives SD only
  * during the half its LR pin selects and leaves it floating during the other — so
  * reading the wrong half returns a line that is not being driven, which looks like a
  * steady noise floor that ignores every sound in the room. That is exactly what the
- * first live test showed. Both halves are captured and this picks one. */
+ * first live test showed. Both halves are captured and this picks one. LR is tied to
+ * GND on this board, so it is the left. */
 static int s_mic_slot = 0;              /* 0 = left (WS low), 1 = right */
 
 void audio_speaker_enable(bool on)
 {
-    gpio_set_level(SPK_SD, on ? 1 : 0);
-}
-
-void audio_set_gain(audio_gain_t gain)
-{
-    /* The MAX98357A reads its GAIN pin as a level, not a signal: tied to ground it
-     * is 12 dB, left floating it is 9 dB. Tying it to VDD would give 6 dB — but the
-     * amplifier runs from 5 V here and a 3.3 V GPIO is not a trustworthy "VDD", so
-     * that level is simply not offered. Floating is the default: the quietest of the
-     * two, for a device that may sit beside a bed. */
-    if (gain == AUDIO_GAIN_LOUD) {
-        gpio_set_direction(SPK_GAIN, GPIO_MODE_OUTPUT);
-        gpio_set_level(SPK_GAIN, 0);
-    } else {
-        gpio_set_direction(SPK_GAIN, GPIO_MODE_INPUT);
-        gpio_set_pull_mode(SPK_GAIN, GPIO_FLOATING);
-    }
+    /* Nothing to switch: SD is strapped to VIN through 100 k on this board, which is
+     * "on, left channel". The calls stay where a muting pin would be driven, so a board
+     * that brings SD back to a GPIO needs this function and nothing else. Between
+     * utterances the TX side sends zeros (auto_clear), which is quiet but not silent. */
+    (void)on;
 }
 
 bool audio_start(void)
 {
     if (s_tx && s_rx) return true;
 
-    gpio_config_t en = { .pin_bit_mask = 1ULL << SPK_SD, .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&en);
-    audio_speaker_enable(false);
-    audio_set_gain(AUDIO_GAIN_QUIET);
-
-    /* The INMP441's L/R pin picks which half of the frame it drives. Tied low here
-     * and read as the left channel; left floating it is neither, and the symptom is
-     * silence that looks exactly like a dead microphone. */
-    gpio_config_t lr = { .pin_bit_mask = 1ULL << MIC_LR, .mode = GPIO_MODE_OUTPUT };
-    gpio_config(&lr);
-    gpio_set_level(MIC_LR, 0);
-
-    i2s_chan_config_t tx_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     /* Silence on underrun, not the last buffer again. Left at its default, the DMA
      * replays whatever it last held whenever the voice stream runs dry for a moment
-     * — a Wi-Fi hiccup becomes a stuttering repeat of the Buddy's last syllable. */
-    tx_cfg.auto_clear = true;
+     * — a Wi-Fi hiccup becomes a stuttering repeat of the Buddy's last syllable.
+     * (It only affects the TX side.) */
+    cfg.auto_clear = true;
     /* Six 20 ms buffers: 120 ms of cover for a packet that arrives late. The default
      * (6 x 240 frames) is 90 ms, less than the 100 ms the player waits to rebuild its
-     * cushion after a real underrun. */
-    tx_cfg.dma_desc_num = 6;
-    tx_cfg.dma_frame_num = AUDIO_SAMPLE_RATE / 50;
-    if (i2s_new_channel(&tx_cfg, &s_tx, NULL) != ESP_OK) { ESP_LOGE(TAG, "no tx channel"); return false; }
+     * cushion after a real underrun. In full duplex the RX side gets the same. */
+    cfg.dma_desc_num = 6;
+    cfg.dma_frame_num = AUDIO_SAMPLE_RATE / 50;
+    if (i2s_new_channel(&cfg, &s_tx, &s_rx) != ESP_OK) { ESP_LOGE(TAG, "no I2S channels"); return false; }
+
+    /* Speaker: 32-bit mono, on the left slot — the half the amp's SD strap selects. */
     i2s_std_config_t tx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
-        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = SPK_BCLK, .ws = SPK_LRC,
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = BCLK, .ws = WS,
                       .dout = SPK_DIN, .din = I2S_GPIO_UNUSED },
     };
+    tx_std.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &tx_std));
-    ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
 
-    /* The microphone is a 24-bit part that clocks 32-bit slots. Asking for 16 bits
-     * here gets silence or noise depending on the day; the samples are narrowed in
+    /* Microphone: both halves captured, see s_mic_slot. Asking the INMP441 for 16 bits
+     * gets silence or noise depending on the day; the samples are narrowed in
      * audio_read() instead, where the shift is visible. */
-    i2s_chan_config_t rx_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
-    if (i2s_new_channel(&rx_cfg, NULL, &s_rx) != ESP_OK) { ESP_LOGE(TAG, "no rx channel"); return false; }
     i2s_std_config_t rx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = MIC_SCK, .ws = MIC_WS,
+        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = BCLK, .ws = WS,
                       .dout = I2S_GPIO_UNUSED, .din = MIC_SD },
     };
     rx_std.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_rx, &rx_std));
+
+    ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx));
 
-    ESP_LOGI(TAG, "mic on %d/%d/%d, speaker on %d/%d/%d, %d Hz mono",
-             MIC_SCK, MIC_WS, MIC_SD, SPK_BCLK, SPK_LRC, SPK_DIN, AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz",
+             BCLK, WS, SPK_DIN, MIC_SD, AUDIO_SAMPLE_RATE);
     return true;
 }
 
@@ -130,9 +108,20 @@ size_t audio_read(int16_t *samples, size_t count)
 size_t audio_write(const int16_t *samples, size_t count)
 {
     if (!s_tx) return 0;
-    size_t written = 0;
-    i2s_channel_write(s_tx, samples, count * sizeof(int16_t), &written, 1000);
-    return written / sizeof(int16_t);
+    /* Widened in 64-sample bites, into the top half of each 32-bit slot. The
+     * MAX98357A takes the most significant bits first and ignores what it has no use
+     * for, so a 16-bit sample << 16 plays at exactly the level it did as 16 bits. */
+    int32_t wide[64];
+    size_t done = 0;
+    while (done < count) {
+        size_t n = count - done < 64 ? count - done : 64;
+        for (size_t i = 0; i < n; i++) wide[i] = (int32_t)samples[done + i] << 16;
+        size_t written = 0;
+        if (i2s_channel_write(s_tx, wide, n * sizeof(int32_t), &written, 1000) != ESP_OK) break;
+        done += written / sizeof(int32_t);
+        if (written < n * sizeof(int32_t)) break;
+    }
+    return done;
 }
 
 void audio_selftest(void)
@@ -176,7 +165,7 @@ void audio_selftest(void)
     ESP_LOGI(TAG, "mic: %u samples, %.1f dBFS (DC %+.0f), peak %ld, %d%% non-zero",
              (unsigned)got, dbfs, mean, (long)peak, got ? (int)(100 * nonzero / got) : 0);
     if (!nonzero)
-        ESP_LOGE(TAG, "mic reads digital silence — check SD->%d, and that LR is tied", MIC_SD);
+        ESP_LOGE(TAG, "mic reads digital silence — check SD->%d, and that L/R is tied to GND", MIC_SD);
 
     /* Then a short, quiet A: loud enough to hear across a room, short enough not to
      * become the sound this device is remembered for. */

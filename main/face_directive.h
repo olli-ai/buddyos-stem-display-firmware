@@ -26,3 +26,22 @@ bool face_directive_receive(const char *json, size_t len);
 /** Re-apply whatever was last applied, if anything. Call once at start-up: a Buddy
  *  that forgets its face when the power blinks is a Buddy that was never designed. */
 void face_directive_restore(void);
+
+/**
+ * Expressions the model can ask for mid-sentence, as opposed to the *states* a
+ * conversation moves through. Both are the website's face presets; a state is which
+ * one the design assigns to `listening`, an expression is one the Buddy puts on
+ * because of what it is about to say.
+ *
+ * The device is the authority on which of them exist, because it is the thing with
+ * the artwork — so it advertises the list when a voice session opens, and omni
+ * supplies the wording that teaches the model what each id means.
+ */
+
+/** Write the `face2d` advertisement for the voice socket. Returns its length, or 0
+ *  if it would not fit. */
+size_t face_expressions_advertise(char *buf, size_t n);
+
+/** Wear a named expression. False — and nothing changed — if this firmware has no
+ *  such preset. */
+bool face_expression_wear(const char *id);

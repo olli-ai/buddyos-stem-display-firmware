@@ -1,0 +1,150 @@
+/* The P4 board's panel. See lcd_p4.h. */
+#include "lcd_p4.h"
+
+#include "board_pins.h"
+#include "driver/ledc.h"
+#include "esp_ldo_regulator.h"
+#include "esp_lcd_jd9365.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_log.h"
+
+static const char *TAG = "lcd";
+
+/* Waveshare's sequence for the 720x720 glass (esp32_p4_wifi6_touch_lcd_xc.c, the
+ * non-3.4" branch), one register write per entry: E0 selects the page, then a page's
+ * worth of power, gamma and GIP timing, then sleep-out and display-on. */
+#define R(c, v) { c, (const uint8_t[]){ v }, 1, 0 }
+static const jd9365_lcd_init_cmd_t s_init[] = {
+    R(0xE0, 0x00), R(0xE1, 0x93), R(0xE2, 0x65), R(0xE3, 0xF8), R(0x80, 0x01), R(0xE0, 0x01), R(0x00, 0x00), R(0x01, 0x41),
+    R(0x03, 0x10), R(0x04, 0x44), R(0x17, 0x00), R(0x18, 0xD0), R(0x19, 0x00), R(0x1A, 0x00), R(0x1B, 0xD0), R(0x1C, 0x00),
+    R(0x24, 0xFE), R(0x35, 0x26), R(0x37, 0x09), R(0x38, 0x04), R(0x39, 0x08), R(0x3A, 0x0A), R(0x3C, 0x78), R(0x3D, 0xFF),
+    R(0x3E, 0xFF), R(0x3F, 0xFF), R(0x40, 0x04), R(0x41, 0x64), R(0x42, 0xC7), R(0x43, 0x18), R(0x44, 0x0B), R(0x45, 0x14),
+    R(0x55, 0x02), R(0x57, 0x49), R(0x59, 0x0A), R(0x5A, 0x1B), R(0x5B, 0x19), R(0x5D, 0x7F), R(0x5E, 0x56), R(0x5F, 0x43),
+    R(0x60, 0x37), R(0x61, 0x33), R(0x62, 0x25), R(0x63, 0x2A), R(0x64, 0x16), R(0x65, 0x30), R(0x66, 0x2F), R(0x67, 0x32),
+    R(0x68, 0x53), R(0x69, 0x43), R(0x6A, 0x4C), R(0x6B, 0x40), R(0x6C, 0x3D), R(0x6D, 0x31), R(0x6E, 0x20), R(0x6F, 0x0F),
+    R(0x70, 0x7F), R(0x71, 0x56), R(0x72, 0x43), R(0x73, 0x37), R(0x74, 0x33), R(0x75, 0x25), R(0x76, 0x2A), R(0x77, 0x16),
+    R(0x78, 0x30), R(0x79, 0x2F), R(0x7A, 0x32), R(0x7B, 0x53), R(0x7C, 0x43), R(0x7D, 0x4C), R(0x7E, 0x40), R(0x7F, 0x3D),
+    R(0x80, 0x31), R(0x81, 0x20), R(0x82, 0x0F), R(0xE0, 0x02), R(0x00, 0x5F), R(0x01, 0x5F), R(0x02, 0x5E), R(0x03, 0x5E),
+    R(0x04, 0x50), R(0x05, 0x48), R(0x06, 0x48), R(0x07, 0x4A), R(0x08, 0x4A), R(0x09, 0x44), R(0x0A, 0x44), R(0x0B, 0x46),
+    R(0x0C, 0x46), R(0x0D, 0x5F), R(0x0E, 0x5F), R(0x0F, 0x57), R(0x10, 0x57), R(0x11, 0x77), R(0x12, 0x77), R(0x13, 0x40),
+    R(0x14, 0x42), R(0x15, 0x5F), R(0x16, 0x5F), R(0x17, 0x5F), R(0x18, 0x5E), R(0x19, 0x5E), R(0x1A, 0x50), R(0x1B, 0x49),
+    R(0x1C, 0x49), R(0x1D, 0x4B), R(0x1E, 0x4B), R(0x1F, 0x45), R(0x20, 0x45), R(0x21, 0x47), R(0x22, 0x47), R(0x23, 0x5F),
+    R(0x24, 0x5F), R(0x25, 0x57), R(0x26, 0x57), R(0x27, 0x77), R(0x28, 0x77), R(0x29, 0x41), R(0x2A, 0x43), R(0x2B, 0x5F),
+    R(0x2C, 0x1E), R(0x2D, 0x1E), R(0x2E, 0x1F), R(0x2F, 0x1F), R(0x30, 0x10), R(0x31, 0x07), R(0x32, 0x07), R(0x33, 0x05),
+    R(0x34, 0x05), R(0x35, 0x0B), R(0x36, 0x0B), R(0x37, 0x09), R(0x38, 0x09), R(0x39, 0x1F), R(0x3A, 0x1F), R(0x3B, 0x17),
+    R(0x3C, 0x17), R(0x3D, 0x17), R(0x3E, 0x17), R(0x3F, 0x03), R(0x40, 0x01), R(0x41, 0x1F), R(0x42, 0x1E), R(0x43, 0x1E),
+    R(0x44, 0x1F), R(0x45, 0x1F), R(0x46, 0x10), R(0x47, 0x06), R(0x48, 0x06), R(0x49, 0x04), R(0x4A, 0x04), R(0x4B, 0x0A),
+    R(0x4C, 0x0A), R(0x4D, 0x08), R(0x4E, 0x08), R(0x4F, 0x1F), R(0x50, 0x1F), R(0x51, 0x17), R(0x52, 0x17), R(0x53, 0x17),
+    R(0x54, 0x17), R(0x55, 0x02), R(0x56, 0x00), R(0x57, 0x1F), R(0xE0, 0x02), R(0x58, 0x40), R(0x59, 0x00), R(0x5A, 0x00),
+    R(0x5B, 0x30), R(0x5C, 0x01), R(0x5D, 0x30), R(0x5E, 0x01), R(0x5F, 0x02), R(0x60, 0x30), R(0x61, 0x03), R(0x62, 0x04),
+    R(0x63, 0x04), R(0x64, 0xA6), R(0x65, 0x43), R(0x66, 0x30), R(0x67, 0x73), R(0x68, 0x05), R(0x69, 0x04), R(0x6A, 0x7F),
+    R(0x6B, 0x08), R(0x6C, 0x00), R(0x6D, 0x04), R(0x6E, 0x04), R(0x6F, 0x88), R(0x75, 0xD9), R(0x76, 0x00), R(0x77, 0x33),
+    R(0x78, 0x43), R(0xE0, 0x00),
+    { 0x11, (const uint8_t[]){ 0x00 }, 1, 120 },
+    { 0x29, (const uint8_t[]){ 0x00 }, 1, 20 },
+    R(0x35, 0x00),
+};
+#undef R
+
+#define BL_TIMER   LEDC_TIMER_1
+#define BL_CHANNEL LEDC_CHANNEL_1
+
+static esp_lcd_panel_handle_t s_panel;
+
+static void backlight(int percent)
+{
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, BL_CHANNEL, 1023 * percent / 100);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, BL_CHANNEL);
+}
+
+esp_err_t lcd_p4_start(esp_lcd_panel_handle_t *out)
+{
+    /* Backlight first, and dark: the board drives it inverted, so an unconfigured pin
+     * would light a screen full of whatever the panel powers up showing. */
+    ledc_timer_config_t tc = {
+        .speed_mode = LEDC_LOW_SPEED_MODE, .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = BL_TIMER, .freq_hz = 5000, .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_channel_config_t cc = {
+        .gpio_num = PIN_LCD_BL, .speed_mode = LEDC_LOW_SPEED_MODE, .channel = BL_CHANNEL,
+        .timer_sel = BL_TIMER, .duty = 0, .flags.output_invert = 1,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&tc));
+    ESP_ERROR_CHECK(ledc_channel_config(&cc));
+
+    /* The D-PHY has no supply until this on-chip LDO gives it one. */
+    static esp_ldo_channel_handle_t ldo;
+    esp_ldo_channel_config_t lc = { .chan_id = BOARD_DSI_LDO_CHAN, .voltage_mv = BOARD_DSI_LDO_MV };
+    esp_err_t err = esp_ldo_acquire_channel(&lc, &ldo);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "D-PHY LDO: %s", esp_err_to_name(err)); return err; }
+
+    esp_lcd_dsi_bus_handle_t bus;
+    esp_lcd_dsi_bus_config_t bc = {
+        .bus_id = 0, .num_data_lanes = 2, .phy_clk_src = 0, .lane_bit_rate_mbps = 1500,
+    };
+    if ((err = esp_lcd_new_dsi_bus(&bc, &bus)) != ESP_OK) { ESP_LOGE(TAG, "DSI bus: %s", esp_err_to_name(err)); return err; }
+
+    esp_lcd_panel_io_handle_t io;
+    esp_lcd_dbi_io_config_t ioc = { .virtual_channel = 0, .lcd_cmd_bits = 8, .lcd_param_bits = 8 };
+    if ((err = esp_lcd_new_panel_io_dbi(bus, &ioc, &io)) != ESP_OK) return err;
+
+    /* TWO frame buffers, and LVGL renders straight into them — see lcd_p4_buffers().
+     *
+     * With one, LVGL had to blend into a small internal buffer and have draw_bitmap
+     * copy each piece across; at 720x720 that is twenty passes and twenty copies for
+     * a full frame, which measured 93 ms — about 72 CPU cycles a pixel, which no
+     * alpha blend costs. The passes were the price, not the blending. Rendering into
+     * the buffer the panel is already scanning removes both, and the second buffer is
+     * what makes that tear-free: LVGL draws one while the DMA shows the other.
+     *
+     * 720x720 RGB565 is 1 MB each, of 32 MB. On the S3, with a whole screen of
+     * 57,600 pixels, none of this was worth doing. */
+    esp_lcd_dpi_panel_config_t dpi = {
+        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 80,
+        .virtual_channel = 0,
+        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs = 2,
+        .video_timing = {
+            .h_size = LCD_P4_W, .v_size = LCD_P4_H,
+            .hsync_back_porch = 20, .hsync_pulse_width = 20, .hsync_front_porch = 40,
+            .vsync_back_porch = 12, .vsync_pulse_width = 4, .vsync_front_porch = 24,
+        },
+    };
+    jd9365_vendor_config_t vc = {
+        .init_cmds = s_init,
+        .init_cmds_size = sizeof(s_init) / sizeof(s_init[0]),
+        .mipi_config = { .dsi_bus = bus, .dpi_config = &dpi, .lane_num = 2 },
+    };
+    esp_lcd_panel_dev_config_t dc = {
+        .bits_per_pixel = 16,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .reset_gpio_num = PIN_LCD_RST,
+        .vendor_config = &vc,
+    };
+    if ((err = esp_lcd_new_panel_jd9365(io, &dc, &s_panel)) != ESP_OK) {
+        ESP_LOGE(TAG, "JD9365: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+
+    backlight(100);
+    ESP_LOGI(TAG, "JD9365 %dx%d over 2-lane MIPI-DSI, 1 MB frame buffer in PSRAM", LCD_P4_W, LCD_P4_H);
+    *out = s_panel;
+    return ESP_OK;
+}
+
+esp_err_t lcd_p4_buffers(void **fb0, void **fb1)
+{
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_dpi_panel_get_frame_buffer(s_panel, 2, fb0, fb1);
+}
+
+void lcd_p4_set_on(bool on)
+{
+    if (!s_panel) return;
+    if (!on) backlight(0);
+    esp_lcd_panel_disp_on_off(s_panel, on);
+    if (on) backlight(100);
+}

@@ -16,3 +16,20 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # 3 MB app slots: see partitions-16mb.csv.
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions-16mb.csv"
+
+# The ST7701S is an RGB panel: the LCD peripheral streams a 460 KB frame buffer out
+# of PSRAM sixty times a second, and that is what this module is for. While the flash
+# is written (OTA, NVS) the cache is off, and code or constants
+# still fetched from flash would stall the panel's DMA mid-line — a torn, scrolling
+# picture. So both are copied into PSRAM at boot. IDF 5.2 spells it as the two
+# lines; 5.3+ as XIP_FROM_PSRAM, which implies them. Whichever this IDF does not know
+# is ignored with a warning.
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# PSRAM stays at 80 MHz. 120 MHz was tried on 2026-10-20 and boot-looped: on this module
+# (quad flash, octal PSRAM) the two share the MSPI clock, so PSRAM at 120 needs flash at
+# 120 too, and that needs the flash's High Performance Mode. The flash on our N16R8 is a
+# Puya part (JEDEC 0x85 0x2018) that IDF has no HPM driver for, and startup aborts with
+# "The flash model has not been verified". PSRAM itself passed its memory test at 120.
