@@ -21,6 +21,8 @@
 #include "setup_ui.h"
 #if CONFIG_BUDDY_SCREEN_FACE
 #include "audio.h"
+#include "esp_netif_sntp.h"
+#include <time.h>
 #include "face_directive.h"
 #endif
 #include "board_pins.h"
@@ -235,6 +237,10 @@ static bool handle_activate_status(const char *data, int len)
     return mine;
 }
 
+/* Defined below, beside the rest of the clock. Declared here because the event
+ * handler that starts it is written above it. */
+static void time_sync_start(void);
+
 static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)data;
@@ -265,9 +271,53 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "got ip " IPSTR, IP2STR(&e->ip_info.ip));
         mem_report("wifi connected");
+        time_sync_start();
         xEventGroupSetBits(s_events, GOT_IP);
     }
 }
+
+/* The wall clock.
+ *
+ * Nothing on this board keeps time across a power cut, and `time(NULL)` counts from
+ * 1970 until something says otherwise — which is why the clock face waits for
+ * net_time_valid() rather than drawing 00:00:07 and climbing.
+ *
+ * Started on the first address rather than at boot: it needs a route, and a kit that
+ * never joins a network should not retry forever. The library keeps it in step
+ * afterwards on its own schedule.
+ */
+static bool s_time_set;
+
+static void on_time_sync(struct timeval *tv)
+{
+    (void)tv;
+    s_time_set = true;
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char when[32];
+    strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tm);
+    ESP_LOGI(TAG, "clock set: %s (%s)", when, CONFIG_BUDDY_TZ);
+}
+
+static void time_sync_start(void)
+{
+    static bool started;
+    if (started) return;
+    started = true;
+    /* Set before the first reading, not after: localtime_r() on a kit that has not
+     * been told its zone silently answers in UTC, and an hour out is the kind of
+     * wrong nobody reports as a bug. */
+    setenv("TZ", CONFIG_BUDDY_TZ, 1);
+    tzset();
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_BUDDY_SNTP_SERVER);
+    cfg.sync_cb = on_time_sync;
+    cfg.start = true;
+    if (esp_netif_sntp_init(&cfg) != ESP_OK)
+        ESP_LOGW(TAG, "no SNTP; the kit will keep showing its face instead of a clock");
+}
+
+bool net_time_valid(void) { return s_time_set; }
 
 static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
 {

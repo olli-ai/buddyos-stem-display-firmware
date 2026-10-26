@@ -94,7 +94,7 @@ in a box — same provisioning, same voice. See **[Build one yourself](#build-on
 2. **The gallery** — photos baked into the app, decoded on demand into PSRAM, one swipe
    apart. See [The gallery](#the-gallery).
 3. **The kit around it, unchanged** — BLE Wi-Fi setup, MQTT to the gateway, the wake word
-   and the voice path, and deep sleep.
+   and the voice path, and what it does when nobody is there.
 
 ## What this repo is *not*
 
@@ -247,16 +247,29 @@ Two known rough edges, both on the detector rather than the pipeline:
 - **Half-duplex while speaking.** There is no echo cancellation yet, so the microphone is
   muted while the Buddy talks; you cannot interrupt it mid-sentence by voice.
 
-### Going to sleep, and waking up
+### Being left alone: the clock
 
-After **three minutes of quiet** (`CONFIG_BUDDY_SLEEP_IDLE_S`, 0 disables) the kit tells
-the gateway, blanks the panel and enters **deep sleep**. Touching the screen counts as
-somebody being there, so a child swiping through the photos keeps it awake. A
-`device.sleep` directive does the same thing on demand. **Press BOOT to wake it.**
+After **three minutes of quiet** (`CONFIG_BUDDY_CLOCK_IDLE_S`) the face gives way to the
+time and the date, and the kit **stays awake and keeps listening**. "Jarvis" still works,
+and the first touch puts the face back. Touching the screen counts as somebody being
+there, so a child swiping through the photos never sees it.
 
-**While it is asleep, "Jarvis" does nothing.** Deep sleep has no microphone, so the button
-is the only way back. That is the trade for microamps, and it is the thing most likely to
-surprise somebody — on a bench, set `CONFIG_BUDDY_SLEEP_IDLE_S=0`.
+The time comes from SNTP once the kit has an address, in the zone named by
+`CONFIG_BUDDY_TZ` — `ICT-7` is UTC+7, and note that POSIX inverts the sign. A kit that has
+never been online keeps its face instead, because a clock reading 00:00 is worse than no
+clock.
+
+### Deep sleep, and why idle no longer reaches it
+
+`CONFIG_BUDDY_SLEEP_IDLE_S` now defaults to **0**. Idle used to blank the panel and enter
+deep sleep, which made a kit left on a shelf look broken, and on the P4 it could only be
+undone with the RESET button — BOOT there is GPIO 35, not an LP GPIO, so it cannot wake
+the chip. Being left alone meant needing an adult.
+
+What remains is the explicit `device.sleep` directive, for someone who asked. **While it
+is asleep, "Jarvis" does nothing** — deep sleep has no microphone, so the button is the
+only way back, and on a board whose button cannot wake it there is no way back at all.
+Read `CONFIG_BUDDY_SLEEP_WAKE_GPIO` before turning the idle timer back on.
 
 Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The gallery
 is drawn before the radio starts, so the photos are back long before the network is.

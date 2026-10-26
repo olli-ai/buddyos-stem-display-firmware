@@ -29,14 +29,22 @@ static void __attribute__((constructor(101))) c6_reset_release(void)
 }
 #endif
 
-#if CONFIG_BUDDY_SLEEP
-
+/* "Nothing has happened for a while" is asked by two features now — the clock that
+ * replaces the face, and deep sleep — so the timestamp and its one-line reader live
+ * outside CONFIG_BUDDY_SLEEP. They used to be inside it, which was fine while deep
+ * sleep was the only thing that cared, and would have meant ten call sites quietly
+ * doing nothing the moment someone turned it off. */
 static volatile int64_t s_last_activity_ms;
-static bool s_woke_from_deep;
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 void sleep_note_activity(void) { s_last_activity_ms = now_ms(); }
+
+int64_t sleep_idle_ms(void) { return now_ms() - s_last_activity_ms; }
+
+#if CONFIG_BUDDY_SLEEP
+
+static bool s_woke_from_deep;
 
 bool sleep_woke_from_deep(void) { return s_woke_from_deep; }
 
@@ -153,7 +161,7 @@ static void idle_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (voice_active()) { sleep_note_activity(); continue; }
-        if (now_ms() - s_last_activity_ms >= limit_ms) sleep_now("idle");
+        if (sleep_idle_ms() >= limit_ms) sleep_now("idle");
     }
 }
 
@@ -176,7 +184,6 @@ void sleep_init(void)
 #else  /* !CONFIG_BUDDY_SLEEP */
 
 void sleep_init(void) {}
-void sleep_note_activity(void) {}
 void sleep_now(const char *reason) { (void)reason; }
 bool sleep_woke_from_deep(void) { return false; }
 

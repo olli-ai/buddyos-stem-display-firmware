@@ -45,6 +45,7 @@
 #endif
 #include "status.h"
 #include "volume_ui.h"
+#include "clock_ui.h"
 #include "setup_ui.h"
 #include "mem_report.h"
 #include "net.h"
@@ -136,6 +137,11 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
         sleep_note_activity();
+#if CONFIG_BUDDY_CLOCK
+        /* The first touch is for dismissing the clock and nothing else: landing on
+         * the volume icon behind it would be a press the child could not have aimed. */
+        if (clock_ui_visible()) { clock_ui_show(false); data->state = LV_INDEV_STATE_RELEASED; return; }
+#endif
 
         const int32_t h = lv_display_get_vertical_resolution(NULL);
         if (!s_touched) {
@@ -189,6 +195,15 @@ static void face_timer(lv_timer_t *t)
     (void)t;
     static int64_t origin;
     static int state = -1;
+#if CONFIG_BUDDY_CLOCK
+    /* Nothing to animate under an opaque clock. Measured on the P4 before this
+     * existed: the face went on rendering at ~40 ms a frame, nine times a second,
+     * behind a screen showing the time — which is most of a core spent on a picture
+     * nobody can see, for as long as the kit is left alone. Stopping here rather
+     * than pausing the timer keeps the animation's own clock (`origin`) running, so
+     * the demo cycle resumes where it would have been instead of jumping. */
+    if (clock_ui_visible()) return;
+#endif
     if (origin == 0) origin = esp_timer_get_time();
     uint32_t ms = (uint32_t)((esp_timer_get_time() - origin) / 1000);
     if (!face_view_is_driven()) {
@@ -276,6 +291,9 @@ void app_main(void)
 #endif
     status_create(scr);                  /* after the screen: drawn above it */
     volume_ui_create(scr);               /* and the volume bar above that */
+#if CONFIG_BUDDY_CLOCK
+    clock_ui_create(scr);                /* and the clock over everything */
+#endif
 #if CONFIG_BUDDY_NET
     /* Last of the three, and before net_start() below: a kit that has never been set
      * up calls setup_ui_set() from the net task the moment that task starts. */

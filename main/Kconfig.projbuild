@@ -71,20 +71,67 @@ config BUDDY_GATEWAY_HOST
         start the voice socket and says so in the log.
         The voice socket dials wss://<host>/v1/stem/voice/stream.
 
+config BUDDY_CLOCK
+    bool "Show a clock when the kit has been left alone"
+    default y
+    help
+        After BUDDY_CLOCK_IDLE_S of quiet the face gives way to the time and the
+        date, and the first touch or wake word brings it back. The kit stays awake
+        and keeps listening the whole time.
+
+        This is what idle does instead of deep sleep. Deep sleep blanks the panel
+        and, on the P4, can only be undone with the RESET button — BOOT is GPIO 35
+        and cannot wake the chip — so a kit left alone on a shelf became a kit that
+        needed an adult. A clock is useful while it waits.
+
+        Needs the network: the time comes from SNTP (BUDDY_TZ). Until it has been
+        set the kit keeps showing its face, because a clock reading 00:00 is worse
+        than no clock.
+
+config BUDDY_CLOCK_IDLE_S
+    int "Seconds of quiet before the clock replaces the face"
+    depends on BUDDY_CLOCK
+    range 10 3600
+    default 180
+    help
+        Counted from the last thing the kit did or was told. Longer than
+        BUDDY_FACE_ASLEEP_S, which only rests the face: a Buddy dozes first and
+        becomes a clock after.
+
+config BUDDY_TZ
+    string "Timezone, POSIX TZ format"
+    default "ICT-7"
+    help
+        What the clock shows. POSIX TZ, where the offset sign is inverted from the
+        usual one: "ICT-7" is UTC+7 (Vietnam), "GMT0BST,M3.5.0/1,M10.5.0" is the
+        UK with its summer time. Nothing here reads a zone database, so a region
+        with daylight saving needs its rule spelled out in this string.
+
+config BUDDY_SNTP_SERVER
+    string "Time server"
+    default "pool.ntp.org"
+    help
+        Asked once the kit has an address, and then on the library's own schedule.
+
 config BUDDY_SLEEP
-    bool "Sleep when idle, and on a device.sleep directive"
+    bool "Deep sleep on a device.sleep directive"
     default y
     help
         Deep sleep, woken by a press of the button below. The kit blanks its panel
         and stops listening; only the button brings it back.
 
+        No longer reached by the idle timer — that shows a clock now (BUDDY_CLOCK).
+        What remains is the explicit `device.sleep` directive, which someone asked
+        for. Read BUDDY_SLEEP_WAKE_GPIO before enabling it on a board whose button
+        cannot wake the chip.
+
         See docs: display-kit-sleep-mode in the planning repo.
 
 config BUDDY_SLEEP_IDLE_S
-    int "Seconds of quiet before the kit sleeps (0 disables)"
+    int "Seconds of quiet before the kit deep-sleeps (0 disables)"
     depends on BUDDY_SLEEP
     range 0 3600
-    default 180
+    default 0
     help
         Counted from the last thing the kit did or was told: a wake word, a
         directive, a button, a conversation. NOT the same timer as

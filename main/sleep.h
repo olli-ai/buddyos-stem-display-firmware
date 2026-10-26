@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Sleep: the kit goes quiet, and one button press brings it back.
@@ -37,3 +38,7 @@ void sleep_now(const char *reason);
 
 /** True when this boot was a wake from sleep rather than a cold start. */
 bool sleep_woke_from_deep(void);
+
+/** Milliseconds since the last sleep_note_activity(). Counts whether or not deep
+ *  sleep is compiled in — the clock face uses the same idea of "left alone". */
+int64_t sleep_idle_ms(void);

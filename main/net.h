@@ -18,3 +18,7 @@ bool net_publish_sleeping(const char *reason, int timeout_ms);
  *  the panel takes GPIO 0 as a data line — it is the only moment BOOT can be read. Does
  *  not return if the reset happens. Returns at once if BOOT is not down. */
 void net_boot_reset_check(void);
+
+/** True once SNTP has set the wall clock, so `time(NULL)` means something.
+ *  Until then it counts from 1970 and the clock face stays hidden. */
+bool net_time_valid(void);
