@@ -235,11 +235,12 @@ S3 board BOOT is also one of the panel's data lines, so treat it as a button onl
 and only while the screen is dark.
 
 **What a flash keeps.** `write-flash "@flash_args"` does not touch the `nvs` partition, where
-the kit keeps its Wi-Fi and account setup, or `faces`, where the character catalogue lives
-([The characters](#the-characters-and-why-they-are-baked-at-384)). A reflashed kit comes back
-already set up. **`esptool erase-flash` removes both**: the kit returns to setup, and shows
-only the one character built into the firmware until the catalogue is written again. To
-clear just the setup, hold BOOT for 5 s instead ([Setting a kit up](#setting-a-kit-up)).
+the kit keeps its Wi-Fi and account setup, so a reflashed kit comes back already set up.
+It does write `faces`, the character catalogue
+([The characters](#the-characters-and-why-they-are-baked-at-384)), from the copy in this
+repo. **`esptool erase-flash` removes the setup**: the kit returns to setup. To clear just
+the setup without erasing anything else, hold BOOT for 5 s instead
+([Setting a kit up](#setting-a-kit-up)).
 
 **5. Watch it boot.** Opening the serial port resets the board, so a monitor always shows
 the boot from the start:
@@ -675,23 +676,26 @@ would otherwise derive throws `ERR_INVALID_URL`. Needs `rsvg-convert` and `magic
 ### The characters, and why they are baked at 384
 
 `main/face_catalogue.c` reads the characters out of the `faces` partition and
-memory-maps them, so they cost no RAM; `tools/bake_catalogue.ts` generates that
-image. Neither the partition's contents nor the baker are in the repo — the baker is
-untracked for the same reason `bake_face.ts` is, and the partition is written by
-hand — so a kit shows the one character baked into the firmware until someone bakes
-and flashes the rest:
+memory-maps them, so they cost no RAM. The catalogue is committed as
+**`faces/face_catalogue.bin`** — **Sprout, Pip and Leaf**, 1,506 KB — and the build
+flashes it with everything else: it is in `flash_args`, so [Flash it](#flash-it) puts
+the characters on the kit with no extra step. One file serves both boards; each
+resamples it to its own panel. The kit says what it found at boot —
+`3 characters mapped from flash, 1506 KB, no RAM` — and names them.
 
-    cd ../buddyos-stem-fe && npx esbuild ../buddyos-stem-display-firmware/tools/bake_catalogue.ts \
-        --bundle --platform=node --format=cjs --outfile=/tmp/cat.cjs \
-        --loader:.webp=dataurl --loader:.png=dataurl \
-    && node /tmp/cat.cjs face_catalogue.bin
+A design that picks Boxy, Bolt or Chip on the website shows Sprout here and says so in
+the log: those characters are whole objects rather than heads, and a child's chosen eyes
+would land beside their real features.
 
-    esptool --chip esp32p4 -p PORT write-flash 0xd12000 face_catalogue.bin   # P4
-    esptool --chip esp32s3 -p PORT write-flash 0x912000 face_catalogue.bin   # S3 N16R8
+The catalogue is baked from the website's artwork by `tools/bake_catalogue.ts`, which is
+not in this repo: it imports the website's source directly. Rebaking is for when the
+characters change; building never needs it.
 
-The offset is the `faces` partition's; `partitions-32mb.csv` (P4) and
-`partitions-16mb.csv` (S3) are the authority, and it moves if the table changes. The kit says what it found at boot — `3 characters
-mapped from flash, 1506 KB, no RAM` — and names them.
+To write the catalogue alone (after rebaking it, say), its offset is the `faces`
+partition's — `0x912000` on the S3 N16R8 (`partitions-16mb.csv`), `0xd12000` on the P4
+(`partitions-32mb.csv`) — and it moves if the table changes:
+
+    esptool --chip esp32s3 -p PORT write-flash 0x912000 faces/face_catalogue.bin
 
 **`SIZE` in that baker is 384, and that is forced by arithmetic.** A background is
 RGB565A8 at SIZE², so at the panel's own 720 one character is 1,519 KB and three are
@@ -1153,7 +1157,8 @@ really PSRAM's doing.
 
 ## Licence and support
 
-This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE). Vendored dependencies keep their
+This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE) — and so is the Buddy artwork it
+carries: the characters in `faces/` and the built-in face. Vendored dependencies keep their
 own licences and are listed in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) — mostly
 Apache-2.0 and MIT, but `esp-sr` (the "Jarvis" wake word) and `esp_audio_codec` are under
 Espressif's licences, which allow use only on Espressif chips.

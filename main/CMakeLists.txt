@@ -75,3 +75,20 @@ idf_component_register(
     REQUIRES ${reqs}
     EMBED_FILES ${embed}
     EMBED_TXTFILES "certs/AmazonRootCA1.pem" "certs/isrgrootx1.pem")
+
+# The characters a design can name (Sprout, Pip, Leaf), baked from the website's art by
+# tools/bake_catalogue.ts and committed as faces/face_catalogue.bin. Written with the
+# app, so `write-flash "@flash_args"` puts them on the kit and no one has to know the
+# partition's offset. The gallery build never reads them, and a table without a
+# `faces` partition has nowhere to put them.
+if(CONFIG_BUDDY_SCREEN_FACE AND CONFIG_PARTITION_TABLE_CUSTOM)
+    partition_table_get_partition_info(faces_offset "--partition-name faces" "offset")
+    if("${faces_offset}")
+        # Copied into the build dir so flash_args names it there: a build dir copied to
+        # another machine, or out of a container, still flashes on its own.
+        idf_build_get_property(build_dir BUILD_DIR)
+        configure_file("${CMAKE_CURRENT_LIST_DIR}/../faces/face_catalogue.bin"
+                       "${build_dir}/faces/face_catalogue.bin" COPYONLY)
+        esptool_py_flash_to_partition(flash "faces" "${build_dir}/faces/face_catalogue.bin")
+    endif()
+endif()

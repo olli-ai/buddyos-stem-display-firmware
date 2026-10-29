@@ -4,6 +4,12 @@ This firmware is Apache-2.0 ([`LICENSE`](LICENSE)). The components below are ven
 under `components/` or fetched before a build, and each keeps its own licence — the full
 text sits in that component's directory.
 
+**The Buddy characters are Apache-2.0 too.** The artwork in `faces/face_catalogue.bin`
+(Sprout, Pip and Leaf) and the built-in face and parts in `main/generated/face_assets_*.c`
+are BuddyOS STEM's own and are covered by [`LICENSE`](LICENSE) like the code — use,
+modify and redistribute them on the same terms. They are not third-party, and appear here
+only so nobody has to guess.
+
 | Component | Version | Licence | Upstream |
 | --- | --- | --- | --- |
 | `lvgl` (not committed — cloned before the first build) | 9.2 | MIT | <https://github.com/lvgl/lvgl> |
