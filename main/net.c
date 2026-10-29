@@ -600,6 +600,7 @@ static bool handle_setup_message(const char *json)
         const char *pass = str_of(params, "password");
         const char *env = str_of(params, "env");
         const char *gw = str_of(params, "gateway");
+        const char *murl = str_of(params, "mqtt_url");
         /* `user_jwt` is the current name; older app builds send `access_token`. */
         const char *ujwt = str_of(params, "user_jwt");
         if (!ujwt) ujwt = str_of(params, "access_token");
@@ -609,13 +610,19 @@ static bool handle_setup_message(const char *json)
         /* An app older than this kit sends no gateway; the bench host is the best
          * guess, and a wrong one only costs the voice path, never setup itself. */
         snprintf(p->gateway, sizeof(p->gateway), "%s", gw && gw[0] ? gw : CONFIG_BUDDY_GATEWAY_HOST);
+        /* Likewise the broker: an app that does not send one gets the build's default,
+         * which is the broker every environment shares today. */
+        snprintf(p->mqtt_url, sizeof(p->mqtt_url), "%s",
+                 murl && murl[0] ? murl : CONFIG_BUDDY_MQTT_URI);
         prov_set_user_jwt(ujwt);
         prov_set_mqtt_jwt(str_of(params, "mqtt_jwt"));
         p->activated = false;
         p->from_bench = false;
         if (!gw || !gw[0]) ESP_LOGW(TAG, "setup sent no gateway; using %s", p->gateway);
+        if (!murl || !murl[0]) ESP_LOGW(TAG, "setup sent no mqtt_url; using %s", p->mqtt_url);
 
-        ESP_LOGI(TAG, "joining '%s' (env %s, gateway %s)", p->ssid, p->env, p->gateway);
+        ESP_LOGI(TAG, "joining '%s' (env %s, gateway %s, broker %s)", p->ssid, p->env,
+                 p->gateway, p->mqtt_url);
         setup_ui_detail(p->ssid);
         setup_ui_set(SETUP_UI_JOINING);
         join_t r = wifi_try(p->ssid, p->password, 30000);
@@ -809,7 +816,7 @@ static void net_task(void *arg)
     snprintf(client_id, sizeof(client_id), "buddyos-stem-%s-%s", p->env, serial);
 
     esp_mqtt_client_config_t mc = {
-        .broker.address.uri = CONFIG_BUDDY_MQTT_URI,
+        .broker.address.uri = p->mqtt_url,
         .credentials.username = serial,
         .credentials.authentication.password = p->mqtt_jwt,
         .credentials.client_id = client_id,
@@ -826,7 +833,7 @@ static void net_task(void *arg)
      * moment, and on this product line a TLS handshake starved of memory has already
      * been seen to report itself as NOT_TRUSTED — sending the reader after
      * certificates rather than after RAM. */
-    if (strncmp(CONFIG_BUDDY_MQTT_URI, "mqtts://", 8) == 0) {
+    if (strncmp(p->mqtt_url, "mqtts://", 8) == 0) {
 #if CONFIG_BUDDY_MQTT_AWS_ROOT
         mc.broker.verification.certificate = amazon_root_ca1_pem_start;
         ESP_LOGI(TAG, "TLS: verifying against the embedded Amazon Root CA 1");
@@ -836,6 +843,8 @@ static void net_task(void *arg)
 #endif
     }
     if (!p->mqtt_jwt) ESP_LOGE(TAG, "no MQTT token: the broker will refuse this kit");
+    if (!p->mqtt_url[0]) ESP_LOGE(TAG, "no broker: setup sent no mqtt_url and the build has "
+                                       "no CONFIG_BUDDY_MQTT_URI, so this kit cannot register");
     ESP_LOGI(TAG, "connecting as %s (token %u B)", client_id,
              (unsigned)(p->mqtt_jwt ? strlen(p->mqtt_jwt) : 0));
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mc);
