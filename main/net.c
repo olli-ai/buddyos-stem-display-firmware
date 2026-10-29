@@ -351,8 +351,8 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         xEventGroupSetBits(s_events, PUBLISHED);
         break;
     case MQTT_EVENT_DATA:
-        /* A directive from the gateway. This build has no face, so a design or a
-         * face.state is logged and dropped; activation and sleep are acted on. */
+        /* A directive from the gateway: activation, sleep and volume here, and in the
+         * face build a design (face.update) or an expression (face.state) too. */
         ESP_LOGI(TAG, "directive on %.*s (%d B)", e->topic_len, e->topic, e->total_data_len);
         if (e->current_data_offset != 0 || e->data_len != e->total_data_len) {
             /* A directive split across MQTT fragments would need reassembly, and a
