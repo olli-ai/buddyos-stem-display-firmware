@@ -45,11 +45,9 @@ esp_err_t buddy_ble_disable(void);
 /*
  * Stops advertising AND tears the controller down, releasing its memory.
  *
- * Called once Wi-Fi is confirmed. On the vision kit this was forced (BLE and the
- * camera crashed together); on the display kit it is a choice: the controller's
- * internal RAM is what the broker's and the voice socket's TLS handshakes want, and
- * a provisioned kit has no further use for the radio. A device that needs BLE again
- * reboots into setup.
+ * Called once Wi-Fi is confirmed. The controller's internal RAM is what the
+ * broker's and the voice socket's TLS handshakes want, and a provisioned kit has
+ * no further use for the radio. A device that needs BLE again reboots into setup.
  */
 esp_err_t buddy_ble_shutdown(void);
 /*
@@ -57,7 +55,7 @@ esp_err_t buddy_ble_shutdown(void);
  *
  * esp_bt_controller_mem_release() on this board corrupts the heap -- measured
  * at 1 crash in 6 boots, invisible under heap poisoning, and surfacing far from
- * the cause. See the comment in stem_device_start() in the vision firmware.
+ * the cause.
  */
 
 bool buddy_ble_is_connected(void);

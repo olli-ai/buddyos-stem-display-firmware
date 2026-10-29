@@ -179,8 +179,7 @@ static const struct ble_gatt_svc_def SVCS[] = {
  * os_msys is NimBLE's mbuf pool: every notification sent and every write
  * received is allocated from it, and when it runs dry ble_gatts_notify_custom()
  * returns BLE_HS_ENOMEM -- which is what truncates a transfer partway through.
- * Internal heap is the other half, since the controller, the camera and TLS all
- * compete for it.
+ * Internal heap is the other half, since the controller and TLS compete for it.
  *
  * Printed on connect and disconnect so a leak reads as a ratchet across
  * successive connections rather than a number needing interpretation. Boards
