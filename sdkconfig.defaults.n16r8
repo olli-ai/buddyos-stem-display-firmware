@@ -33,3 +33,8 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # 120 too, and that needs the flash's High Performance Mode. The flash on our N16R8 is a
 # Puya part (JEDEC 0x85 0x2018) that IDF has no HPM driver for, and startup aborts with
 # "The flash model has not been verified". PSRAM itself passed its memory test at 120.
+
+# The idle clock (main/clock_ui.c) draws the time in the largest Montserrat it was
+# given. Without this the S3 gets 28 pt on the same 480x480 glass where the P4's
+# 720x720 gets 48, and the time reads as a caption rather than a clock.
+CONFIG_LV_FONT_MONTSERRAT_48=y
