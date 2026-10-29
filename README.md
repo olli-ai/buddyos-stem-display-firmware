@@ -19,6 +19,9 @@ set: the target decides, and `main/CMakeLists.txt` picks the matching face artwo
 git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
 cd buddyos-stem-display-firmware
 
+# LVGL is not committed — clone it once, before the first build
+git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
+
 # ESP32-S3-WROOM-1-N16R8 — the N16R8 overlay is not applied automatically
 idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
@@ -511,7 +514,9 @@ registry:
 
     git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 
-and bake `gallery/gallery.bin` ([The gallery](#the-gallery)) — the build needs both.
+A gallery build (`CONFIG_BUDDY_SCREEN_GALLERY`) also needs `gallery/gallery.bin` baked
+first ([The gallery](#the-gallery)); the face build carries its art in `face_assets.c` and
+needs no photos.
 
 The panel driver glue is written here rather than pulled from `esp_lvgl_port`: a display,
 one partial draw buffer in internal RAM, a flush that copies into the PSRAM frame buffer
@@ -1068,16 +1073,17 @@ really PSRAM's doing.
 ## Open questions
 
 - **IDF version.** The team pins v5.2.2; this bench builds with v5.5.5. The v5.5 problem
-  hit elsewhere was an I²C `driver_ng` conflict from a camera driver this firmware does not
-  have, so the pin is convention rather than necessity.
+  hit elsewhere was an I²C `driver_ng` conflict in a driver this firmware does not use,
+  so the pin is convention rather than necessity.
 - **BOOT as a wake pin** is not yet confirmed on hardware — see [Going to
   sleep](#going-to-sleep-and-waking-up).
 
 ## Licence and support
 
 This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE). Vendored dependencies keep their
-own licences and are listed in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md): LVGL 9.2
-(MIT) in `components/lvgl`, and `esp_lcd_gc9a01` from esp-bsp (Apache-2.0).
+own licences and are listed in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) — mostly
+Apache-2.0 and MIT, but `esp-sr` (the "Jarvis" wake word) and `esp_audio_codec` are under
+Espressif's licences, which allow use only on Espressif chips.
 
 The **cloud is not open source.** The gateway, the voice pipeline, the broker and the identity
 service are a hosted product, and a kit uses them through a normal account. That is what the
