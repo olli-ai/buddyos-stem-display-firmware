@@ -24,15 +24,20 @@ config BUDDY_WIFI_PASS
     default ""
 
 config BUDDY_MQTT_URI
-    string "MQTT broker URI"
+    string "MQTT broker URI (when setup does not send one)"
     depends on BUDDY_NET
-    default ""
+    default "mqtts://mqtt-sg.buddyos.ai:1883"
     help
-        Empty by default, and empty is the right answer for a kit that is set up
-        from the website: setup tells it where to go. Set this only for a bench
-        build that is never provisioned — e.g. mqtts://broker.example.com:8883.
-        Topics are namespaced by environment rather than by broker, see
-        BUDDY_MQTT_ENV.
+        Setup sends the broker as `mqtt_url`, and that always wins. This is the
+        fallback: for a website too old to send it, for a kit set up before it was
+        sent, and for a bench build that is never set up. It is the broker staging
+        and production share today — topics are namespaced by environment, not by
+        broker (the `env` setup sends; BUDDY_MQTT_ENV on the bench).
+
+        It defaulted to "" until 2026-10-29, on the belief that setup already sent
+        the broker. It did not: every working build had this typed into its own
+        build-dir sdkconfig, and the first clean build joined Wi-Fi, logged
+        "mqtt_client: No scheme found", and never registered.
         mqtt:// is plaintext. mqtts:// pulls in mbedTLS, whose handshake is the
         expensive moment — and on this product line a starved handshake has already
         been seen to misreport itself as NOT_TRUSTED rather than as out of memory.

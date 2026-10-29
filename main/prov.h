@@ -6,8 +6,8 @@
  * What a kit is told during setup, and keeps.
  *
  * Written by the BLE setup flow (net.c), which carries exactly what stem-fe's
- * SetupWithBluetooth.vue streams: ssid, password, user_jwt, mqtt_jwt, env, and —
- * new with this kit — gateway, the stem-gateway host the voice socket dials.
+ * SetupWithBluetooth.vue streams: ssid, password, user_jwt, mqtt_jwt, env, gateway
+ * (the stem-gateway host the voice socket dials) and mqtt_url (the broker).
  *
  * Three sources, in this order:
  *   1. NVS, from a real setup. Always wins.
@@ -21,6 +21,7 @@ typedef struct {
     char password[65];
     char env[16];            /* topic namespace; must match the MQTT token's ACL */
     char gateway[96];        /* host only, no scheme, e.g. gateway.example.com */
+    char mqtt_url[128];      /* the broker, with scheme and port: mqtts://host:port */
     char *user_jwt;          /* the owner's JWT: activation, and the voice route */
     char *mqtt_jwt;          /* the device's broker password (EMQX JWT with ACL) */
     bool activated;          /* the gateway has answered device.activate */
