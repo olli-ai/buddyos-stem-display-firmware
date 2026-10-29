@@ -174,41 +174,34 @@ config BUDDY_SLEEP_WAKE_GPIO
         mode. A press-and-release to wake should be clear of the latch, but this has
         not been confirmed on hardware.
 
-        On the ST7701S board GPIO 0 is ALSO DB17 of the panel bus. It still works
-        here because the panel is dark by the time ext0 is armed and sleep_now()
-        takes the pin back first. There is no fallback any more: every RTC GPIO is
-        in use — 0-18 by the panel and audio, 19/20 by native USB, 21 by PCLK. If
-        BOOT misbehaves as a wake pin, the answer is a different panel pin-out, not
-        a different number here.
 
 config BUDDY_BOOT_RESET
     bool "Hold BOOT (GPIO 0) for 5 s to erase setup and re-enter BLE setup"
     depends on BUDDY_NET
     default y
     help
-        On the ST7701S board BOOT is DB17 of the panel bus and cannot be read while
-        the panel runs, so it is read once at boot, before the panel starts. A cold
-        reset with BOOT held is the ROM's download mode, so in practice the gesture
-        is: while the kit SLEEPS, press BOOT and keep holding for 5 s. An awake kit
-        has to sleep first (a device.sleep directive, or the idle timer).
+        Read once at boot. A cold reset with BOOT held is the ROM's download mode, so
+        this gesture is: while the kit SLEEPS, press BOOT and keep holding for 5 s.
+        An awake kit has to sleep first (a device.sleep directive). For an awake kit,
+        BUDDY_BOOT_BUTTON_SETUP below is the gesture.
 
 config BUDDY_BOOT_BUTTON_SETUP
     bool "Press BOOT while running to set the kit up again"
-    depends on BUDDY_NET && IDF_TARGET_ESP32P4
+    depends on BUDDY_NET
     default y
     help
-        The boot-time gesture above cannot be reached on this board, so this is the
-        one that works here: while the kit runs, hold BOOT, then let go.
+        While the kit runs, hold BOOT, then let go: the kit erases its setup and comes
+        back up advertising for Bluetooth setup.
 
         BUDDY_BOOT_RESET reads the pin once, as the first thing app_main does, which
-        means something must already be holding it down by then. On the S3 that is a
-        press that woke the kit from sleep. The P4's BOOT is GPIO 35: not an LP GPIO,
-        so it cannot wake the chip, and holding it through a reset lands in the ROM's
-        download mode rather than in the firmware. No sequence reaches the check.
+        means something must already be holding it down by then — on the S3 only a
+        press that woke the kit from sleep, and the kit no longer sleeps when idle. On
+        the P4 nothing can: its BOOT is GPIO 35, not an LP GPIO, so it cannot wake the
+        chip. So this is the gesture that works on both.
 
-        GPIO 35 is BOOT and nothing else on this board, so unlike the S3's GPIO 0 —
-        which is a panel data line while the display runs — it is safe to read at
-        any time.
+        BOOT is a button and nothing else on both boards (GPIO 0 on the S3, 35 on the
+        P4), so it is safe to read at any time. It was not on the S3 while that kit had
+        an RGB panel using GPIO 0 as a data line, which is why this was the P4's alone.
 
 config BUDDY_BOOT_BUTTON_MS
     int "...how long BOOT must be held, ms"

@@ -108,6 +108,30 @@ static void send_activate(esp_mqtt_client_handle_t c)
     ESP_LOGI(TAG, "announced device.activate as %s", prov_serial());
 }
 
+/* device.factory_reset: the kit was deleted on the website. Forget the network, the
+ * tokens and the design, and come back up in setup.
+ *
+ * The gateway sends this before deleting the device's row, or on the kit's next connect
+ * if it was offline — once, with no acknowledgement. Ignoring it, as this firmware did
+ * until 2026-10-29, left a deleted kit with its Wi-Fi and a token that never expires:
+ * still connecting, still publishing, and listed nowhere a user could reach it.
+ * `device.reset` is the robokit's name for the same thing, accepted here so the two
+ * kits answer to either. */
+static bool handle_reset_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && (!strcmp(type->valuestring, "device.factory_reset") ||
+                                         !strcmp(type->valuestring, "device.reset"));
+    cJSON_Delete(j);
+    if (!mine) return false;
+    ESP_LOGW(TAG, "the gateway says this kit was removed: erasing its setup and restarting");
+    prov_factory_reset();
+    vTaskDelay(pdMS_TO_TICKS(200));           /* let the line leave the UART */
+    esp_restart();
+    return true;                              /* not reached */
+}
+
 /* device.sleep: put the kit to sleep. */
 static bool handle_sleep_directive(const char *data, int len)
 {
@@ -363,6 +387,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         sleep_note_activity();
         if (!handle_activate_status(e->data, e->data_len)
+            && !handle_reset_directive(e->data, e->data_len)
             && !handle_sleep_directive(e->data, e->data_len)
             && !handle_volume_directive(e->data, e->data_len)
 #if CONFIG_BUDDY_SCREEN_FACE
@@ -689,10 +714,9 @@ static void run_setup(void)
 
 #if CONFIG_BUDDY_BOOT_BUTTON_SETUP
 /* BOOT while the kit runs. See CONFIG_BUDDY_BOOT_BUTTON_SETUP for why this exists
- * beside net_boot_reset_check(): on this board no sequence can be holding the pin
- * down by the time that one reads it, so the only gesture that works is a running
- * one. GPIO 35 is BOOT and nothing else here, so it is safe to poll with the panel
- * up — which is exactly what the S3's GPIO 0 is not.
+ * beside net_boot_reset_check(): an awake kit cannot be holding the pin down by the
+ * time that one reads it, so the gesture that works is a running one. BOOT is a button
+ * and nothing else on both boards, so it is safe to poll with the panel up.
  *
  * Polled rather than interrupt-driven: 50 ms is far below anything a thumb can do,
  * the counter is its own debounce, and an ISR that erases NVS is not a thing to
@@ -736,10 +760,8 @@ static void boot_button_task(void *arg)
 /* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
  * gesture our other kits use, on the one button every S3 board has.
  *
- * It used to be a task polling BOOT for as long as the kit ran. It cannot be now: GPIO 0
- * is DB17, the top bit of red, and configuring it as an input takes it off the RGB bus.
- * So BOOT is read once, before the panel starts — and the only way to be holding it
- * then is to have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
+ * Read once, before the panel starts — and the only way to be holding it then is to
+ * have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
  * ROM's download mode and never reaches here. The gesture is therefore: while the kit
  * sleeps, press BOOT and keep holding. (Strapping pins are latched on a chip reset, not
  * on a wake from deep sleep, so a held BOOT does not send the wake to the bootloader —

@@ -125,9 +125,8 @@ void sleep_now(const char *reason)
 
     display_set_on(false);
 
-    /* BOOT (GPIO 0) is also DB17 of the panel bus, driven by the LCD peripheral and
-     * unreadable while it is. The panel is dark now, so take the pin back: input with
-     * its pull-up, ready for ext0. Harmless for a wake pin the panel does not use. */
+    /* The wake pin to a plain input with its pull-up, ready for ext0, whatever it was
+     * configured as before. */
     gpio_reset_pin(pin);
 
     /* Wake on the button going LOW (it idles high through its pull-up). If it is still

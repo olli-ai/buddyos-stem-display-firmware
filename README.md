@@ -10,12 +10,12 @@ say "Jarvis".
 Two boards carry this device type, and **one branch builds both**. There is no flag to
 set: the target decides, and `main/CMakeLists.txt` picks the matching face artwork.
 
-| Your board | Target | Screen |
-| --- | --- | --- |
-| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | HD21001C40 2.1" 480x480 round ST7701S |
-| **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch |
+| Your board | Target | Screen | Build directory |
+| --- | --- | --- | --- |
+| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
+| **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch | `build-p4` |
 
-**Both build with ESP-IDF v5.5.3.** Older IDF does not build this tree (the P4's panel
+Both build with **ESP-IDF v5.5.3**. Older IDF does not build this tree (the P4's panel
 driver needs 5.4 or later). No IDF installed? Use Espressif's image,
 `espressif/idf:v5.5.3` — see [Building](#building).
 
@@ -26,7 +26,7 @@ cd buddyos-stem-display-firmware
 # LVGL is not committed — clone it once, before the first build
 git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 
-# ESP32-S3-WROOM-1-N16R8 — the N16R8 overlay is not applied automatically
+# ESP32-S3-WROOM-1-N16R8 + GC9A01 — the N16R8 overlay is not applied automatically
 idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
 
@@ -34,7 +34,11 @@ idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
 idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
 ```
 
-**Voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
+**The S3 kit has no touch, so it builds with voice on.** After three quiet minutes the face
+gives way to a clock, and on this kit "Jarvis" is what brings it back — there is no screen
+to tap. `sdkconfig.defaults.n16r8` turns voice on for it.
+
+**On the P4 voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
 bringing the audio board up the first time once hung a device past the ROM bootloader
 (`main/Kconfig.projbuild` keeps the note), and `BUDDY_VOICE` hangs off it. A kit that
 should answer to "Jarvis" needs both, which is two lines in `menuconfig` or appended to
@@ -61,8 +65,7 @@ component for the other chip. `rm dependencies.lock` and build again; nothing is
 it is regenerated.
 
 **What is per board, and why.** The face is vector art rasterised offline, so its cost is
-area and each panel needs its own bake — 480x480 for the S3 (~1.7 MB), 720x720 for the P4
-(~4 MB). Both are committed and exactly one is compiled, which is why building needs
+area and each panel needs its own bake — 240x240 for the S3, 720x720 for the P4 (~4 MB). Both are committed and exactly one is compiled, which is why building needs
 nothing but ESP-IDF. `face_view.c` takes the bake's dimensions *as* the panel's, so a
 mismatched one does not scale to fit; it draws short of the edges. The P4 additionally
 compiles `face_ppa.c`, its 2D accelerator, and its own panel and audio drivers.
@@ -97,7 +100,7 @@ in a box — same provisioning, same voice. See **[Build one yourself](#build-on
 
 ## What this repo is for
 
-1. **Panel bring-up** — the ST7701S RGB panel, LVGL, the capacitive touch layer.
+1. **Panel bring-up** — the S3's GC9A01 and the P4's JD9365, LVGL, the P4's touch layer.
 2. **The gallery** — photos baked into the app, decoded on demand into PSRAM, one swipe
    apart. See [The gallery](#the-gallery).
 3. **The kit around it, unchanged** — BLE Wi-Fi setup, MQTT to the gateway, the wake word
@@ -116,18 +119,15 @@ Everything here is a common module and a breadboard. No PCB, no reflow, no custo
 | Part | What to get | Notes |
 | --- | --- | --- |
 | MCU | **ESP32-S3-WROOM-1-N16R8** devkit — 16 MB flash, 8 MB PSRAM | **Not the N8R2.** See below. |
-| Display | **HD21001C40** 2.1" 480×480 round IPS, ST7701S, 16-bit RGB + SPI init | Backlight hardwired on. Needs the octal-PSRAM N16R8 for its frame buffer. |
-| Touch | **HCY-CTP00021-A0** capacitive, I²C | Shares its reset with the panel. |
+| Display | **GC9A01** 1.28" 240×240 round TFT module, SPI | Backlight on the module's own supply. No touch. |
 | Microphone | **INMP441** I²S MEMS breakout | The same part the Robot Kit uses. |
 | Amplifier | **MAX98357A** I²S breakout | |
 | Speaker | 4 Ω, 2–3 W, small | |
 | Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
 
-**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) cannot drive this panel: an
-RGB panel is refreshed from a 460 KB frame buffer in PSRAM, continuously, and quad PSRAM
-at 80 MHz does not have the bandwidth to spare. Its 2 MB app slots also cannot hold the
-voice path *and* BLE setup together; the build fails at link time.
-The 16 MB table (`partitions-16mb.csv`) gives 3 MB slots and the app lands at 1.50 MB.
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) has 2 MB app slots, which
+cannot hold the voice path *and* BLE setup together; the build fails at link time. The
+16 MB table (`partitions-16mb.csv`) gives 4.5 MB slots.
 
 **Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
 the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
@@ -137,53 +137,33 @@ your board behaves strangely the moment audio starts, this is why.
 ### Wiring
 
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
-the file is right. As wired on the N16R8 bench board with the HD21001C40 panel:
+the file is right.
 
-| Signal | GPIO | Panel / module pin |
+| Signal | GPIO | Module pin |
 | --- | --- | --- |
-| **ST7701S** SPI CS | 42 | `CS`, 10 k pull-up to 3V3 |
-| SPI SCK | 1 | `SCK` — shared with DB1 |
-| SPI SDA | 2 | `SDA` — shared with DB2 |
-| RESET | 41 | `RESET` **and** `TP_RST` |
-| PCLK | 21 | |
-| DE | 38 | |
-| VSYNC | 39 | |
-| HSYNC | 40 | |
-| DB1–DB5 (blue) | 1, 2, 3, 8, 9 | DB0 to GND |
-| DB6–DB11 (green) | 10, 11, 12, 13, 14, 15 | |
-| DB13–DB17 (red) | 16, 17, 18, 46, 0 | DB12 to GND |
-| **HCY-CTP00021-A0** SDA | 47 | 4.7 k pull-up |
-| SCL | 48 | 4.7 k pull-up |
+| **GC9A01** SCLK | 15 | `SCL` |
+| MOSI | 16 | `SDA` |
+| DC | 17 | `DC` |
+| CS | 18 | `CS` |
+| RESET | 8 | `RST` |
 | **I²S** BCLK | 5 | MAX98357A `BCLK` **and** INMP441 `SCK` |
 | WS | 6 | MAX98357A `LRC` **and** INMP441 `WS` |
 | MAX98357A DIN | 7 | |
 | INMP441 SD | 4 | the mic's data *out*, an input to us |
 
-Hardwired, not driven: the panel backlight (LEDA to 5 V, LEDK1/2 to GND through a
-resistor each — **it cannot be dimmed or switched off**; sleep blanks the panel with
-DISPOFF/SLPIN instead), the amplifier's `SD` (100 k to VIN: on, left channel), its `GAIN`
-(floating: 9 dB) and the mic's `L/R` (GND: left). VCI, IOVCC and TP_VCI are 3V3; the
-amplifier's VIN is **5 V**.
+Hardwired, not driven: the panel backlight (`BLK` to 3V3 — **it cannot be dimmed or
+switched off**; sleep blanks the panel with DISPOFF instead), the amplifier's `SD` (100 k
+to VIN: on, left channel), its `GAIN` (floating: 9 dB) and the mic's `L/R` (GND: left).
+The panel's `VCC` is 3V3; the amplifier's VIN is **5 V**.
 
 The amp and the mic share BCLK and WS, so they are one I²S controller in full duplex
-(`main/audio.c`), not two.
+(`main/audio.c`), not two. **Wire them that way.** The first GC9A01 bench board gave the
+amp its own clock on GPIO 9–13; this build does not drive that layout, and on it the
+speaker or the microphone stays silent.
 
-This panel takes almost every pin the S3 has. Three consequences, all deliberate:
-
-- **GPIO 0, 3 and 46 are strapping pins and carry panel data.** That is why DB0 and DB12 —
-  the least significant bits of blue and red — are tied to GND rather than given pins.
-  The panel is idle at reset, so the straps read their pull resistors as usual.
-- **BOOT (GPIO 0) is DB17.** While the panel runs it is an LCD output and cannot be read.
-  It still wakes the kit from sleep (the panel is dark by then) and is read once at boot
-  for the factory reset — see [Going to sleep](#deep-sleep-and-why-idle-no-longer-reaches-it). **Do not
-  press BOOT while the screen is on:** it shorts a driven output to GND. Harmless for
-  a moment, and the top bit of red flickers, but it is not a button while awake.
-- **SCK and SDA double as DB1 and DB2.** The ST7701S is set up over SPI before the RGB
-  bus starts; `st7701_set_on()` borrows the two pins back for DISPOFF/SLPIN with CS held
-  high the rest of the time, so the panel ignores the pixel data crossing them.
-
-The GC9A01 bench board before this one used SPI on 15–18/8, a muted, gain-switched amp on
-9–13 and the mic on 4–7. Those numbers are in older notes and will not work with this build.
+GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
+while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
+the octal PSRAM (35–37), native USB (19/20) and flash (26–32) are all left alone.
 
 ### Flash it
 
@@ -299,9 +279,10 @@ Two known rough edges, both on the detector rather than the pipeline:
 ### Being left alone: the clock
 
 After **three minutes of quiet** (`CONFIG_BUDDY_CLOCK_IDLE_S`) the face gives way to the
-time and the date, and the kit **stays awake and keeps listening**. "Jarvis" still works,
-and the first touch puts the face back. Touching the screen counts as somebody being
-there, so a child swiping through the photos never sees it.
+time and the date, and the kit **stays awake and keeps listening**. "Jarvis" puts the face
+back on both boards; on the P4 the first touch does too, and touching the screen counts as
+somebody being there. The S3 kit has no touch, so on it the wake word is the way back —
+which is why its build has voice on.
 
 The time comes from SNTP once the kit has an address, in the zone named by
 `CONFIG_BUDDY_TZ` — `ICT-7` is UTC+7, and note that POSIX inverts the sign. A kit that has
@@ -340,12 +321,9 @@ selects download mode. A press-and-release to wake should be clear of the latch,
 nobody has checked. It is a minute to test: let the kit sleep, press BOOT, and see whether
 it boots or lands in the bootloader.
 
-**There is no fallback pin any more.** On the GC9A01 board GPIO 21 was the spare to move
-to if BOOT misbehaved. With the ST7701S every RTC GPIO is spoken for — 0–18 by the panel
-and the audio, 19/20 by native USB, 21 by PCLK — and BOOT works at all only because
-`sleep_now()` blanks the panel and takes GPIO 0 back from the LCD peripheral (it is DB17)
-before arming `ext0`. If BOOT turns out not to work as a wake pin, the fix is a different
-panel pin-out that frees an RTC GPIO, not a different number in `menuconfig`.
+**There is a fallback pin.** On the S3 kit the screen and the audio use only GPIO 4–8 and
+15–18 of the RTC GPIOs (0–21), so if BOOT turns out not to work as a wake pin, GPIO 21 is
+free: wire a button to it and set `CONFIG_BUDDY_SLEEP_WAKE_GPIO=21`.
 
 ### The gallery
 
@@ -371,7 +349,7 @@ System.Drawing — and it is also the only one that packs variants. It needs Ima
 (`magick`) on PATH.
 
 It turns each one upright, crops it square (keeping more of a portrait's top, where the face
-is), sizes it to 480×480 and re-encodes it as a baseline JPEG, which is the only kind the
+is), sizes it to the panel (240×240 on the S3) and re-encodes it as a baseline JPEG, which is the only kind the
 device's decoder reads. `-Demo` packs five named placeholder cards instead, to try the swipe
 before choosing any photos. **The build fails without `gallery/gallery.bin`**, on purpose,
 with a message saying so; a pack that is present but damaged degrades to fewer photos, or
@@ -579,9 +557,10 @@ A gallery build (`CONFIG_BUDDY_SCREEN_GALLERY`) also needs `gallery/gallery.bin`
 first ([The gallery](#the-gallery)); the face build carries its art in `face_assets.c` and
 needs no photos.
 
-The panel driver glue is written here rather than pulled from `esp_lvgl_port`: a display,
-one partial draw buffer in internal RAM, a flush that copies into the PSRAM frame buffer
-(`main/st7701.c`), and a tick from `esp_timer`. One fewer dependency.
+The panel driver glue is written here rather than pulled from `esp_lvgl_port`: on the S3 a
+display, two partial draw buffers in DMA-capable internal RAM, a flush that byte-swaps and
+hands the area to SPI DMA (`main/gc9a01.c`), and a tick from `esp_timer`. One fewer
+dependency.
 
 ## Setting a kit up
 
@@ -626,14 +605,15 @@ board's (`main/board_pins.h`, from Waveshare's BSP).
 
 What differs from the S3 kit:
 
-| | ESP32-S3 bench kit | ESP32-P4 board |
+| | ESP32-S3 kit | ESP32-P4 board |
 | --- | --- | --- |
-| Panel | ST7701S RGB, `main/st7701.c` | JD9365 MIPI-DSI, `main/lcd_p4.c` |
-| Photos | `gallery/gallery.bin` (480) | `gallery/gallery-720.bin` — bake with `-Side 720` |
+| Panel | GC9A01 240x240 SPI, `main/gc9a01.c`, no touch | JD9365 MIPI-DSI, `main/lcd_p4.c`, GT911 touch |
+| Photos | `gallery/gallery.bin` (240) | `gallery/gallery-720.bin` — bake with `-Side 720` |
 | Audio | INMP441 + MAX98357A, `main/audio.c` | ES7210 + ES8311 through `esp_codec_dev`, `main/audio_p4.c` |
 | Wake word | WakeNet on the raw mic, half-duplex | ESP-SR AFE with **echo cancellation** (`BUDDY_AEC`) |
 | Wi-Fi, BLE | on-chip | the C6, over SDIO, via `esp_hosted` + `esp_wifi_remote` |
 | Wake from sleep | BOOT | **RESET** (BOOT is GPIO 35, not an LP GPIO) |
+| Back from the idle clock | "Jarvis" | "Jarvis", or a touch |
 
 Build — IDF 5.5, with `ESP_IDF_VERSION=5.5` in the environment (esp_wifi_remote's
 Kconfig picks its files by that variable; without it the Wi-Fi remote menu silently
@@ -655,9 +635,9 @@ own job; until someone does it, the top half of the chip is unused.
 
 Both bakes are committed, so the firmware builds without the baker and without the
 website repo: `main/generated/face_assets_720.c` for this board's JD9365 and
-`face_assets_480.c` for the S3's ST7701S. `main/CMakeLists.txt` compiles exactly one,
+`face_assets_240.c` for the S3's GC9A01. `main/CMakeLists.txt` compiles exactly one,
 chosen on `IDF_TARGET` — they define the same symbols. The art is vector, so a new size
-re-rasterises rather than upscales. The cost is area, in ARGB8888: about 1.8 MB at 480
+re-rasterises rather than upscales. The cost is area, in ARGB8888: about 0.45 MB at 240
 and 4.1 MB at 720, which is the whole reason for the 32 MB table above.
 
 `tools/bake_face.ts` is deliberately untracked (it imports from `../buddyos-stem-fe` and
@@ -925,7 +905,13 @@ help. It wants the ES7210's per-channel gain instead.
 
 ## Status
 
-**It runs on the bench board**: an ESP32-S3-WROOM-1-N16R8 driving the ST7701S 480×480
+*The S3 measurements below were taken when the S3 kit had a 2.1" 480×480 ST7701S RGB panel
+with touch, before the GC9A01 replaced it (2026-10-29). The radio, voice and memory
+figures carry over; the panel's own costs do not — the GC9A01 needs no PSRAM frame buffer
+and no bounce buffers, and its build with voice boots with ~90 KB of internal RAM free
+before Wi-Fi connects.*
+
+**It ran on the bench board**: an ESP32-S3-WROOM-1-N16R8 driving the ST7701S 480×480
 round panel and its touch layer, with the gallery up, Wi-Fi and the product broker
 connected, and the wake word listening. Measured on it, 2026-10-20, on a kit already set
 up (so BLE is down), with `CONFIG_BUDDY_AUDIO` and `CONFIG_BUDDY_VOICE` on:
@@ -978,12 +964,11 @@ the same bench day:
   monitor *before* `lv_init()`, and LVGL 9.2 walks an empty pool list, leaves `total_size`
   at 0 and divides by it.
 - **Every colour wrong on an SPI panel.** LVGL stores RGB565 low byte first; the GC9A01
-  clocked the high byte first. The ST7701S is fed 16 data lines at once, so this build
-  does not swap — see `flush_cb` in `main/main.c`.
+  clocked the high byte first, so the S3's flush swaps — see `flush_cb` in `main/main.c`.
 - **240 MHz and `-O2` were never turned on.** 2.3x for no code and no memory; they are in
   `sdkconfig.defaults` now.
 
-On this board: the **main-task stack overflow** described under [The
+On the ST7701S board: the **main-task stack overflow** described under [The
 gallery](#the-gallery), and **PSRAM cannot run at 120 MHz** — the board's flash has no
 high-performance mode, so it stays at 80 MHz.
 
@@ -1136,10 +1121,12 @@ really PSRAM's doing.
 
 ## Open questions
 
-- **Current `master` has not run on the S3 board.** The S3 N16R8 last ran on 2026-10-20,
-  with the gallery build and voice on ([Status](#status)). Everything since — the 480×480
-  face, the two-board merge, the idle clock, the volume control — has been run on the P4
-  and only compiled for the S3. Reports from an S3 are welcome.
+- **The S3 kit has only been run without its screen.** On 2026-10-29 an S3 N16R8 with
+  nothing attached booted the GC9A01 build cleanly — panel driver up over SPI, the three
+  characters mapped, the I2S bus up with voice on, Bluetooth setup advertising, memory
+  flat over a minute. What that cannot show: a picture on the screen, the idle clock (it
+  needs the network for the time), and "Jarvis" bringing the face back. The 240 px face,
+  clock and setup screen are sized by arithmetic and have not been seen on glass.
 - **Voice sessions drop on a congested Wi-Fi network.** Seen on the P4: a conversation
   closes a second or two after it opens, and the status cycles *connecting → listening*.
   Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`

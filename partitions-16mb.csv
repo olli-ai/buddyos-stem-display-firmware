@@ -4,8 +4,10 @@
 # the `faces` partition, so the N8R2 keeps partitions.csv and builds without voice.
 #
 # Why 4.5 and not 3 MB: the face is baked at the panel's own size and rides inside
-# the app (main/CMakeLists.txt), and this board's ST7701S is 480x480 — about 1.7 MB
-# of ARGB8888, which took the image to 3.36 MB and over a 3 MB slot. Widening the
+# the app (main/CMakeLists.txt), and this board's screen was then a 480x480 ST7701S —
+# about 1.7 MB of ARGB8888, which took the image to 3.36 MB and over a 3 MB slot. The
+# GC9A01 that replaced it is 240x240 and the image is ~2.4 MB with voice, but the
+# slots stay: shrinking them would move every partition after ota_0 again. Widening the
 # slot is the cheap half of that trade; the expensive half would be shrinking the
 # art, which is the product. 16 MB has the room: two 4.5 MB slots plus `faces` and
 # `model` reach 0xB12000, leaving ~4.9 MB unused.

@@ -17,21 +17,30 @@ static const char *TAG = "setup";
  * too, and the day its flag was corrected this would have dropped a 720 px screen to the
  * small panel's fonts. */
 #define BIG_PANEL (BOARD_LCD_W >= 600)
-#if LV_FONT_MONTSERRAT_48 && BIG_PANEL
+/* And a third size for the GC9A01's 240: the serial `ESP32-cc8da2ece434` is ~290 px at
+ * 28 pt, on a circle whose usable column is ~190 px. 14 pt is ~150. */
+#define SMALL_PANEL (BOARD_LCD_W < 400)
+#if SMALL_PANEL
+#define SERIAL_FONT LV_FONT_DEFAULT
+#elif LV_FONT_MONTSERRAT_48 && BIG_PANEL
 #define SERIAL_FONT (&lv_font_montserrat_48)
 #elif LV_FONT_MONTSERRAT_28
 #define SERIAL_FONT (&lv_font_montserrat_28)
 #else
 #define SERIAL_FONT LV_FONT_DEFAULT
 #endif
-#if LV_FONT_MONTSERRAT_28 && BIG_PANEL
+#if SMALL_PANEL
+#define BODY_FONT   LV_FONT_DEFAULT
+#elif LV_FONT_MONTSERRAT_28 && BIG_PANEL
 #define BODY_FONT   (&lv_font_montserrat_28)
 #elif LV_FONT_MONTSERRAT_20
 #define BODY_FONT   (&lv_font_montserrat_20)
 #else
 #define BODY_FONT   LV_FONT_DEFAULT
 #endif
-#if LV_FONT_MONTSERRAT_20
+#if SMALL_PANEL
+#define HINT_FONT   LV_FONT_DEFAULT
+#elif LV_FONT_MONTSERRAT_20
 #define HINT_FONT   (&lv_font_montserrat_20)
 #else
 #define HINT_FONT   LV_FONT_DEFAULT
@@ -145,7 +154,7 @@ void setup_ui_create(lv_obj_t *scr)
      * text lives in the inscribed square with room to spare rather than in the width. */
     lv_obj_t *col = lv_obj_create(s_box);
     lv_obj_remove_style_all(col);
-    lv_obj_set_size(col, LV_PCT(BOARD_ROUND ? 66 : 84), LV_SIZE_CONTENT);
+    lv_obj_set_size(col, LV_PCT(SMALL_PANEL ? 80 : BOARD_ROUND ? 66 : 84), LV_SIZE_CONTENT);
     lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -178,7 +187,9 @@ void setup_ui_create(lv_obj_t *scr)
      * replaces both were — 150 of the S3's 480, 230 of the P4's 720. Written as a
      * fraction so a round 720 gets a QR a phone can actually resolve rather than the
      * small panel's, which is what keying this off BOARD_ROUND would now hand it. */
-    lv_qrcode_set_size(s_qr, BOARD_LCD_W * 31 / 100);
+    /* On the 240 a third is 74 px, three pixels a module — too fine for a phone at
+     * arm's length — so the small panel gives it 40%. */
+    lv_qrcode_set_size(s_qr, BOARD_LCD_W * (SMALL_PANEL ? 40 : 31) / 100);
     lv_qrcode_set_dark_color(s_qr, lv_color_black());
     lv_qrcode_set_light_color(s_qr, lv_color_white());
     lv_result_t qr = lv_qrcode_update(s_qr, prov_serial(), strlen(prov_serial()));
