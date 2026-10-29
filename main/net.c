@@ -108,6 +108,30 @@ static void send_activate(esp_mqtt_client_handle_t c)
     ESP_LOGI(TAG, "announced device.activate as %s", prov_serial());
 }
 
+/* device.factory_reset: the kit was deleted on the website. Forget the network, the
+ * tokens and the design, and come back up in setup.
+ *
+ * The gateway sends this before deleting the device's row, or on the kit's next connect
+ * if it was offline — once, with no acknowledgement. Ignoring it, as this firmware did
+ * until 2026-10-29, left a deleted kit with its Wi-Fi and a token that never expires:
+ * still connecting, still publishing, and listed nowhere a user could reach it.
+ * `device.reset` is the robokit's name for the same thing, accepted here so the two
+ * kits answer to either. */
+static bool handle_reset_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && (!strcmp(type->valuestring, "device.factory_reset") ||
+                                         !strcmp(type->valuestring, "device.reset"));
+    cJSON_Delete(j);
+    if (!mine) return false;
+    ESP_LOGW(TAG, "the gateway says this kit was removed: erasing its setup and restarting");
+    prov_factory_reset();
+    vTaskDelay(pdMS_TO_TICKS(200));           /* let the line leave the UART */
+    esp_restart();
+    return true;                              /* not reached */
+}
+
 /* device.sleep: put the kit to sleep. */
 static bool handle_sleep_directive(const char *data, int len)
 {
@@ -363,6 +387,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
         }
         sleep_note_activity();
         if (!handle_activate_status(e->data, e->data_len)
+            && !handle_reset_directive(e->data, e->data_len)
             && !handle_sleep_directive(e->data, e->data_len)
             && !handle_volume_directive(e->data, e->data_len)
 #if CONFIG_BUDDY_SCREEN_FACE
