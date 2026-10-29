@@ -5,8 +5,9 @@
  * is unchanged: BLE Wi-Fi setup, MQTT to the gateway, the "Jarvis" voice conversation
  * and sleep. There is no Buddy face in this build.
  *
- * Two boards, chosen by the IDF target:
+ * Three boards, chosen by the IDF target and, on the S3, CONFIG_BUDDY_S3_PANEL:
  *  - ESP32-S3: a 2.1" 480x480 round ST7701S RGB panel (st7701.c), backlight hardwired.
+ *  - ESP32-S3: a 1.28" 240x240 round GC9A01 on SPI (gc9a01.c), no touch.
  *  - ESP32-P4: the Waveshare ESP32-P4-WIFI6-Touch-LCD-4C, a 4" 720x720 JD9365 on
  *    MIPI-DSI (lcd_p4.c), with the radio on the ESP32-C6 beside it.
  *
@@ -30,6 +31,11 @@
 #define PANEL_NAME      "JD9365"
 #define panel_start     lcd_p4_start
 #define panel_set_on    lcd_p4_set_on
+#elif CONFIG_BUDDY_S3_PANEL_GC9A01
+#include "gc9a01.h"
+#define PANEL_NAME      "GC9A01"
+#define panel_start(p)  gc9a01_start((p), BUF_PX)
+#define panel_set_on    gc9a01_set_on
 #else
 #include "st7701.h"
 #define PANEL_NAME      "ST7701S"
@@ -62,7 +68,14 @@ static const char *TAG = "buddy-display";
  * lines, 52 KB. One buffer, not two: the flush below is a CPU copy into the frame
  * buffer that has finished when it returns, so there is never a transfer in flight for
  * a second buffer to overlap. */
+#if CONFIG_BUDDY_S3_PANEL_GC9A01
+/* The GC9A01 is different: SPI DMA reads the buffer after the flush returns, so it
+ * takes two — LVGL draws into one while the other goes out — of a tenth of the screen
+ * each, 2 x 11.5 KB of DMA-capable internal RAM. The bring-up's figure, kept. */
+#define BUF_PX  (LCD_W * LCD_H / 10)
+#else
 #define BUF_PX  (LCD_W * LCD_H / 20)
+#endif
 
 static esp_lcd_panel_handle_t s_panel;
 
@@ -71,6 +84,15 @@ void display_set_on(bool on)
 {
     if (s_panel) panel_set_on(on);
 }
+
+#if CONFIG_BUDDY_S3_PANEL_GC9A01
+static bool on_flushed(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *e, void *arg)
+{
+    (void)io; (void)e;
+    lv_display_flush_ready((lv_display_t *)arg);
+    return false;
+}
+#endif
 
 static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
@@ -83,7 +105,20 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
      * is ready here, not in a completion callback. The P4's MIPI-DSI DPI panel does the
      * same (a CPU copy plus a cache write-back, as long as its DMA2D option is off), and
      * so does MIPI's colour order: RGB565 straight from memory, no swap. */
-#if CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_BUDDY_S3_PANEL_GC9A01
+    /* Except the GC9A01, which is SPI: it clocks RGB565 high byte first, and LVGL keeps
+     * it low byte first. Without the swap the face draws in exactly the right shape and
+     * entirely the wrong colours — a cyan-green body, purple bands across every
+     * gradient — which is what the first photo of this panel showed. The simulator
+     * cannot catch it: it renders and displays from host memory, so the two cancel.
+     *
+     * And the transfer is still running when draw_bitmap returns, so LVGL is told the
+     * flush is done by on_flushed() below, not here: telling it now would let it draw
+     * into a buffer the DMA engine is still reading. */
+    lv_draw_sw_rgb565_swap(px, lv_area_get_size(a));
+    esp_lcd_panel_draw_bitmap(s_panel, a->x1, a->y1, a->x2 + 1, a->y2 + 1, px);
+    return;
+#elif CONFIG_IDF_TARGET_ESP32P4
     /* Direct mode: px IS one of the panel's frame buffers, so there is nothing to
      * copy — handing it back to the DPI panel switches which one is scanned out.
      * Only the last call of a frame carries the whole screen, which is the one that
@@ -96,6 +131,7 @@ static void flush_cb(lv_display_t *d, const lv_area_t *a, uint8_t *px)
     lv_display_flush_ready(d);
 }
 
+#if BOARD_HAS_TOUCH
 /* The touch layer as an LVGL pointer: it is what swipes the gallery. A touch also
  * counts as somebody being there, so a child playing with the screen does not have
  * the kit fall asleep under their finger. */
@@ -180,6 +216,7 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data)
         s_on_icon = false;
     }
 }
+#endif
 
 static uint32_t tick_cb(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -262,6 +299,15 @@ void app_main(void)
     lv_display_set_flush_cb(disp, flush_cb);
     ESP_LOGI(TAG, "draw buffers: 2 x %u B, the panel's own; whole-screen rendering",
              (unsigned)buf_bytes);
+#elif CONFIG_BUDDY_S3_PANEL_GC9A01
+    size_t buf_bytes = BUF_PX * sizeof(uint16_t);
+    void *b1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    void *b2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!b1 || !b2) { ESP_LOGE(TAG, "no DMA memory for 2 x %u B draw buffers", (unsigned)buf_bytes); return; }
+    lv_display_set_buffers(disp, b1, b2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(disp, flush_cb);
+    ESP_ERROR_CHECK(gc9a01_on_flushed(on_flushed, disp));
+    ESP_LOGI(TAG, "draw buffers: 2 x %u B DMA", (unsigned)buf_bytes);
 #else
     size_t buf_bytes = BUF_PX * sizeof(uint16_t);
     void *buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -270,6 +316,7 @@ void app_main(void)
     lv_display_set_flush_cb(disp, flush_cb);
 #endif
 
+#if BOARD_HAS_TOUCH
     /* After the panel: on the S3 TP_RST is the panel's reset line, and starting the
      * panel pulsed it. */
     if (touch_init() == ESP_OK) {
@@ -277,6 +324,7 @@ void app_main(void)
         lv_indev_set_type(tp, LV_INDEV_TYPE_POINTER);
         lv_indev_set_read_cb(tp, touch_cb);
     }
+#endif
 
     lv_obj_t *scr = lv_display_get_screen_active(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);

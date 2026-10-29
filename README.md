@@ -7,15 +7,17 @@ say "Jarvis".
 
 ## Which board
 
-Two boards carry this device type, and **one branch builds both**. There is no flag to
-set: the target decides, and `main/CMakeLists.txt` picks the matching face artwork.
+Three boards carry this device type, and **one branch builds all three**. The target
+picks the chip; on the S3 a defaults file picks the screen, and `main/CMakeLists.txt`
+picks the matching face artwork.
 
-| Your board | Target | Screen |
-| --- | --- | --- |
-| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | HD21001C40 2.1" 480x480 round ST7701S |
-| **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch |
+| Your board | Target | Screen | Build directory |
+| --- | --- | --- | --- |
+| **ESP32-S3-WROOM-1-N16R8** + GC9A01 | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-gc9a01` |
+| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | HD21001C40 2.1" 480x480 round ST7701S, touch | `build-s3` |
+| **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch | `build-p4` |
 
-**Both build with ESP-IDF v5.5.3.** Older IDF does not build this tree (the P4's panel
+All three build with **ESP-IDF v5.5.3**. Older IDF does not build this tree (the P4's panel
 driver needs 5.4 or later). No IDF installed? Use Espressif's image,
 `espressif/idf:v5.5.3` — see [Building](#building).
 
@@ -26,7 +28,11 @@ cd buddyos-stem-display-firmware
 # LVGL is not committed — clone it once, before the first build
 git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 
-# ESP32-S3-WROOM-1-N16R8 — the N16R8 overlay is not applied automatically
+# ESP32-S3-WROOM-1-N16R8 + GC9A01 — voice on, see below
+idf.py -B build-gc9a01 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-gc9a01/sdkconfig \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.gc9a01" build
+
+# ESP32-S3-WROOM-1-N16R8 + ST7701S — the N16R8 overlay is not applied automatically
 idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
 
@@ -34,7 +40,12 @@ idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
 idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
 ```
 
-**Voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
+**The GC9A01 kit has no touch, so it builds with voice on.** After three quiet minutes the
+face gives way to a clock, and on this kit "Jarvis" is what brings it back — there is no
+screen to tap. `sdkconfig.defaults.gc9a01` turns voice on for it. Its pins, including the
+microphone and amplifier on one shared I2S bus, are in `main/board_pins.h`.
+
+**On the other two boards voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
 bringing the audio board up the first time once hung a device past the ROM bootloader
 (`main/Kconfig.projbuild` keeps the note), and `BUDDY_VOICE` hangs off it. A kit that
 should answer to "Jarvis" needs both, which is two lines in `menuconfig` or appended to
@@ -1136,10 +1147,13 @@ really PSRAM's doing.
 
 ## Open questions
 
-- **Current `master` has not run on the S3 board.** The S3 N16R8 last ran on 2026-10-20,
-  with the gallery build and voice on ([Status](#status)). Everything since — the 480×480
-  face, the two-board merge, the idle clock, the volume control — has been run on the P4
-  and only compiled for the S3. Reports from an S3 are welcome.
+- **The S3 boards have only been run without their screens.** On 2026-10-29 an S3 N16R8
+  with nothing attached booted both S3 builds cleanly — panel driver up, the three
+  characters mapped, Bluetooth setup advertising, memory flat over a minute, and on the
+  GC9A01 build the I2S bus up with voice on. What that cannot show: a picture on either
+  screen, the idle clock (it needs the network for the time), and "Jarvis" bringing the
+  face back. The GC9A01 build's 240 px face, clock and setup screen are sized by
+  arithmetic and have not been seen on glass.
 - **Voice sessions drop on a congested Wi-Fi network.** Seen on the P4: a conversation
   closes a second or two after it opens, and the status cycles *connecting → listening*.
   Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`

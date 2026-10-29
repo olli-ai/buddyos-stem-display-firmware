@@ -1,7 +1,50 @@
 #pragma once
 #include "sdkconfig.h"
 
-#if !CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_BUDDY_S3_PANEL_GC9A01
+/*
+ * Every GPIO this firmware drives, in one place.
+ *
+ * The ESP32-S3 kit with a GC9A01 1.28" 240x240 round TFT on SPI, and no touch layer.
+ * ESP32-S3-WROOM-1-N16R8: octal PSRAM (35-37), native USB (19/20) and flash (26-32) are
+ * untouched, and so are the strapping pins 3, 45 and 46. GPIO 0 is BOOT and nothing
+ * else, so unlike the ST7701S board it can be read at any time.
+ *
+ * The panel pins are the 2026-09-28 GC9A01 bench board's, where this panel first ran.
+ * The audio is NOT that board's: it drove the amplifier and the microphone from two
+ * I2S controllers on separate clocks (amp 9-13, mic 4-7). This follows the ST7701S
+ * board instead — one controller in full duplex, the amp and the mic sharing BCLK and
+ * WS — which is what audio.c drives and what voice has been measured on. Wire a board
+ * to these pins, or the speaker and the microphone will not both work.
+ */
+
+#define BOARD_LCD_W     240
+#define BOARD_LCD_H     240
+#define BOARD_ROUND       1
+#define BOARD_HAS_TOUCH   0    /* no touch layer: the wake word is the way back */
+#define PIN_BOOT          0
+
+/* ---- GC9A01 1.28" round TFT, SPI ------------------------------------------ */
+#define PIN_LCD_SCLK     15    /* SCL on the module */
+#define PIN_LCD_MOSI     16    /* SDA on the module */
+#define PIN_LCD_DC       17
+#define PIN_LCD_CS       18
+#define PIN_LCD_RST       8
+/* The backlight is the module's own: BLK is on 3.3 V, so it is lit whenever the board
+ * has power, and "display off" is the controller's DISPOFF. */
+
+/* ---- MAX98357A amplifier and INMP441 microphone, one I2S bus -------------- */
+/* As on the ST7701S board: both parts share BCLK and WS, so they run on ONE I2S
+ * controller in full duplex — two controllers would each drive their own clock onto
+ * the same wire. */
+#define PIN_I2S_BCLK      5    /* amp BCLK, mic SCK */
+#define PIN_I2S_WS        6    /* amp LRC,  mic WS  */
+#define PIN_SPK_DIN       7    /* our data out, the amplifier's in */
+#define PIN_MIC_SD        4    /* the mic's data OUT, an input to us */
+/* Strapped on the board, not driven: amp SD through 100 k to VIN (on, left channel),
+ * amp GAIN floating (9 dB), mic L/R to GND (left). */
+
+#elif !CONFIG_IDF_TARGET_ESP32P4
 /*
  * Every GPIO this firmware drives, in one place.
  *
@@ -22,14 +65,13 @@
  *     on the bench by the colour/gradient test in the panel bring-up project.
  *   - GPIO 21, which this file once named as the fallback wake pin, is now PCLK.
  *
- * Earlier boards: the GC9A01 SPI build (panel SCLK 15, MOSI 16, DC 17, CS 18, RST 8; amp
- * SD 13, GAIN 12, DIN 11, BCLK 10, LRC 9; mic SD 4, SCK 5, WS 6, LR 7) and before that
- * the N8R2 board. Neither runs this build.
+ * The GC9A01 kit is the other S3 board, above (CONFIG_BUDDY_S3_PANEL_GC9A01).
  */
 
 #define BOARD_LCD_W     480
 #define BOARD_LCD_H     480
 #define BOARD_ROUND       1    /* the corners of the frame buffer are not on the glass */
+#define BOARD_HAS_TOUCH   1
 #define PIN_BOOT          0    /* = DB17 while the panel runs; see above */
 
 /* ---- ST7701S 480x480 RGB panel (HD21001C40) ------------------------------ */
@@ -96,6 +138,7 @@
  * QR — and both now key off BOARD_LCD_W instead. Round says where the edges are; width
  * says how big to draw. */
 #define BOARD_ROUND       1
+#define BOARD_HAS_TOUCH   1
 #define PIN_BOOT         35    /* BOOT. Not an LP GPIO: it cannot wake the chip, see sleep.c */
 
 /* ---- JD9365 720x720 MIPI-DSI panel ---------------------------------------- */

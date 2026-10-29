@@ -223,6 +223,27 @@ config BUDDY_MQTT_AWS_ROOT
         against the full bundle's 65 KB. Turn this off to reach a broker with some
         other publicly-trusted certificate, which costs the whole bundle.
 
+choice BUDDY_S3_PANEL
+    prompt "ESP32-S3 panel"
+    depends on !IDF_TARGET_ESP32P4
+    default BUDDY_S3_PANEL_ST7701S
+    help
+        Which screen an ESP32-S3 build drives. The two are wired differently and share
+        nothing but the chip, so this also picks the pin map (main/board_pins.h) and
+        the face artwork (generated/face_assets_480.c or _240.c). The P4 has one
+        screen and ignores this.
+
+        The GC9A01 kit has no touch layer. Its way back from the idle clock is the
+        wake word, so build it with voice on: sdkconfig.defaults.gc9a01 does both.
+
+config BUDDY_S3_PANEL_ST7701S
+    bool "HD21001C40: 2.1\" 480x480 round ST7701S, RGB, with touch"
+
+config BUDDY_S3_PANEL_GC9A01
+    bool "GC9A01: 1.28\" 240x240 round, SPI, no touch"
+
+endchoice
+
 choice BUDDY_SCREEN
     prompt "What the panel shows"
     default BUDDY_SCREEN_FACE

@@ -52,6 +52,11 @@ void volume_ui_create(lv_obj_t *scr)
     lv_obj_set_style_text_color(s_glyph, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_glyph, font, 0);
     lv_label_set_text(s_glyph, LV_SYMBOL_VOLUME_MAX);
+#if !BOARD_HAS_TOUCH
+    /* A control nobody can press is clutter on a 240 px face. The bar below still
+     * shows when a volume directive changes the level. */
+    lv_obj_add_flag(s_icon, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     /* ---- the bar: above the icon, hidden until asked for ---------------------- */
     s_panel = lv_obj_create(scr);

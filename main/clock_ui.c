@@ -19,6 +19,29 @@ static bool s_on;
  * (sleep_idle_ms, voice_active, time) is a plain load from somewhere else. */
 #define TICK_MS 1000
 
+/* Sized by the panel's width, then by what is compiled in. On the GC9A01's 240 px the
+ * 48 pt time is 210 px across — the whole glass at its widest — and the long date
+ * runs off both sides, so a small panel gets 40 pt and the short date. */
+#define SMALL_PANEL (BOARD_LCD_W < 400)
+#if LV_FONT_MONTSERRAT_40 && SMALL_PANEL
+#define TIME_FONT (&lv_font_montserrat_40)
+#elif LV_FONT_MONTSERRAT_48 && !SMALL_PANEL
+#define TIME_FONT (&lv_font_montserrat_48)
+#elif LV_FONT_MONTSERRAT_28
+#define TIME_FONT (&lv_font_montserrat_28)
+#else
+#define TIME_FONT LV_FONT_DEFAULT
+#endif
+#if LV_FONT_MONTSERRAT_20 && SMALL_PANEL
+#define DATE_FONT (&lv_font_montserrat_20)
+#elif LV_FONT_MONTSERRAT_28
+#define DATE_FONT (&lv_font_montserrat_28)
+#elif LV_FONT_MONTSERRAT_20
+#define DATE_FONT (&lv_font_montserrat_20)
+#else
+#define DATE_FONT LV_FONT_DEFAULT
+#endif
+
 static void draw_now(void)
 {
     time_t now = time(NULL);
@@ -35,8 +58,14 @@ static void draw_now(void)
     static const char *MONTHS[12] = { "January", "February", "March", "April", "May",
                                       "June", "July", "August", "September", "October",
                                       "November", "December" };
+#if SMALL_PANEL
+    /* "Thu, 29 Oct": the long form is ~330 px at 20 pt, on a 240 px circle. */
+    lv_snprintf(date, sizeof(date), "%.3s, %d %.3s",
+                DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12]);
+#else
     lv_snprintf(date, sizeof(date), "%s, %d %s %d",
                 DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12], 1900 + tm.tm_year);
+#endif
 
     lv_label_set_text(s_time, hhmmss);
     lv_label_set_text(s_date, date);
@@ -76,20 +105,12 @@ void clock_ui_create(lv_obj_t *scr)
 
     s_time = lv_label_create(s_box);
     lv_obj_set_style_text_color(s_time, lv_color_white(), 0);
-#if LV_FONT_MONTSERRAT_48
-    lv_obj_set_style_text_font(s_time, &lv_font_montserrat_48, 0);
-#elif LV_FONT_MONTSERRAT_28
-    lv_obj_set_style_text_font(s_time, &lv_font_montserrat_28, 0);
-#endif
+    lv_obj_set_style_text_font(s_time, TIME_FONT, 0);
     lv_label_set_text(s_time, "--:--:--");
 
     s_date = lv_label_create(s_box);
     lv_obj_set_style_text_color(s_date, lv_color_hex(0x9e9e9e), 0);
-#if LV_FONT_MONTSERRAT_28
-    lv_obj_set_style_text_font(s_date, &lv_font_montserrat_28, 0);
-#elif LV_FONT_MONTSERRAT_20
-    lv_obj_set_style_text_font(s_date, &lv_font_montserrat_20, 0);
-#endif
+    lv_obj_set_style_text_font(s_date, DATE_FONT, 0);
     lv_label_set_text(s_date, "");
 
     lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN);
