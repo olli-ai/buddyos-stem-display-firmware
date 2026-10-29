@@ -187,37 +187,77 @@ The GC9A01 bench board before this one used SPI on 15–18/8, a muted, gain-swit
 
 ### Flash it
 
-Build in Docker (next section), then write the five images the build produces:
+Build first ([Building](#building)) — one build directory per board, `build-s3` or
+`build-p4`. Then, on the machine the board is plugged into:
+
+**1. Install esptool 5.x.** Once, in its own environment:
 
     python3 -m venv venv && venv/bin/pip install esptool
+
+Use this rather than the esptool bundled with ESP-IDF 5.5.3, which is 4.12: on the P4 its
+flasher stub cannot verify the flash chip, and the write fails. A Docker build has no
+esptool and the container cannot see a USB port anyway, so flashing always happens on the
+host. **`esptool` and `write-flash`, not `esptool.py` and `write_flash`** — esptool 5
+deprecated the older spellings.
+
+**2. Find the port, and check the chip on it.** On macOS it is a `/dev/cu.usbserial-*` or
+`/dev/cu.usbmodem*` (`ls /dev/cu.*`), on Linux `/dev/ttyUSB*` or `/dev/ttyACM*`, on Windows
+a `COM` number. On Linux, *permission denied* means your account is not in the `dialout`
+group. Before writing anything:
+
+    venv/bin/esptool -p PORT chip-id
+
+It must name the chip you built for — ESP32-S3 or ESP32-P4. A port name says nothing about
+which board is behind it.
+
+**3. Write everything the build produced**, from inside the build directory:
+
     cd build-s3
-    ../venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash "@flash_args"
+    ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
 
 For the P4, the same from `build-p4` with `--chip esp32p4`.
 
-**Do not drop the bootloader at `0x0`** on a board that has never run this firmware —
-without it there is nothing to start the app, and the board comes up silent in a way that
-looks like a hardware fault.
+- **Use `@flash_args`, not offsets copied from anywhere.** The build writes that file with
+  every image, its offset and the flash settings, for exactly what you just built.
+  Offsets move whenever the partition table does, and the two boards differ — the P4's
+  bootloader goes at `0x2000`, the S3's at `0x0`. An image at the wrong offset looks
+  exactly like a dead board.
+- **Write the whole set, not just the app.** It includes the bootloader, which a board that
+  has never run this firmware cannot start without, and `ota_data_initial.bin`, which
+  points the boot at the image you just wrote. Write only the app to a kit that once
+  updated itself over the air, and it keeps booting the old one.
+- **Leave the baud rate alone on a native USB port** (`usbmodem` / `ttyACM`, as on the P4).
+  Asking for 460800 there breaks the connection mid-flash.
 
-`flash_args` is written by the build and lists every image with its offset and the flash
-settings, for exactly what you just built. That is why it is used above instead of
-offsets written out here: they move whenever the partition table does, and an image at
-the wrong offset looks like a dead board.
+**4. If esptool cannot connect**, put the chip into its download mode by hand: hold
+**BOOT**, press and release **RESET**, then release BOOT, and run the command again. On the
+S3 board BOOT is also one of the panel's data lines, so treat it as a button only for this,
+and only while the screen is dark.
 
-esptool does not come with the Docker build — the container cannot see a USB port, so
-flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
-not `esptool.py` and `write_flash`**: esptool 5 deprecated both older spellings (they warn
-now and are slated for removal), and a fresh `pip install esptool` today gives you 5.x.
+**What a flash keeps.** `write-flash "@flash_args"` does not touch the `nvs` partition, where
+the kit keeps its Wi-Fi and account setup, or `faces`, where the character catalogue lives
+([The characters](#the-characters-and-why-they-are-baked-at-384)). A reflashed kit comes back
+already set up. **`esptool erase-flash` removes both**: the kit returns to setup, and shows
+only the one character built into the firmware until the catalogue is written again. To
+clear just the setup, hold BOOT for 5 s instead ([Setting a kit up](#setting-a-kit-up)).
 
-Your port will not be `/dev/ttyUSB0` on every machine — on macOS it is a
-`/dev/cu.usbserial-*` (`ls /dev/cu.*` finds it), on Windows a `COM` number. On Linux, a
-*permission denied* means your account is not in the `dialout` group.
+**5. Watch it boot.** Opening the serial port resets the board, so a monitor always shows
+the boot from the start:
 
-`idf.py build` prints the command with the right offsets for whichever partition table you
-built against.
+    idf.py -B build-s3 -p PORT monitor
 
-With nothing else done, the kit boots straight into the gallery.
-To put it on the network, carry on to [Setting a kit up](#setting-a-kit-up).
+(any serial terminal at 115200 works too; `idf.py monitor` also decodes a crash backtrace
+against the firmware you built). In order, a healthy kit logs:
+
+- `N characters mapped from flash` — the catalogue was found (absent on a never-catalogued kit,
+  which shows its built-in character);
+- `mqtt connected` — set up and on the network;
+- `wake word model …` — only in a build with voice on;
+- after three quiet minutes, `left alone; showing the time`; then on "Jarvis",
+  `wake word: opening a conversation` and `back to the face`.
+
+With nothing else done, the kit shows the Buddy's face. To put it on the network, carry on
+to [Setting a kit up](#setting-a-kit-up).
 
 ### Bringing it onto BuddyOS
 
@@ -568,11 +608,10 @@ BOOT through a cold reset lands in the ROM bootloader instead.)
 
 ### Flashing the N16R8 board
 
-It uses `partitions-16mb.csv` (3 MB app slots; BLE did not fit beside voice in 2 MB), so
-the wake-word model moved to a new offset. **After changing the partition table, flash all
-five images** — app alone leaves the old table in place and the kit looks for its model
-where it no longer is. The table still has the old `faces` partition; this build never
-reads it, and it stays so `model` does not move. The command is in [Flash it](#flash-it).
+It uses `partitions-16mb.csv`: two 4.5 MB app slots, then `faces` (the character
+catalogue) and `model` (the wake word). **After the partition table changes, flash all the
+images** — the app alone leaves the old table in place and the kit looks for its model and
+characters where they no longer are. The command is in [Flash it](#flash-it).
 
 ## The Waveshare ESP32-P4 board
 
@@ -645,10 +684,11 @@ and flashes the rest:
         --loader:.webp=dataurl --loader:.png=dataurl \
     && node /tmp/cat.cjs face_catalogue.bin
 
-    esptool --chip esp32p4 -p PORT write-flash 0xd12000 face_catalogue.bin
+    esptool --chip esp32p4 -p PORT write-flash 0xd12000 face_catalogue.bin   # P4
+    esptool --chip esp32s3 -p PORT write-flash 0x912000 face_catalogue.bin   # S3 N16R8
 
-The offset is the `faces` partition's; `partitions-32mb.csv` is the authority and it
-moves if the table changes. The kit says what it found at boot — `3 characters
+The offset is the `faces` partition's; `partitions-32mb.csv` (P4) and
+`partitions-16mb.csv` (S3) are the authority, and it moves if the table changes. The kit says what it found at boot — `3 characters
 mapped from flash, 1506 KB, no RAM` — and names them.
 
 **`SIZE` in that baker is 384, and that is forced by arithmetic.** A background is
