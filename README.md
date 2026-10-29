@@ -5,6 +5,9 @@ the Buddy a child designed on the website, and behind it the same kit as ever â€
 Wi-Fi setup, MQTT to the BuddyOS gateway, and a voice conversation that starts when you
 say "Jarvis".
 
+> **New here? Start with [Getting started](GETTING_STARTED.md)** â€” parts, wiring, and
+> the words to ask Claude Code or Codex to build and flash it for you.
+
 ## Which board
 
 Two boards carry this device type, and **one branch builds both**. There is no flag to
