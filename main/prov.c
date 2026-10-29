@@ -48,6 +48,10 @@ static bool load_nvs(void)
     get_fixed(h, "pass", s_prov.password, sizeof(s_prov.password));
     get_fixed(h, "env", s_prov.env, sizeof(s_prov.env));
     get_fixed(h, "gateway", s_prov.gateway, sizeof(s_prov.gateway));
+    get_fixed(h, "mqtt_url", s_prov.mqtt_url, sizeof(s_prov.mqtt_url));
+    /* A kit set up before setup carried the broker has none stored: the build's. */
+    if (!s_prov.mqtt_url[0])
+        snprintf(s_prov.mqtt_url, sizeof(s_prov.mqtt_url), "%s", CONFIG_BUDDY_MQTT_URI);
     s_prov.user_jwt = get_blob_str(h, "user_jwt");
     s_prov.mqtt_jwt = get_blob_str(h, "mqtt_jwt");
     uint8_t act = 0;
@@ -69,9 +73,10 @@ bool prov_load(void)
 {
     if (load_nvs()) {
         /* Keys and lengths only: this struct holds a password and two tokens. */
-        ESP_LOGI(TAG, "provisioned: ssid '%s', env %s, gateway %s, user token %u B, "
+        ESP_LOGI(TAG, "provisioned: ssid '%s', env %s, gateway %s, broker %s, user token %u B, "
                  "mqtt token %u B, %s", s_prov.ssid, s_prov.env[0] ? s_prov.env : "-",
                  s_prov.gateway[0] ? s_prov.gateway : "-",
+                 s_prov.mqtt_url[0] ? s_prov.mqtt_url : "-",
                  (unsigned)(s_prov.user_jwt ? strlen(s_prov.user_jwt) : 0),
                  (unsigned)(s_prov.mqtt_jwt ? strlen(s_prov.mqtt_jwt) : 0),
                  s_prov.activated ? "activated" : "not yet activated");
@@ -89,6 +94,7 @@ bool prov_load(void)
     snprintf(s_prov.password, sizeof(s_prov.password), "%s", CONFIG_BUDDY_WIFI_PASS);
     snprintf(s_prov.env, sizeof(s_prov.env), "%s", CONFIG_BUDDY_MQTT_ENV);
     snprintf(s_prov.gateway, sizeof(s_prov.gateway), "%s", CONFIG_BUDDY_GATEWAY_HOST);
+    snprintf(s_prov.mqtt_url, sizeof(s_prov.mqtt_url), "%s", CONFIG_BUDDY_MQTT_URI);
     prov_set_mqtt_jwt(CONFIG_BUDDY_MQTT_PASS);
 #if CONFIG_BUDDY_VOICE
     prov_set_user_jwt(CONFIG_BUDDY_VOICE_TOKEN);
@@ -108,6 +114,7 @@ esp_err_t prov_save(void)
     nvs_set_str(h, "pass", s_prov.password);
     nvs_set_str(h, "env", s_prov.env);
     nvs_set_str(h, "gateway", s_prov.gateway);
+    nvs_set_str(h, "mqtt_url", s_prov.mqtt_url);
     if (s_prov.user_jwt) nvs_set_str(h, "user_jwt", s_prov.user_jwt); else nvs_erase_key(h, "user_jwt");
     if (s_prov.mqtt_jwt) nvs_set_str(h, "mqtt_jwt", s_prov.mqtt_jwt); else nvs_erase_key(h, "mqtt_jwt");
     nvs_set_u8(h, "activated", s_prov.activated);
