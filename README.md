@@ -15,6 +15,10 @@ set: the target decides, and `main/CMakeLists.txt` picks the matching face artwo
 | **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | HD21001C40 2.1" 480x480 round ST7701S |
 | **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch |
 
+**Both build with ESP-IDF v5.5.3.** Older IDF does not build this tree (the P4's panel
+driver needs 5.4 or later). No IDF installed? Use Espressif's image,
+`espressif/idf:v5.5.3` — see [Building](#building).
+
 ```sh
 git clone https://github.com/olli-ai/buddyos-stem-display-firmware.git
 cd buddyos-stem-display-firmware
