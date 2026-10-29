@@ -186,20 +186,19 @@ The GC9A01 bench board before this one used SPI on 15–18/8, a muted, gain-swit
 Build in Docker (next section), then write the five images the build produces:
 
     python3 -m venv venv && venv/bin/pip install esptool
-    venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 \
-        --flash_mode dio --flash_freq 80m --flash_size 16MB write-flash \
-        0x0      build/bootloader/bootloader.bin \
-        0x8000   build/partition_table/partition-table.bin \
-        0x10000  build/buddyos_stem_display.bin \
-        0x610000 build/ota_data_initial.bin \
-        0x792000 build/srmodels/srmodels.bin
+    cd build-s3
+    ../venv/bin/esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash "@flash_args"
+
+For the P4, the same from `build-p4` with `--chip esp32p4`.
 
 **Do not drop the bootloader at `0x0`** on a board that has never run this firmware —
 without it there is nothing to start the app, and the board comes up silent in a way that
 looks like a hardware fault.
 
-`build/flash_args` is written by the build and is the authoritative list of offsets for
-whatever you just built; if it and this README ever disagree, the file is right.
+`flash_args` is written by the build and lists every image with its offset and the flash
+settings, for exactly what you just built. That is why it is used above instead of
+offsets written out here: they move whenever the partition table does, and an image at
+the wrong offset looks like a dead board.
 
 esptool does not come with the Docker build — the container cannot see a USB port, so
 flashing happens on the host and the tool is installed there. **`esptool` and `write-flash`,
@@ -502,13 +501,28 @@ corruption, 7.4 KB of the stack still untouched.
 
 ## Building
 
-Dependencies are **vendored in `components/`** and the component manager is switched off.
-idf 5.2.2's resolver cannot parse a `&&` in a dependency manifest and fails while merely
-*listing* registry versions, so pinning cannot avoid it — but nothing here needs the
-registry:
+Build with **ESP-IDF v5.5.3**. There is no Dockerfile: Espressif's own image is the build
+environment, and a native install of the same version works identically. Older IDF does
+not build this tree — the P4's panel driver needs 5.4 or later.
 
-    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw \
-        espressif/idf:v5.2.2 idf.py -DIDF_TARGET=esp32s3 build
+Dependencies are **vendored in `components/`**, so the component manager is switched off
+and nothing is fetched from the registry. Clone LVGL first (below), then, from the repo
+root:
+
+    # ESP32-S3-WROOM-1-N16R8
+    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
+        idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
+               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+    # ESP32-P4
+    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
+        idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
+
+Keep the `-B` and `-DSDKCONFIG` pair. Without them both boards share `build/` and the root
+`sdkconfig`, and an `sdkconfig` left over from one board, or from an older checkout,
+quietly wins over the defaults files — a build for the panel you do not have.
+
+The container cannot see a USB port, so flash from the host ([Flash it](#flash-it)).
 
 `components/lvgl` is not committed. Clone it once, before the first build:
 
@@ -1072,9 +1086,6 @@ really PSRAM's doing.
 
 ## Open questions
 
-- **IDF version.** The team pins v5.2.2; this bench builds with v5.5.5. The v5.5 problem
-  hit elsewhere was an I²C `driver_ng` conflict in a driver this firmware does not use,
-  so the pin is convention rather than necessity.
 - **BOOT as a wake pin** is not yet confirmed on hardware — see [Going to
   sleep](#going-to-sleep-and-waking-up).
 
