@@ -1157,7 +1157,8 @@ really PSRAM's doing.
 
 ## Licence and support
 
-This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE). Vendored dependencies keep their
+This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE) — and so is the Buddy artwork it
+carries: the characters in `faces/` and the built-in face. Vendored dependencies keep their
 own licences and are listed in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) — mostly
 Apache-2.0 and MIT, but `esp-sr` (the "Jarvis" wake word) and `esp_audio_codec` are under
 Espressif's licences, which allow use only on Espressif chips.
