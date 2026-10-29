@@ -175,7 +175,7 @@ This panel takes almost every pin the S3 has. Three consequences, all deliberate
   The panel is idle at reset, so the straps read their pull resistors as usual.
 - **BOOT (GPIO 0) is DB17.** While the panel runs it is an LCD output and cannot be read.
   It still wakes the kit from sleep (the panel is dark by then) and is read once at boot
-  for the factory reset — see [Going to sleep](#going-to-sleep-and-waking-up). **Do not
+  for the factory reset — see [Going to sleep](#deep-sleep-and-why-idle-no-longer-reaches-it). **Do not
   press BOOT while the screen is on:** it shorts a driven output to GND. Harmless for
   a moment, and the top bit of red flickers, but it is not a button while awake.
 - **SCK and SDA double as DB1 and DB2.** The ST7701S is set up over SPI before the RGB
@@ -290,8 +290,10 @@ Two known rough edges, both on the detector rather than the pipeline:
 
 - **It may wake itself** if the Buddy's own persona is also called Jarvis and the detector
   is in its aggressive mode (`CONFIG_BUDDY_WAKE_THRESHOLD_MODE=1`).
-- **Half-duplex while speaking.** There is no echo cancellation yet, so the microphone is
-  muted while the Buddy talks; you cannot interrupt it mid-sentence by voice.
+- **Half-duplex while speaking.** The microphone's uplink is muted while the Buddy talks,
+  so you cannot interrupt it just by speaking. On the P4, which has echo cancellation,
+  saying "Jarvis" over a reply still cuts it off; the S3 has none, so there it waits for
+  the reply to end. See [Open questions](#open-questions).
 
 ### Being left alone: the clock
 
@@ -317,8 +319,8 @@ is asleep, "Jarvis" does nothing** — deep sleep has no microphone, so the butt
 only way back, and on a board whose button cannot wake it there is no way back at all.
 Read `CONFIG_BUDDY_SLEEP_WAKE_GPIO` before turning the idle timer back on.
 
-Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The gallery
-is drawn before the radio starts, so the photos are back long before the network is.
+Waking is a **cold boot**: RAM, Wi-Fi, TLS and the MQTT session are all gone. The screen
+is drawn before the radio starts, so the face is back long before the network is.
 
 Two details that are deliberate rather than incidental:
 
@@ -913,9 +915,9 @@ help. It wants the ES7210's per-channel gain instead.
   - one is the P4's own USB-Serial/JTAG;
   - the other is a CH343 UART.
   - Either one flashes and shows the log, and Windows gives them different COM numbers.
-- **Not yet measured:** whether "Jarvis" is heard over the Buddy's own voice, and how much
-  of the AEC claim survives a real room. With the AFE running, the internal heap's largest
-  free block is about 30 KB, so watch it when a session opens.
+- **"Jarvis" is heard over the Buddy's own voice** and cuts a reply off in ~200 ms. Not yet
+  measured: how much of that survives a real, noisy room. With the AFE running, the
+  internal heap's largest free block is about 30 KB, so watch it when a session opens.
 
 ## Status
 
@@ -1130,8 +1132,24 @@ really PSRAM's doing.
 
 ## Open questions
 
-- **BOOT as a wake pin** is not yet confirmed on hardware — see [Going to
-  sleep](#going-to-sleep-and-waking-up).
+- **Current `master` has not run on the S3 board.** The S3 N16R8 last ran on 2026-10-20,
+  with the gallery build and voice on ([Status](#status)). Everything since — the 480×480
+  face, the two-board merge, the idle clock, the volume control — has been run on the P4
+  and only compiled for the S3. Reports from an S3 are welcome.
+- **Voice sessions drop on a congested Wi-Fi network.** Seen on the P4: a conversation
+  closes a second or two after it opens, and the status cycles *connecting → listening*.
+  Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`
+  treats one write that takes longer as a dead connection. Raising the limit is not a
+  one-line fix: the 200 ms keeps the microphone task inside its 20 ms budget.
+- **Interrupting the Buddy without the wake word.** The uplink is muted while the Buddy
+  speaks, because every partial setting tried either let the Buddy interrupt itself or
+  stopped a child interrupting it (`sdkconfig.defaults.esp32p4` has the numbers). Real
+  voice barge-in needs the voice server to stop treating audio sent while it is speaking
+  as an interruption; it cannot be fixed in this firmware alone.
+- **BOOT as a wake pin on the S3** is not confirmed on hardware. GPIO 0 is a strapping pin,
+  so a press might land in the bootloader instead of waking the kit. It matters only for
+  the explicit `device.sleep` command now that idle shows a clock — see [Deep
+  sleep](#deep-sleep-and-why-idle-no-longer-reaches-it).
 
 ## Licence and support
 
