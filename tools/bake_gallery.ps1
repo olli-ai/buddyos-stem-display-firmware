@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Every JPEG, PNG, BMP or GIF in -In, sorted by file name, is turned upright (EXIF),
-  cropped square, sized to 480x480 and re-encoded as a baseline JPEG — the only kind
+  cropped square, sized to -Side (240 for the S3) and re-encoded as a baseline JPEG — the only kind
   TJpgDec on the device reads, which is why a photo is never packed as it came.
 
   -Side 720 bakes for the ESP32-P4 board's 720x720 panel, into gallery\gallery-720.bin.
@@ -30,14 +30,14 @@
 param(
     [string]$In = "gallery",
     [string]$Out = "",
-    [ValidateSet(480, 720)][int]$Side = 480,   # the panel: 480 round (S3), 720 square (P4)
+    [ValidateSet(240, 720)][int]$Side = 240,   # the panel: 240 round (S3), 720 (P4)
     [ValidateRange(30, 100)][int]$Quality = 85,
     [switch]$Demo
 )
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-if (-not $Out) { $Out = if ($Side -eq 480) { "gallery\gallery.bin" } else { "gallery\gallery-$Side.bin" } }
+if (-not $Out) { $Out = if ($Side -eq 240) { "gallery\gallery.bin" } else { "gallery\gallery-$Side.bin" } }
 $NameLen = 24        # gallery.c NAME_LEN, terminator included
 $MaxPhotos = 64      # gallery.c MAX_PHOTOS
 $Budget = 1000000    # roughly what the 3 MB app slot has left

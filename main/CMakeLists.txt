@@ -2,10 +2,6 @@
 # has the same touch panel and the same speaker, and the drag works there too.
 set(srcs "main.c" "status.c" "voice.c"
          "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c" "volume_ui.c" "clock_ui.c")
-# The GC9A01 kit has no touch layer, and the touch was the S3's only I2C device.
-if(NOT CONFIG_BUDDY_S3_PANEL_GC9A01)
-    list(APPEND srcs "board_i2c.c" "touch.c")
-endif()
 
 # The two screens are exclusive (BUDDY_SCREEN in Kconfig), and so are their
 # lip-sync front ends: the face classifier returns a sprite index to draw, the
@@ -14,8 +10,8 @@ if(CONFIG_BUDDY_SCREEN_FACE)
     list(APPEND srcs "face_view.c" "face_motion.c" "face_lipsync.c" "face_directive.c"
                      "face_catalogue.c" "face_demo_motion.c")
     # The face is vector art rasterised offline, so its cost is area and the bake
-    # belongs to the glass: 720 for the P4's JD9365, 480 for the S3's ST7701S, 240 for
-    # the S3's GC9A01. All are committed (nothing here needs the front end to build) and exactly one is
+    # belongs to the glass: 720 for the P4's JD9365, 240 for the S3's GC9A01. Both
+    # are committed (nothing here needs the front end to build) and exactly one is
     # compiled — they define the same symbols. face_view.c takes face_bg's size *as*
     # the panel's, so the wrong bake does not scale to fit: it draws short of the
     # edges, and the 720 one does not fit the S3's app slot at all.
@@ -24,16 +20,13 @@ if(CONFIG_BUDDY_SCREEN_FACE)
     # untracked on purpose — it imports the website's catalogue and cannot compile
     # without that repo. See .gitignore. Building the firmware never needs it.
     #
-    # The two S3 panels are told apart by CONFIG_BUDDY_S3_PANEL. That is safe for SRCS,
-    # which only the second pass reads — CONFIG_BUDDY_SCREEN_FACE above is the same
-    # case. It would not be for REQUIRES: see esp_lcd_gc9a01 below.
+    # Chosen on IDF_TARGET rather than a CONFIG_: this list is read in the early pass
+    # that resolves sources, where no CONFIG_ symbol exists yet. IDF_TARGET does.
     if(IDF_TARGET STREQUAL "esp32p4")
         list(APPEND srcs "generated/face_assets_720.c")
         list(APPEND srcs "face_ppa.c")           # the P4's 2D accelerator
-    elseif(CONFIG_BUDDY_S3_PANEL_GC9A01)
-        list(APPEND srcs "generated/face_assets_240.c")
     else()
-        list(APPEND srcs "generated/face_assets_480.c")
+        list(APPEND srcs "generated/face_assets_240.c")
     endif()
 else()
     list(APPEND srcs "gallery.c" "lipsync.c" "generated/visemes.c")
@@ -49,7 +42,7 @@ endif()
 if(IDF_TARGET STREQUAL "esp32p4")
     # Waveshare ESP32-P4-WIFI6-Touch-LCD-4C: 720x720 MIPI-DSI, ES8311 + ES7210, and Wi-Fi
     # and BLE from the ESP32-C6 beside it, over SDIO.
-    list(APPEND srcs "lcd_p4.c" "audio_p4.c")
+    list(APPEND srcs "lcd_p4.c" "audio_p4.c" "board_i2c.c" "touch.c")
     # esp_driver_ppa is the P4's 2D accelerator, and it is required here rather than
     # beside the face's other sources on purpose: a component's CMakeLists is read
     # twice, and in the early pass that resolves REQUIRES no CONFIG_ symbol exists
@@ -59,15 +52,10 @@ if(IDF_TARGET STREQUAL "esp32p4")
     list(APPEND reqs esp_lcd_jd9365 esp_codec_dev esp_wifi_remote esp_hosted esp_driver_ppa)
     set(pack_name "gallery-720.bin")
 else()
-    # Either S3 kit: INMP441 + MAX98357A on one I2S bus, and one of two panels.
-    # esp_lcd_gc9a01 is required for both: REQUIRES is resolved in the early pass, where
-    # CONFIG_BUDDY_S3_PANEL does not exist yet, and an unused component costs nothing.
+    # The S3 kit: GC9A01 on SPI, INMP441 + MAX98357A on one I2S bus, and no touch —
+    # so none of the P4's I2C (board_i2c.c, touch.c) either.
+    list(APPEND srcs "gc9a01.c" "audio.c")
     list(APPEND reqs esp_lcd_gc9a01)
-    if(CONFIG_BUDDY_S3_PANEL_GC9A01)
-        list(APPEND srcs "gc9a01.c" "audio.c")
-    else()
-        list(APPEND srcs "st7701.c" "audio.c")
-    endif()
     set(pack_name "gallery.bin")
 endif()
 

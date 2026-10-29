@@ -682,10 +682,9 @@ static void run_setup(void)
 
 #if CONFIG_BUDDY_BOOT_BUTTON_SETUP
 /* BOOT while the kit runs. See CONFIG_BUDDY_BOOT_BUTTON_SETUP for why this exists
- * beside net_boot_reset_check(): on this board no sequence can be holding the pin
- * down by the time that one reads it, so the only gesture that works is a running
- * one. GPIO 35 is BOOT and nothing else here, so it is safe to poll with the panel
- * up — which is exactly what the S3's GPIO 0 is not.
+ * beside net_boot_reset_check(): an awake kit cannot be holding the pin down by the
+ * time that one reads it, so the gesture that works is a running one. BOOT is a button
+ * and nothing else on both boards, so it is safe to poll with the panel up.
  *
  * Polled rather than interrupt-driven: 50 ms is far below anything a thumb can do,
  * the counter is its own debounce, and an ISR that erases NVS is not a thing to
@@ -729,10 +728,8 @@ static void boot_button_task(void *arg)
 /* BOOT held for 5 s: forget everything and come back up in setup. The factory-reset
  * gesture our other kits use, on the one button every S3 board has.
  *
- * It used to be a task polling BOOT for as long as the kit ran. It cannot be now: GPIO 0
- * is DB17, the top bit of red, and configuring it as an input takes it off the RGB bus.
- * So BOOT is read once, before the panel starts — and the only way to be holding it
- * then is to have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
+ * Read once, before the panel starts — and the only way to be holding it then is to
+ * have pressed it to wake the kit, since a cold reset with GPIO 0 low is the
  * ROM's download mode and never reaches here. The gesture is therefore: while the kit
  * sleeps, press BOOT and keep holding. (Strapping pins are latched on a chip reset, not
  * on a wake from deep sleep, so a held BOOT does not send the wake to the bootloader —

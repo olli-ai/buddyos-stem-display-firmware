@@ -1,6 +1,7 @@
-# ESP32-S3-WROOM-1-N16R8: 16 MB flash, 8 MB **octal** PSRAM.
+# The S3 kit: ESP32-S3-WROOM-1-N16R8 (16 MB flash, 8 MB **octal** PSRAM) with a GC9A01
+# 1.28" 240x240 round screen and no touch. Pins in main/board_pins.h.
 #
-# Build for it by layering this over the N8R2 defaults:
+# Build for it by layering this over the shared defaults:
 #
 #   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
 #
@@ -13,15 +14,14 @@
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
-# 3 MB app slots: see partitions-16mb.csv.
+# 4.5 MB app slots: see partitions-16mb.csv.
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions-16mb.csv"
 
-# The ST7701S is an RGB panel: the LCD peripheral streams a 460 KB frame buffer out
-# of PSRAM sixty times a second, and that is what this module is for. While the flash
-# is written (OTA, NVS) the cache is off, and code or constants
-# still fetched from flash would stall the panel's DMA mid-line — a torn, scrolling
-# picture. So both are copied into PSRAM at boot. IDF 5.2 spells it as the two
+# Code and constants copied into PSRAM at boot, so nothing stalls while the flash is
+# written (OTA, NVS) and the cache is off. It was required by the 480x480 RGB panel this
+# kit had before the GC9A01 — a stalled fetch tore its picture mid-line — and is kept
+# because the GC9A01 build has only ever run with it; it costs ~3.3 MB of the 8 MB. IDF 5.2 spells it as the two
 # lines; 5.3+ as XIP_FROM_PSRAM, which implies them. Whichever this IDF does not know
 # is ignored with a warning.
 CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
@@ -34,7 +34,14 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 # Puya part (JEDEC 0x85 0x2018) that IDF has no HPM driver for, and startup aborts with
 # "The flash model has not been verified". PSRAM itself passed its memory test at 120.
 
-# The idle clock (main/clock_ui.c) draws the time in the largest Montserrat it was
-# given. Without this the S3 gets 28 pt on the same 480x480 glass where the P4's
-# 720x720 gets 48, and the time reads as a caption rather than a clock.
-CONFIG_LV_FONT_MONTSERRAT_48=y
+# Voice on, unlike the P4's default build. With no touch, the wake word is the only
+# thing on the kit itself that brings the face back from the idle clock: off, a kit
+# left alone for three minutes would show the time until the gateway sent it something.
+# The audio is opt-in on the P4 because its first bring-up hung a board; this kit is
+# not usable without it.
+CONFIG_BUDDY_AUDIO=y
+CONFIG_BUDDY_VOICE=y
+
+# The idle clock's time at 40 pt (main/clock_ui.c): 48 runs the full width of a 240 px
+# circle, and the 28 the shared defaults carry reads as a caption.
+CONFIG_LV_FONT_MONTSERRAT_40=y

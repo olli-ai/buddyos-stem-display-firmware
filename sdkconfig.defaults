@@ -105,10 +105,3 @@ CONFIG_BT_NIMBLE_GATT_MAX_PROCS=4
 # The host's allocations to PSRAM, of which this board has 8 MB going spare:
 # internal RAM is what TLS and DMA are short of, so move what can be moved.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
-
-# ST7701S RGB panel. Its interrupt refills the bounce buffers and must keep running
-# while the flash is busy, and if it ever does fall behind, the frame restarts at the
-# next VSYNC rather than drifting — a picture shifted sideways forever is the failure
-# without it. The board needs the octal N16R8 module: see sdkconfig.defaults.n16r8.
-CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
-CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
