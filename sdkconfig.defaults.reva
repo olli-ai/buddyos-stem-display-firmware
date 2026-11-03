@@ -31,3 +31,19 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # The bench board shares the limit and is one allocation luckier; raising it there
 # belongs with a board to test it on.
 CONFIG_LV_MEM_SIZE_KILOBYTES=32
+
+# Start at full scale, because on this board quieter is also worse. The MAX98357A
+# has no volume control, so BUDDY_SPEAKER_VOLUME is a multiply on the samples
+# (audio.c, volume_apply): percent is linear in dB, 100% is untouched, and every
+# 10% down is 4 dB. The 60% default is therefore -16 dB of level thrown away
+# before the amplifier sees it, and the bottom bits of every sample thrown away
+# with it.
+#
+# There is not much to give back elsewhere. U601's GAIN_SLOT is open, which is
+# the part's 9 dB setting and three steps below the 15 dB it offers, and rev A
+# has no speaker connector — the speaker solders to TP504/TP505, so what is
+# fitted there sets the ceiling more than the amplifier does.
+#
+# Only the starting point: the volume is adjustable at runtime and kept in NVS,
+# and a kit that already has a stored volume ignores this.
+CONFIG_BUDDY_SPEAKER_VOLUME=100
