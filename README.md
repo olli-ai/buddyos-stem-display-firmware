@@ -266,6 +266,19 @@ turning things:
 The glass is round (`BOARD_ROUND`), so the turn uncovers no corner at any angle;
 `render_rotated` fills what comes in from outside with black, and the bezel covers it.
 
+**The pill's own numbers, rev A, 2026-11-03**, at −48°: the canvas is **186 × 34, 25,296 B
+of PSRAM**, allocated once at startup, out of 5.85 MB free — and the LVGL pool went
+*down*, to **11,732 of 30,616 used, peak 13,912, 7% fragmented**, from 11,848 and a peak
+of 14,088 at −45° with the flex pill. It should: the label object and the text buffer it
+kept in the pool are gone, and what replaced them lives in PSRAM. Frame means were
+**276–2,111 µs**.
+
+> **Not yet proven on the glass: the rasterising itself.** In that run the kit never
+> associated (`no access point with that SSID in range`), and `voice_start()` is what
+> first calls `status_set()` — so the pill was allocated and placed but never drew a
+> caption. What the run does establish is that creating it costs what is written above
+> and faults nothing. Exercise it with the AP in range before trusting the layout.
+
 **Measured on rev A, 2026-11-03**, 60 s from reset, over several angles. The cost that
 was worth worrying about did not appear: at rest the five features used to take LVGL's
 plain blit path and now always take the transformed one, which asks `lv_malloc` for up
