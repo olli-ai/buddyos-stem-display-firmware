@@ -138,9 +138,32 @@ Everything here is a common module and a breadboard. No PCB, no reflow, no custo
 | Speaker | 4 Ω, 2–3 W, small | |
 | Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
 
-**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) has 2 MB app slots, which
-cannot hold the voice path *and* BLE setup together; the build fails at link time. The
-16 MB table (`partitions-16mb.csv`) gives 4.5 MB slots.
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) keeps `partitions.csv`,
+whose app slots are 2 MB — and the rev A image with voice and the face in it measures
+**2,442,128 B**, which is 116% of one. The link succeeds and the build then stops at the
+partition check. The 16 MB table (`partitions-16mb.csv`) gives 4.5 MB slots.
+
+It is worth being precise about *why*, because "2 MB" is the table and not the chip, and
+the two are easy to confuse:
+
+- **Flash is the real constraint, and it is a table, not a wall.** Two 2.94 MB slots plus
+  `faces` and `model` do fit an 8 MB part (`0x2F0000` each, which leaves the image at 79%
+  of a slot); drop `faces`, which this build bakes into the app and never reads, and the
+  slots reach 3.8 MB. Nobody has cut that table or built against it. What you would be
+  buying is a slot with a fifth of headroom instead of a half, on a device whose artwork
+  rides *inside* the firmware — which is the trade `partitions-16mb.csv` exists to avoid.
+- **PSRAM capacity is not the constraint.** Measured on rev A, the whole firmware's
+  dynamic PSRAM use is about **185 KB** (free goes 6,062,524 → 5,876,928 min-ever). 2 MB
+  is ample. What does not fit is `CONFIG_SPIRAM_XIP_FROM_PSRAM` — the measured 2.22 MB of
+  `.text`/`.rodata` it copies in is more than an N8R2 has in total — but that lives in
+  `sdkconfig.defaults.n16r8` and the N8R2 path never turns it on. It was added for the
+  480×480 RGB panel this kit no longer has.
+- **PSRAM bandwidth is the unmeasured risk.** The R2 part is quad, half the octal R8's,
+  and voice, TLS and LVGL's reads from flash share that bus. This is the one that would
+  need a board rather than arithmetic.
+- **Pins are identical either way.** Octal PSRAM takes GPIO 35–37; on rev A those three
+  are unconnected at the module (confirmed in the schematic netlist), so a quad part
+  simply hands them back.
 
 **Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
 the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
@@ -182,6 +205,13 @@ transistor, held off through panel reset and lit on the first frame, so the cont
 power-on RAM noise is never seen. rev A also has no speaker connector: `OUTP`/`OUTN` end
 on test points **TP504/TP505** and the speaker solders to those pads — a board with
 nothing on them is silent with every register correct.
+
+rev A also **mounts the panel the other way round**: the same driver, the same init and
+the same `invert_color` give a face mirrored left to right here and a correct one on the
+bench board, so it is the FPC and not the software. `main/gc9a01.c` undoes it with
+`esp_lcd_panel_mirror(true, false)` under `CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA` — a mirror,
+not a rotation. It is not a build option on purpose: which way a soldered-down panel
+faces is a fact about the board, like its pins.
 
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
@@ -998,6 +1028,38 @@ the same bench day:
 On the ST7701S board: the **main-task stack overflow** described under [The
 gallery](#the-gallery), and **PSRAM cannot run at 120 MHz** — the board's flash has no
 high-performance mode, so it stays at 80 MHz.
+
+### What BuddyDisplay rev A bring-up found, 2026-11-03
+
+Three things, all of them in `sdkconfig.defaults.reva` or `main/` now, and all three
+invisible to `sim/`:
+
+- **LVGL's 16 KB pool runs out on rev A, and running out is silent.** The build sits at
+  ~11.9 KB of it with the face up and peaked at 14,000 of the 14,352 usable once the
+  radio and voice were running. A sprite drawn with a transform then asks `lv_malloc()`
+  for a temp buffer of up to 1,920 B (`MAX_BUF_SIZE`, 4 × 240 × 2) and does not get it —
+  and `LV_ASSERT_MALLOC` fires into an `LV_ASSERT_HANDLER` that is `while(1);` by
+  default, with `LV_USE_LOG` off. So the main task spins forever inside `img_draw_core`
+  having printed nothing: the face freezes, the task watchdog repeats every 5 s with a
+  byte-identical backtrace, and Wi-Fi, MQTT and SNTP carry on as if nothing happened.
+  **Identical PC and stack pointers 25 s apart is what proves a task is wedged rather
+  than slow.** `CONFIG_LV_MEM_SIZE_KILOBYTES=32` fixes it; 60 s then ran clean, with the
+  pool at 11,916 of 30,580 and the peak still 14,000.
+- **An idle kit's `mic:` counter never prints, and that is correct.** `up_task`'s idle
+  branch ends in a `continue` before the frame counter, so a dead microphone and a quiet
+  room produce byte-identical logs on the plain WakeNet path — an hour went into reading
+  that silence as a fault. `main/voice.c` now meters the real microphone every 10 s
+  whether or not a conversation is open (`mic idle: rms N, peak N`), the counterpart of
+  the AEC build's `afe in:`. First readings on rev A: rms 169–218, peaks to 2,849 of
+  32,767 in a quiet room, with WakeNet costing 3,172 µs per 32 ms chunk beside it.
+- **The 60% default volume was −16 dB thrown away.** The MAX98357A has no volume control,
+  so `BUDDY_SPEAKER_VOLUME` is a multiply on the samples before they reach it
+  (`volume_apply` in `main/audio.c`): percent is linear in dB, 100% is untouched, every
+  10% down is 4 dB. 60% is a Q8 gain of 41 against 256 — a sixth of the amplitude, and
+  the quiet end of every sample given up with it. There is little to give back elsewhere:
+  U601's `GAIN_SLOT` is open, which is the part's 9 dB setting and three steps below the
+  15 dB it offers. rev A now starts at 100%. The volume is still adjustable at runtime
+  and kept in NVS, so a kit already turned down stays turned down.
 
 ### Audio, proven on hardware 2026-09-28
 
