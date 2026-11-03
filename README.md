@@ -214,8 +214,14 @@ not a rotation. It is not a build option on purpose: which way a soldered-down p
 faces is a fact about the board, like its pins.
 
 And rev A's enclosure holds that panel at an angle, so the face is turned to match:
-`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, 30° on rev A and 0 everywhere else. It sits
-beside the pins for the same reason the mirror does.
+`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, −30° on rev A and 0 everywhere else. It
+sits beside the pins for the same reason the mirror does.
+
+It is **−30 and not 30** because the number is the turn applied to the face, which has
+to oppose the enclosure's rather than match it. The first build said 30, and on the
+bench that reads as a face leaning about twice as hard as the bare panel did — not as
+something subtly off. A face that comes out worse than no correction at all is this
+sign, every time.
 
 It is **not** a display rotation, and could not have been. The GC9A01's MADCTL has MX,
 MY and MV — eight combinations, which is quarter turns and flips — and LVGL's enum is

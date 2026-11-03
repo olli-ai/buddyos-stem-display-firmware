@@ -43,8 +43,16 @@
  *
  * What it does NOT turn is the text drawn over the face — the clock, the status pill,
  * the volume panel. LVGL draws any transformed object through an intermediate layer
- * except lv_image, and a layer is the allocation this firmware cannot make. */
-#define BOARD_FACE_ROT_DEG   30
+ * except lv_image, and a layer is the allocation this firmware cannot make.
+ *
+ * The sign is the easy half to get wrong, and it is wrong in a way that looks right
+ * until you hold the kit up: this is the turn applied to the *face*, so it has to
+ * oppose the enclosure's, not match it. +30 on a board whose glass is already 30
+ * clockwise does not level anything — it lands at 60 and reads as a much worse tilt
+ * than the one being corrected. Seen on rev A on 2026-11-03, which is why it says -30
+ * and not 30. If a face ever comes out leaning harder than the bare panel did, this
+ * line is the first thing to look at. */
+#define BOARD_FACE_ROT_DEG  (-30)
 
 /* ---- GC9A01 1.28" round TFT, SPI (FPC DS501/DS502) ------------------------ */
 /* R501 and R502 are drawn as 22 R and fitted as 100 R on rev A (measured 2026-10-28).
