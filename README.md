@@ -243,6 +243,17 @@ turning things:
 The glass is round (`BOARD_ROUND`), so a 30° turn uncovers no corner; `render_rotated`
 fills what turns in from outside with black, and the bezel covers it.
 
+**Measured on rev A, 2026-11-03**, 60 s from reset. The cost that was worth worrying
+about did not appear: at rest the five features used to take LVGL's plain blit path and
+now always take the transformed one, which asks `lv_malloc` for up to `MAX_BUF_SIZE`
+(4 × 240 × 2 = 1,920 B) per draw. The pool barely noticed — **12,004 of 30,572 used,
+peak 14,184, 7% fragmented**, against 11,916 and a peak near 14,000 before the turn.
+The transformed-draw buffer is transient and the peak already carried it, because any
+design with a rotation track was taking that path anyway. Frame time stayed well inside
+budget too: means of **222–4,053 µs** per 301 frames against the 16,000 µs that is 60
+fps. The worst-case spikes in the same log (10–231 ms) line up with Wi-Fi association
+retries, not with the face — though that is a correlation, not a before-and-after.
+
 **What does not turn: the text over the face** — the clock, the voice status pill, the
 volume panel, the setup screen. LVGL draws *any* transformed object through an
 intermediate layer except `lv_image`, so turning a label or a pill costs the allocation
