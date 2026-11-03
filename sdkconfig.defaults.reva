@@ -11,3 +11,23 @@ CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA=y
 
 # QIO, or rev A boot-loops. The bench board is happy on DIO; this one is not.
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# 16 KB was not enough, and running out is silent. sdkconfig.defaults gives LVGL a
+# 16 KB pool; this build sits at ~11.9 KB of it with the face up and peaked at 14000
+# of 14352 once the radio and voice were running. A sprite drawn with a transform
+# asks lv_malloc() for a temp buffer of up to 4 * 240 * 2 = 1920 B
+# (MAX_BUF_SIZE, components/lvgl/src/draw/sw/lv_draw_sw_img.c), and there was not
+# that much contiguous room left.
+#
+# What that costs is worse than a dropped frame. LV_ASSERT_MALLOC fires,
+# LV_ASSERT_HANDLER is `while(1);` by default and LV_USE_LOG is off, so the main
+# task spins forever inside img_draw_core with nothing printed: the face freezes,
+# the task watchdog repeats every 5 s with an identical backtrace, and the rest of
+# the firmware keeps running as if nothing happened. Measured on rev A on
+# 2026-11-03, 25 s apart, same PC and same stack pointers both times.
+#
+# 32 KB leaves ~20 KB of headroom, ten of those buffers, out of the ~96 KB of
+# internal RAM this build has free. The P4 already runs 64 KB for the same reason.
+# The bench board shares the limit and is one allocation luckier; raising it there
+# belongs with a board to test it on.
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
