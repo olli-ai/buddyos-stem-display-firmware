@@ -360,6 +360,12 @@ void app_main(void)
         int64_t t0 = esp_timer_get_time();
         uint32_t wait = lv_timer_handler();
         uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+#if !CONFIG_IDF_TARGET_ESP32P4
+        /* The face is on the glass now, so a board that owns its backlight may light
+         * it. Not in panel_start(): between the panel's init and this line the RAM
+         * still holds whatever it powered up with. */
+        if (!lvgl_frames) gc9a01_backlight(true);
+#endif
         if (us > lvgl_worst) lvgl_worst = us;
         lvgl_total += us;
         lvgl_frames++;

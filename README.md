@@ -15,8 +15,14 @@ set: the target decides, and `main/CMakeLists.txt` picks the matching face artwo
 
 | Your board | Target | Screen | Build directory |
 | --- | --- | --- | --- |
-| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
+| **GC9A01 bench board** (hand-wired, ESP32-S3-WROOM-1) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
+| **BuddyDisplay rev A** (ESP32-S3-WROOM-1-N16R8, laid out) | `esp32s3` | the same panel, on different pins | `build-reva` |
 | **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch | `build-p4` |
+
+The two S3 rows are the same chip, the same panel and **not one GPIO in common**, so the
+board is a build choice (`BUDDY_S3_BOARD`, set by `sdkconfig.defaults.reva`) rather than
+something the firmware can work out. Flashing the wrong one is a dark screen and a silent
+speaker with no complaint in the log.
 
 Both build with **ESP-IDF v5.5.3**. Older IDF does not build this tree (the P4's panel
 driver needs 5.4 or later). No IDF installed? Use Espressif's image,
@@ -29,9 +35,13 @@ cd buddyos-stem-display-firmware
 # LVGL is not committed — clone it once, before the first build
 git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 
-# ESP32-S3-WROOM-1-N16R8 + GC9A01 — the N16R8 overlay is not applied automatically
+# GC9A01 bench board — the N16R8 overlay is not applied automatically
 idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+# BuddyDisplay rev A — the same, plus the board's own pins and QIO flash
+idf.py -B build-reva -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-reva/sdkconfig \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
 
 # ESP32-P4 — IDF layers sdkconfig.defaults.esp32p4 on its own
 idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
@@ -142,27 +152,36 @@ your board behaves strangely the moment audio starts, this is why.
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
 the file is right.
 
-| Signal | GPIO | Module pin |
-| --- | --- | --- |
-| **GC9A01** SCLK | 15 | `SCL` |
-| MOSI | 16 | `SDA` |
-| DC | 17 | `DC` |
-| CS | 18 | `CS` |
-| RESET | 8 | `RST` |
-| **I²S** BCLK | 5 | MAX98357A `BCLK` **and** INMP441 `SCK` |
-| WS | 6 | MAX98357A `LRC` **and** INMP441 `WS` |
-| MAX98357A DIN | 7 | |
-| INMP441 SD | 4 | the mic's data *out*, an input to us |
+| Signal | Bench board | BuddyDisplay rev A | Module pin |
+| --- | --- | --- | --- |
+| **GC9A01** SCLK | 15 | 12 | `SCL` |
+| MOSI | 16 | 11 | `SDA` |
+| DC | 17 | 16 | `DC` |
+| CS | 18 | 17 | `CS` |
+| RESET | 8 | 18 | `RST` |
+| Backlight | — (`BLK` to 3V3) | 13 | Q501 gate, high lights it |
+| **I²S** speaker BCLK | 5 | 47 | MAX98357A `BCLK` |
+| speaker WS | 6 | 48 | MAX98357A `LRC` |
+| MAX98357A DIN | 7 | 21 | |
+| MAX98357A SD | — (100 k to VIN) | 14 | `SD_MODE`: high enables, low mutes |
+| **I²S** mic SCK | 5 (shared) | 38 | INMP441 `SCK` |
+| mic WS | 6 (shared) | 39 | INMP441 `WS` |
+| INMP441 SD | 4 | 40 | the mic's data *out*, an input to us |
 
-Hardwired, not driven: the panel backlight (`BLK` to 3V3 — **it cannot be dimmed or
-switched off**; sleep blanks the panel with DISPOFF instead), the amplifier's `SD` (100 k
-to VIN: on, left channel), its `GAIN` (floating: 9 dB) and the mic's `L/R` (GND: left).
-The panel's `VCC` is 3V3; the amplifier's VIN is **5 V**.
+Hardwired on both, not driven: the amplifier's `GAIN` (floating: 9 dB) and the mic's `L/R`
+(GND: left). The panel's `VCC` is 3V3; the amplifier's VIN is **5 V**.
 
-The amp and the mic share BCLK and WS, so they are one I²S controller in full duplex
-(`main/audio.c`), not two. **Wire them that way.** The first GC9A01 bench board gave the
-amp its own clock on GPIO 9–13; this build does not drive that layout, and on it the
-speaker or the microphone stays silent.
+On the **bench board** the amp and the mic share BCLK and WS, so they are one I²S
+controller in full duplex, not two — **wire them that way**, or the speaker or the
+microphone stays silent. Its backlight is on 3V3 and **cannot be dimmed or switched off**;
+sleep blanks the panel with DISPOFF instead.
+
+On **rev A** each part has its own clock pair, so it is two controllers (I2S0 out, I2S1
+in). `main/audio.c` picks between the two off `PIN_SPK_BCLK`. Its backlight is a
+transistor, held off through panel reset and lit on the first frame, so the controller's
+power-on RAM noise is never seen. rev A also has no speaker connector: `OUTP`/`OUTN` end
+on test points **TP504/TP505** and the speaker solders to those pads — a board with
+nothing on them is silent with every register correct.
 
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
@@ -170,8 +189,8 @@ the octal PSRAM (35–37), native USB (19/20) and flash (26–32) are all left a
 
 ### Flash it
 
-Build first ([Building](#building)) — one build directory per board, `build-s3` or
-`build-p4`. Then, on the machine the board is plugged into:
+Build first ([Building](#building)) — one build directory per board, `build-s3`,
+`build-reva` or `build-p4`. Then, on the machine the board is plugged into:
 
 **1. Install esptool 5.x.** Once, in its own environment:
 
@@ -198,7 +217,7 @@ which board is behind it.
     cd build-s3
     ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
 
-For the P4, the same from `build-p4` with `--chip esp32p4`.
+For rev A, the same from `build-reva`. For the P4, from `build-p4` with `--chip esp32p4`.
 
 - **Use `@flash_args`, not offsets copied from anywhere.** The build writes that file with
   every image, its offset and the flash settings, for exactly what you just built.
@@ -537,10 +556,15 @@ Dependencies are **vendored in `components/`**, so the component manager is swit
 and nothing is fetched from the registry. Clone LVGL first (below), then, from the repo
 root:
 
-    # ESP32-S3-WROOM-1-N16R8
+    # GC9A01 bench board
     docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
         idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
                -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+    # BuddyDisplay rev A
+    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
+        idf.py -B build-reva -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-reva/sdkconfig \
+               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
 
     # ESP32-P4
     docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \

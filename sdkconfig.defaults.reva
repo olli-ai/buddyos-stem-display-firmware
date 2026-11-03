@@ -1,0 +1,13 @@
+# BuddyDisplay rev A, on top of sdkconfig.defaults + sdkconfig.defaults.n16r8.
+#
+# Same chip and same panel as the 2026-09-28 GC9A01 bench board — and not one pin in
+# common with it. The panel moved to the SPI pins the layout could route, the amplifier
+# and the microphone ended up on separate clocks, and the backlight gained a transistor.
+# So the board is a choice, not an assumption: see BUDDY_S3_BOARD in main/Kconfig.projbuild.
+#
+#   idf.py -B build-reva -DSDKCONFIG=build-reva/sdkconfig \
+#       "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
+CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA=y
+
+# QIO, or rev A boot-loops. The bench board is happy on DIO; this one is not.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

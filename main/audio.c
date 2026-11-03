@@ -5,20 +5,43 @@
 #include "nvs.h"
 #include <math.h>
 #include <string.h>
+#ifdef PIN_SPK_SD
+#include "driver/gpio.h"
+#endif
 
 static const char *TAG = "audio";
 
-/* Wiring lives in board_pins.h. The amplifier and the microphone share one bit clock
- * and one word clock, so both directions are the two halves of ONE I2S controller in
- * full duplex. Two controllers — what this file used to run — would each drive their
- * own clock onto the same wire.
+/* Wiring lives in board_pins.h, and it decides the topology here — the two S3 boards
+ * differ on it, so this file is written for both rather than for whichever one is on
+ * the bench.
+ *
+ * The bench board runs the amplifier and the microphone off one bit clock and one word
+ * clock, so both directions are the two halves of ONE I2S controller in full duplex;
+ * two controllers would each drive their own clock onto the same wire. BuddyDisplay
+ * rev A gave each part its own clock pair, so there it IS two controllers, and running
+ * them as one would leave half the pins unconnected.
+ *
+ * PIN_SPK_BCLK is what tells them apart: a board that names a speaker bit clock of its
+ * own has two buses.
  *
  * Sharing a clock means sharing a slot width, and the microphone dictates it: the
  * INMP441 is a 24-bit part that wants 32-bit slots. So the speaker side is 32-bit too,
  * and audio_write() widens each 16-bit sample into the top of a 32-bit slot, which the
- * MAX98357A reads as the same value. */
-#define BCLK      PIN_I2S_BCLK
-#define WS        PIN_I2S_WS
+ * MAX98357A reads as the same value. The two-bus board keeps that width as well, so
+ * only the bring-up differs and the sample paths stay one piece of code. */
+#ifdef PIN_SPK_BCLK
+#define AUDIO_TWO_BUSES 1
+#define SPK_BCLK  PIN_SPK_BCLK
+#define SPK_WS    PIN_SPK_LRC
+#define MIC_BCLK  PIN_MIC_SCK
+#define MIC_WS    PIN_MIC_WS
+#else
+#define AUDIO_TWO_BUSES 0
+#define SPK_BCLK  PIN_I2S_BCLK
+#define SPK_WS    PIN_I2S_WS
+#define MIC_BCLK  PIN_I2S_BCLK
+#define MIC_WS    PIN_I2S_WS
+#endif
 #define SPK_DIN   PIN_SPK_DIN
 #define MIC_SD    PIN_MIC_SD
 
@@ -93,16 +116,31 @@ void audio_volume_persist(void)
 
 void audio_speaker_enable(bool on)
 {
+#ifdef PIN_SPK_SD
+    /* SD_MODE on a GPIO: high enables the amplifier on the left slot, low mutes it.
+     * Worth switching rather than leaving on — the MAX98357A hisses faintly with
+     * nothing to play, which on a device beside a bed is noticed. */
+    gpio_set_level(PIN_SPK_SD, on ? 1 : 0);
+#else
     /* Nothing to switch: SD is strapped to VIN through 100 k on this board, which is
      * "on, left channel". The calls stay where a muting pin would be driven, so a board
      * that brings SD back to a GPIO needs this function and nothing else. Between
      * utterances the TX side sends zeros (auto_clear), which is quiet but not silent. */
     (void)on;
+#endif
 }
 
 bool audio_start(void)
 {
     if (s_tx && s_rx) return true;
+
+#ifdef PIN_SPK_SD
+    /* Before the bus: a floating SD_MODE is neither on nor off, and the amplifier
+     * decides for itself. Driven low here and raised by audio_speaker_enable(). */
+    gpio_config_t en = { .pin_bit_mask = 1ULL << PIN_SPK_SD, .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&en);
+    gpio_set_level(PIN_SPK_SD, 0);
+#endif
 
     i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     /* Silence on underrun, not the last buffer again. Left at its default, the DMA
@@ -115,13 +153,22 @@ bool audio_start(void)
      * cushion after a real underrun. In full duplex the RX side gets the same. */
     cfg.dma_desc_num = 6;
     cfg.dma_frame_num = AUDIO_SAMPLE_RATE / 50;
+#if AUDIO_TWO_BUSES
+    /* Two clock pairs, so two controllers: I2S0 plays and I2S1 listens, each driving
+     * its own BCLK and WS. The RX side gets the defaults — its buffers only have to
+     * outlast one 20 ms read, not a late network packet. */
+    if (i2s_new_channel(&cfg, &s_tx, NULL) != ESP_OK) { ESP_LOGE(TAG, "no I2S tx channel"); return false; }
+    i2s_chan_config_t rx_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    if (i2s_new_channel(&rx_cfg, NULL, &s_rx) != ESP_OK) { ESP_LOGE(TAG, "no I2S rx channel"); return false; }
+#else
     if (i2s_new_channel(&cfg, &s_tx, &s_rx) != ESP_OK) { ESP_LOGE(TAG, "no I2S channels"); return false; }
+#endif
 
     /* Speaker: 32-bit mono, on the left slot — the half the amp's SD strap selects. */
     i2s_std_config_t tx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO),
-        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = BCLK, .ws = WS,
+        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = SPK_BCLK, .ws = SPK_WS,
                       .dout = SPK_DIN, .din = I2S_GPIO_UNUSED },
     };
     tx_std.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
@@ -133,7 +180,7 @@ bool audio_start(void)
     i2s_std_config_t rx_std = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = BCLK, .ws = WS,
+        .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = MIC_BCLK, .ws = MIC_WS,
                       .dout = I2S_GPIO_UNUSED, .din = MIC_SD },
     };
     rx_std.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
@@ -145,9 +192,15 @@ bool audio_start(void)
     s_vol = s_vol_saved = volume_restore();
     volume_apply(s_vol);
 
-    ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz, volume %d%%%s",
-             BCLK, WS, SPK_DIN, MIC_SD, AUDIO_SAMPLE_RATE, s_vol,
+#if AUDIO_TWO_BUSES
+    ESP_LOGI(TAG, "I2S0 speaker %d/%d/%d, I2S1 mic %d/%d/%d, %d Hz, volume %d%%%s",
+             SPK_BCLK, SPK_WS, SPK_DIN, MIC_BCLK, MIC_WS, MIC_SD, AUDIO_SAMPLE_RATE, s_vol,
              s_vol == CONFIG_BUDDY_SPEAKER_VOLUME ? "" : " (kept from last time)");
+#else
+    ESP_LOGI(TAG, "I2S0 full duplex: BCLK %d, WS %d, speaker DIN %d, mic SD %d, %d Hz, volume %d%%%s",
+             SPK_BCLK, SPK_WS, SPK_DIN, MIC_SD, AUDIO_SAMPLE_RATE, s_vol,
+             s_vol == CONFIG_BUDDY_SPEAKER_VOLUME ? "" : " (kept from last time)");
+#endif
     return true;
 }
 
