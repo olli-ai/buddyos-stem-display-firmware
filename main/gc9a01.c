@@ -64,6 +64,16 @@ esp_err_t gc9a01_start(esp_lcd_panel_handle_t *out, size_t max_px)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));   /* GC9A01 wants this */
+#if CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA
+    /* rev A shows the face mirrored left to right without this, and the bench board
+     * does not. Nothing in the driver differs between them, so it is the FPC: the
+     * panel is mounted the other way round on this layout and MADCTL has to undo it.
+     * A mirror, not a rotation — flipping X alone is what matches the glass.
+     *
+     * It is deliberately not a build option. Which way a soldered-down panel faces is
+     * a fact about the board, like its pins, so it belongs beside them. */
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
     ESP_LOGI(TAG, "%dx%d on SPI, %d MHz", GC9A01_W, GC9A01_H, LCD_HZ / 1000000);
     *out = s_panel;
