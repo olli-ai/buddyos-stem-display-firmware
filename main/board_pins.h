@@ -41,18 +41,25 @@
  * features carry it in the transform they already have. That works only because this
  * glass is round (BOARD_ROUND), so a turn uncovers no corner.
  *
- * What it does NOT turn is the text drawn over the face — the clock, the status pill,
- * the volume panel. LVGL draws any transformed object through an intermediate layer
- * except lv_image, and a layer is the allocation this firmware cannot make.
+ * The voice status pill turns with it (status.c), by the same trick and for the same
+ * reason: it is drawn into a canvas, and a canvas is an lv_image. What still does NOT
+ * turn is the rest of the text over the face — the clock, the volume panel, the setup
+ * screen. LVGL draws any transformed object through an intermediate layer except
+ * lv_image, and a layer is the allocation this firmware cannot make.
  *
  * The sign is the easy half to get wrong, and it is wrong in a way that looks right
  * until you hold the kit up: this is the turn applied to the *face*, so it has to
- * oppose the enclosure's, not match it. +30 on a board whose glass is already 30
+ * oppose the enclosure's, not match it. +30 on a board whose glass is already turned
  * clockwise does not level anything — it lands at 60 and reads as a much worse tilt
- * than the one being corrected. Seen on rev A on 2026-11-03, which is why it says -30
- * and not 30. If a face ever comes out leaning harder than the bare panel did, this
- * line is the first thing to look at. */
-#define BOARD_FACE_ROT_DEG  (-30)
+ * than the one being corrected. Seen on rev A on 2026-11-03, which is why this is
+ * negative. If a face ever comes out leaning harder than the bare panel did, this
+ * line is the first thing to look at.
+ *
+ * The magnitude was found by eye on the glass, not from a drawing: -30 was short and
+ * -45 was close, and it settled at -48 on 2026-11-03. Anyone with the enclosure's real
+ * angle should put that number here instead and say where it came from — nothing else
+ * in the firmware has to change, because the cost does not depend on the angle. */
+#define BOARD_FACE_ROT_DEG  (-48)
 
 /* ---- GC9A01 1.28" round TFT, SPI (FPC DS501/DS502) ------------------------ */
 /* R501 and R502 are drawn as 22 R and fitted as 100 R on rev A (measured 2026-10-28).

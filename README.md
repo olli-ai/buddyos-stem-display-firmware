@@ -214,19 +214,26 @@ not a rotation. It is not a build option on purpose: which way a soldered-down p
 faces is a fact about the board, like its pins.
 
 And rev A's enclosure holds that panel at an angle, so the face is turned to match:
-`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, −30° on rev A and 0 everywhere else. It
+`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, −45° on rev A and 0 everywhere else. It
 sits beside the pins for the same reason the mirror does.
 
-It is **−30 and not 30** because the number is the turn applied to the face, which has
-to oppose the enclosure's rather than match it. The first build said 30, and on the
-bench that reads as a face leaning about twice as hard as the bare panel did — not as
+It is **negative** because the number is the turn applied to the face, which has to
+oppose the enclosure's rather than match it. The first build said +30, and on the bench
+that reads as a face leaning about twice as hard as the bare panel did — not as
 something subtly off. A face that comes out worse than no correction at all is this
 sign, every time.
+
+The magnitude came off the glass rather than off a drawing: −30 was still visibly
+short, so it was stepped to −45. Anyone holding the enclosure's real angle should
+replace the number and record where it came from. Nothing else moves when it changes —
+the cost below is the same at any angle, and at 0 the code is the code that was there
+before.
 
 It is **not** a display rotation, and could not have been. The GC9A01's MADCTL has MX,
 MY and MV — eight combinations, which is quarter turns and flips — and LVGL's enum is
 `LV_DISPLAY_ROTATION_0/90/180/270` (`lv_display.h`). Nothing in either path expresses
-30°. Turning the frame buffer in software instead would mean a second 240×240 RGB565
+an angle off the quarter. Turning the frame buffer in software instead would mean a
+second 240×240 RGB565
 buffer (115,200 B) and 57,600 pixels resampled *per frame*, on a panel whose SPI link
 already costs 240×240×16 bits ÷ 40 MHz ≈ 23 ms a frame. The P4 side of this repo
 reached the same conclusion from the other direction: it pre-renders thirteen fixed
@@ -246,27 +253,41 @@ turning things:
   the one thing LVGL transforms without an intermediate layer, which is what keeps this
   inside the memory rule the rest of the renderer is built around.
 
-The glass is round (`BOARD_ROUND`), so a 30° turn uncovers no corner; `render_rotated`
-fills what turns in from outside with black, and the bezel covers it.
+- **The voice status pill** turns too, by the same trick one step further. A pill is a
+  container with a label in it, and LVGL would draw that through a layer — so on a
+  turned board `main/status.c` rasterises the pill into an `lv_canvas` instead (the
+  background, the rounded ends and the glyphs), and a canvas *is* an `lv_image`. The
+  caption is redrawn only when the status changes, into one PSRAM buffer sized at
+  startup for the longest of the seven. The coloured dot stays outside it, a leaf of its
+  own placed at the turned position: a filled circle looks the same at every angle, and
+  leaving it out keeps its pulse an opacity write on a leaf rather than a
+  re-rasterisation of the text at animation rate.
 
-**Measured on rev A, 2026-11-03**, 60 s from reset. The cost that was worth worrying
-about did not appear: at rest the five features used to take LVGL's plain blit path and
-now always take the transformed one, which asks `lv_malloc` for up to `MAX_BUF_SIZE`
-(4 × 240 × 2 = 1,920 B) per draw. The pool barely noticed — **12,004 of 30,572 used,
-peak 14,184, 7% fragmented**, against 11,916 and a peak near 14,000 before the turn.
-The transformed-draw buffer is transient and the peak already carried it, because any
-design with a rotation track was taking that path anyway. Frame time stayed well inside
-budget too: means of **222–4,053 µs** per 301 frames against the 16,000 µs that is 60
-fps. The worst-case spikes in the same log (10–231 ms) line up with Wi-Fi association
-retries, not with the face — though that is a correlation, not a before-and-after.
+The glass is round (`BOARD_ROUND`), so the turn uncovers no corner at any angle;
+`render_rotated` fills what comes in from outside with black, and the bezel covers it.
 
-**What does not turn: the text over the face** — the clock, the voice status pill, the
-volume panel, the setup screen. LVGL draws *any* transformed object through an
-intermediate layer except `lv_image`, so turning a label or a pill costs the allocation
-this firmware exists to avoid (and the rev A bring-up below is what running out of that
-pool looks like). They stay upright over a tilted face. If they ever need to follow it,
-the way is to re-lay them out at the turned positions with the text left upright, not to
-transform them.
+**Measured on rev A, 2026-11-03**, 60 s from reset, over several angles. The cost that
+was worth worrying about did not appear: at rest the five features used to take LVGL's
+plain blit path and now always take the transformed one, which asks `lv_malloc` for up
+to `MAX_BUF_SIZE` per draw — and that is **4 × 240 × 2 = 1,920 B**, sized off the
+*display's* RGB565 rather than off the source, so the ARGB8888 pill asks for no more
+than a face sprite does. The pool barely noticed: **12,004 of 30,572 used, peak 14,184**
+at +30°, **12,016 of 30,564, peak 14,196** at −30°, **11,848 of 30,596, peak 14,088** at
+−45°, against 11,916 and a peak near 14,000 before any turn — noise, in other words, and
+the same noise at every angle. The transformed-draw buffer is transient and the peak
+already carried it, because any design with a rotation track was taking that path
+anyway. Frame time stayed well inside budget too: means of **222–4,053 µs** per 301
+frames against the 16,000 µs that is 60 fps. The worst-case spikes in the same logs
+(10–231 ms) line up with Wi-Fi association retries, not with the face — though that is a
+correlation, not a before-and-after.
+
+**What still does not turn** — the clock, the volume panel, the setup screen. LVGL draws
+*any* transformed object through an intermediate layer except `lv_image`, so turning one
+of those as it stands costs the allocation this firmware exists to avoid (and the rev A
+bring-up below is what running out of that pool looks like). They stay upright over a
+tilted face. The way to make one follow is the pill's: rasterise it into a canvas, or
+re-lay it out at the turned positions with the text left upright — not to put a
+transform on it.
 
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
