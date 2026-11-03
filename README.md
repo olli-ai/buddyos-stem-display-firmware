@@ -213,6 +213,44 @@ bench board, so it is the FPC and not the software. `main/gc9a01.c` undoes it wi
 not a rotation. It is not a build option on purpose: which way a soldered-down panel
 faces is a fact about the board, like its pins.
 
+And rev A's enclosure holds that panel at an angle, so the face is turned to match:
+`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, 30° on rev A and 0 everywhere else. It sits
+beside the pins for the same reason the mirror does.
+
+It is **not** a display rotation, and could not have been. The GC9A01's MADCTL has MX,
+MY and MV — eight combinations, which is quarter turns and flips — and LVGL's enum is
+`LV_DISPLAY_ROTATION_0/90/180/270` (`lv_display.h`). Nothing in either path expresses
+30°. Turning the frame buffer in software instead would mean a second 240×240 RGB565
+buffer (115,200 B) and 57,600 pixels resampled *per frame*, on a panel whose SPI link
+already costs 240×240×16 bits ÷ 40 MHz ≈ 23 ms a frame. The P4 side of this repo
+reached the same conclusion from the other direction: it pre-renders thirteen fixed
+angles into PSRAM precisely because turning the body per frame is not affordable even
+with a PPA (`main/face_view.c`).
+
+So the face is turned instead of the screen, in the two places that were already
+turning things:
+
+- **The body** is one flattened RGB565 image, rebuilt only when a child changes
+  character. `render_rotated()` — the P4's resampler, now shared — does the turn in the
+  same pass that resamples it, into the same buffer. **No extra memory and no per-frame
+  cost at all.**
+- **The features** (brows, eyes, mouth) are `lv_image`s, and `place()` already composed
+  a head rotation into each one. The glass's angle is applied last, after the head's
+  own move, so a head that nods still nods along the *face's* axis. An `lv_image` is
+  the one thing LVGL transforms without an intermediate layer, which is what keeps this
+  inside the memory rule the rest of the renderer is built around.
+
+The glass is round (`BOARD_ROUND`), so a 30° turn uncovers no corner; `render_rotated`
+fills what turns in from outside with black, and the bezel covers it.
+
+**What does not turn: the text over the face** — the clock, the voice status pill, the
+volume panel, the setup screen. LVGL draws *any* transformed object through an
+intermediate layer except `lv_image`, so turning a label or a pill costs the allocation
+this firmware exists to avoid (and the rev A bring-up below is what running out of that
+pool looks like). They stay upright over a tilted face. If they ever need to follow it,
+the way is to re-lay them out at the turned positions with the text left upright, not to
+transform them.
+
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
 the octal PSRAM (35–37), native USB (19/20) and flash (26–32) are all left alone.

@@ -49,11 +49,18 @@ static int16_t sprite_of(const char *layer, const char *part)
  *
  * What the hardware can do with them differs by property, and that is worth knowing
  * before reading a bug report. Every layer's transform is LVGL's, so brows, eyes and
- * the mouth take all of it. The *body* is composited by the PPA (face_view.c), which
+ * the mouth take all of it. The *body* does not turn on either board, for two
+ * different reasons: on the P4 it is composited by the PPA (face_view.c), which
  * translates to the pixel but cannot rotate by less than a quarter turn or scale by
- * less than a sixteenth — so on a whole-head track, `x` and `y` move the body and
- * `rotation` and `scale` move only the features over it. `shake` is a rotation
- * track, so it shakes the face without shaking the head.
+ * less than a sixteenth; on the S3 it is one flattened image placed at rest, and
+ * turning it per frame is the cost that flattening exists to avoid. Either way, on a
+ * whole-head track `x` and `y` move the body and `rotation` and `scale` move only the
+ * features over it. `shake` is a rotation track, so it shakes the face without
+ * shaking the head.
+ *
+ * A *fixed* turn of the body is a different thing and is affordable: BOARD_FACE_ROT_DEG
+ * is resolved into the body's pixels once per character, by the same pass that
+ * flattens it. That is the glass's own angle, not something a design can ask for.
  */
 
 /* The website's lists, in its order: these indices are the wire format. */

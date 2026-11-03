@@ -21,6 +21,7 @@
 #include "face_view.h"
 #include "face_motion.h"
 #include "face_catalogue.h"
+#include "board_pins.h"        /* BOARD_FACE_ROT_DEG: how far the glass is turned */
 #include <math.h>
 #include <string.h>
 #include "esp_heap_caps.h"
@@ -30,6 +31,14 @@
 #include "esp_log.h"
 
 static const char *TAG = "face";
+
+#if CONFIG_IDF_TARGET_ESP32P4 && BOARD_FACE_ROT_DEG != 0
+/* The P4 does not compose its body with the rest of the face: the PPA blits it, and
+ * the PPA turns in quarter circles (face_ppa.c). A non-zero angle here would turn the
+ * features and leave the head under them level, which is worse than not turning at
+ * all — so it is a build error rather than something to notice on the glass. */
+#error "BOARD_FACE_ROT_DEG must be 0 on the P4: the PPA cannot turn the body with it"
+#endif
 
 static lv_obj_t *s_root;                      /* a plain container: never transformed */
 static lv_obj_t *s_bg;
@@ -375,19 +384,92 @@ static int64_t s_render_t0;
 static uint32_t s_flat_rgb;
 static bool s_flat_original, s_flat_valid;
 
+#if CONFIG_IDF_TARGET_ESP32P4 || BOARD_FACE_ROT_DEG != 0
+/* The body composited over black exactly as flatten() does, turned by `deg` about its
+ * centre and resampled to the panel in the same pass. Inverse-mapped with bilinear
+ * sampling: for each destination pixel, where in the source did it come from.
+ *
+ * Two callers want the same arithmetic for opposite reasons. The P4 builds a row of
+ * these ahead of time because its body is blitted by hardware that cannot turn
+ * (build_rotations). A board whose glass is tilted (BOARD_FACE_ROT_DEG) needs exactly
+ * one, and flatten() takes it instead of its own un-turned loop — the angle is then
+ * in the body's pixels and costs nothing per frame, which is the whole reason a fixed
+ * tilt is affordable on an S3 and an animated one would not be. */
+static void render_rotated(const lv_image_dsc_t *src, uint16_t *out, float deg,
+                           uint32_t rgb, bool original)
+{
+    const uint32_t sw = src->header.w, sh = src->header.h, n = sw * sh;
+    const uint32_t w = face_bg.header.w, h = face_bg.header.h;   /* the panel */
+    const uint8_t *col = src->data, *alpha = src->data + n * 2;
+    const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
+    const float a = deg * (float)M_PI / 180.0f, ca = cosf(a), sa = sinf(a);
+    const float cx = w / 2.0f, cy = h / 2.0f;          /* destination centre */
+    const float k = (float)sw / w;                     /* panel -> source */
+
+    for (uint32_t dy = 0; dy < h; dy++) {
+        float ry = dy - cy;
+        for (uint32_t dx = 0; dx < w; dx++) {
+            float rx = dx - cx;
+            /* Rotate about the centre in panel space, then step into the source. */
+            float sx = ( ca * rx + sa * ry) * k + sw / 2.0f;
+            float sy = (-sa * rx + ca * ry) * k + sh / 2.0f;
+            if (sx < 0 || sy < 0 || sx >= sw - 1 || sy >= sh - 1) {
+                out[dy * w + dx] = 0;            /* turned in from outside: black */
+                continue;
+            }
+            uint32_t x0 = (uint32_t)sx, y0 = (uint32_t)sy;
+            uint32_t fx = (uint32_t)((sx - x0) * 256), fy = (uint32_t)((sy - y0) * 256);
+            uint32_t idx[4] = { y0 * sw + x0, y0 * sw + x0 + 1,
+                                (y0 + 1) * sw + x0, (y0 + 1) * sw + x0 + 1 };
+            uint32_t wgt[4] = { (256 - fx) * (256 - fy), fx * (256 - fy),
+                                (256 - fx) * fy,         fx * fy };
+            uint32_t r = 0, g = 0, b = 0;
+            for (int k = 0; k < 4; k++) {
+                uint16_t c = original
+                    ? (uint16_t)(col[idx[k] * 2] | (col[idx[k] * 2 + 1] << 8)) : tint;
+                uint32_t al = alpha[idx[k]];
+                r += (((c >> 11) & 0x1F) * al / 255) * wgt[k];
+                g += (((c >> 5) & 0x3F) * al / 255) * wgt[k];
+                b += ((c & 0x1F) * al / 255) * wgt[k];
+            }
+            out[dy * w + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
+        }
+    }
+}
+#endif
+
 static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
 {
     const uint32_t sw = src->header.w, sh = src->header.h;
     const uint32_t dw = face_bg.header.w, dh = face_bg.header.h;   /* always the panel */
-    const uint32_t sn = sw * sh, dn = dw * dh;
+    const uint32_t dn = dw * dh;
     if (!sw || !sh) return;
     if (!s_flat_px) {
         /* Cache-line aligned, because the PPA reads this buffer directly. */
         s_flat_px = heap_caps_aligned_alloc(FACE_PPA_ALIGN, FACE_PPA_ROUND(dn * 2),
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_flat_px) { ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended"); return; }
+        if (!s_flat_px) {
+#if BOARD_FACE_ROT_DEG != 0
+            /* Worse on a tilted board than on a level one: the features still carry
+             * the glass's angle (place()), so losing this buffer means a turned face
+             * on a level head. Degraded rather than blank, which is the rule — but it
+             * is the first thing to look at if a board ever shows that. */
+            ESP_LOGW(TAG, "no PSRAM to flatten the body; it cannot carry the %d deg tilt",
+                     BOARD_FACE_ROT_DEG);
+#else
+            ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended");
+#endif
+            return;
+        }
     }
+#if BOARD_FACE_ROT_DEG != 0
+    /* The glass's angle, resolved into the body's pixels. Same pass, same cost, same
+     * buffer as the un-turned flatten below — a tilted kit pays for its tilt once per
+     * character, not once per frame. */
+    render_rotated(src, s_flat_px, (float)BOARD_FACE_ROT_DEG, rgb, original);
+#else
     /* RGB565A8 is planar: the whole colour plane, then the whole alpha plane. */
+    const uint32_t sn = sw * sh;
     const uint8_t *col = src->data, *alpha = src->data + sn * 2;
     const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
     /* 16.16 steps, so a catalogue baked for a smaller face still fills the panel.
@@ -416,6 +498,7 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
             s_flat_px[dy * dw + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
         }
     }
+#endif
     s_flat.header.magic = LV_IMAGE_HEADER_MAGIC;
     s_flat.header.cf = LV_COLOR_FORMAT_RGB565;
     s_flat.header.w = dw;
@@ -501,51 +584,6 @@ static void render_ready_cb(lv_event_t *e)
 #endif
 
 #if CONFIG_IDF_TARGET_ESP32P4
-/* The body composited over black exactly as flatten() does, turned by `deg` about its
- * centre and resampled to the panel in the same pass. Inverse-mapped with bilinear
- * sampling: for each destination pixel, where in the source did it come from. */
-static void render_rotated(const lv_image_dsc_t *src, uint16_t *out, float deg,
-                           uint32_t rgb, bool original)
-{
-    const uint32_t sw = src->header.w, sh = src->header.h, n = sw * sh;
-    const uint32_t w = face_bg.header.w, h = face_bg.header.h;   /* the panel */
-    const uint8_t *col = src->data, *alpha = src->data + n * 2;
-    const uint16_t tint = (uint16_t)(((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F));
-    const float a = deg * (float)M_PI / 180.0f, ca = cosf(a), sa = sinf(a);
-    const float cx = w / 2.0f, cy = h / 2.0f;          /* destination centre */
-    const float k = (float)sw / w;                     /* panel -> source */
-
-    for (uint32_t dy = 0; dy < h; dy++) {
-        float ry = dy - cy;
-        for (uint32_t dx = 0; dx < w; dx++) {
-            float rx = dx - cx;
-            /* Rotate about the centre in panel space, then step into the source. */
-            float sx = ( ca * rx + sa * ry) * k + sw / 2.0f;
-            float sy = (-sa * rx + ca * ry) * k + sh / 2.0f;
-            if (sx < 0 || sy < 0 || sx >= sw - 1 || sy >= sh - 1) {
-                out[dy * w + dx] = 0;            /* turned in from outside: black */
-                continue;
-            }
-            uint32_t x0 = (uint32_t)sx, y0 = (uint32_t)sy;
-            uint32_t fx = (uint32_t)((sx - x0) * 256), fy = (uint32_t)((sy - y0) * 256);
-            uint32_t idx[4] = { y0 * sw + x0, y0 * sw + x0 + 1,
-                                (y0 + 1) * sw + x0, (y0 + 1) * sw + x0 + 1 };
-            uint32_t wgt[4] = { (256 - fx) * (256 - fy), fx * (256 - fy),
-                                (256 - fx) * fy,         fx * fy };
-            uint32_t r = 0, g = 0, b = 0;
-            for (int k = 0; k < 4; k++) {
-                uint16_t c = original
-                    ? (uint16_t)(col[idx[k] * 2] | (col[idx[k] * 2 + 1] << 8)) : tint;
-                uint32_t al = alpha[idx[k]];
-                r += (((c >> 11) & 0x1F) * al / 255) * wgt[k];
-                g += (((c >> 5) & 0x3F) * al / 255) * wgt[k];
-                b += ((c & 0x1F) * al / 255) * wgt[k];
-            }
-            out[dy * w + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
-        }
-    }
-}
-
 /* Build every angle for the character being worn. Called the first time a design
  * actually asks the head to turn, not at boot: most faces never rotate, and this is
  * seconds of CPU and megabytes of PSRAM that they should not pay for. */
@@ -737,9 +775,18 @@ typedef struct { int32_t sx, sy, rot, x, y; lv_opa_t opa; bool set; } placed_t;
 static placed_t s_placed[FACE_LAYER_COUNT];
 
 /* Place one image under the face transform composed with its own.
- * `ox, oy` is the sprite's untransformed top-left; w, h its size. */
+ * `ox, oy` is the sprite's untransformed top-left; w, h its size.
+ *
+ * `srot` is the glass's own angle (BOARD_FACE_ROT_DEG), applied last, to the finished
+ * composition rather than to the head. That ordering is the whole of it: a head track
+ * that moves "down" has to move down the *face's* axis, not the panel's, or a tilted
+ * kit nods at an angle to its own chin. Rotating the head's translation along with
+ * everything else is what makes the two indistinguishable from a real screen rotation.
+ *
+ * The body passes 0. Its angle is already in its pixels — flatten() put it there once
+ * when the character was worn — and asking LVGL for it again would turn it twice. */
 static void place(int slot, lv_obj_t *obj, const face_values_t *head, const face_values_t *own,
-                  int32_t ox, int32_t oy, int32_t w, int32_t h)
+                  int32_t ox, int32_t oy, int32_t w, int32_t h, float srot)
 {
     const float FCX = face_bg.header.w / 2.0f, FCY = face_bg.header.h / 2.0f;
     const float UNIT = face_bg.header.w / 100.0f;   /* face units -> pixels */
@@ -752,15 +799,21 @@ static void place(int slot, lv_obj_t *obj, const face_values_t *head, const face
     float a = head->rotation * (float)M_PI / 180.0f;
     float sx = head->scale, sy = head->scale * head->scale_y;
     float dx = cx - FCX, dy = cy - FCY;
-    float rx = FCX + (dx * cosf(a) - dy * sinf(a)) * sx + head->x * UNIT;
-    float ry = FCY + (dx * sinf(a) + dy * cosf(a)) * sy + head->y * UNIT;
+    float ux = (dx * cosf(a) - dy * sinf(a)) * sx + head->x * UNIT;
+    float uy = (dx * sinf(a) + dy * cosf(a)) * sy + head->y * UNIT;
+
+    /* And last the glass, about the panel's centre, carrying the head's move with it.
+     * At srot 0 this is cos 1 / sin 0 and the two lines below are the old ones. */
+    float t = srot * (float)M_PI / 180.0f;
+    float rx = FCX + ux * cosf(t) - uy * sinf(t);
+    float ry = FCY + ux * sinf(t) + uy * cosf(t);
 
     /* A transform about the image's own centre leaves that centre where it is, so
      * putting the centre in the right place is all the positioning needed. */
     placed_t p = {
         .sx  = (int32_t)(sx * own->scale * 256.0f),
         .sy  = (int32_t)(sy * own->scale * own->scale_y * 256.0f),
-        .rot = (int32_t)((head->rotation + own->rotation) * 10.0f),
+        .rot = (int32_t)((head->rotation + own->rotation + srot) * 10.0f),
         .x   = (int32_t)lroundf(rx - w / 2.0f),
         .y   = (int32_t)lroundf(ry - h / 2.0f),
         .opa = (lv_opa_t)(head->opacity * own->opacity * 255.0f),
@@ -940,7 +993,8 @@ void face_view_tick(uint32_t elapsed_ms)
     }
 #else
     static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
-    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h);
+    /* srot 0: the glass's angle is already in this image's pixels (flatten). */
+    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h, 0.0f);
 #endif
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
@@ -975,6 +1029,9 @@ void face_view_tick(uint32_t elapsed_ms)
          * the panel's space and get nothing. */
         face_values_t own = v[i];
         if (s_shown[i] == FACE_PART_ARTWORK) own.scale *= s_cat_scale;
-        place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i], s_img[i]->header.w, s_img[i]->header.h);
+        /* The features take the glass's angle here, in the transform they already
+         * have — the one thing LVGL turns without an intermediate layer. */
+        place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i],
+              s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG);
     }
 }

@@ -29,6 +29,23 @@
  */
 #define PIN_BOOT          0    /* BTN1. Also the sleep wake button and the boot reset */
 
+/* How far the face is turned on the glass, degrees, positive clockwise.
+ *
+ * The panel is soldered down and the enclosure holds it at an angle, so the face has
+ * to be turned the same amount to come out level. It belongs here for the reason the
+ * mirror in gc9a01.c does: which way a fixed panel faces is a fact about the board.
+ *
+ * It is NOT a display rotation, and could not be — the GC9A01's MADCTL and LVGL's
+ * lv_display_set_rotation both only do quarter turns. face_view.c turns the face
+ * instead: the body's angle is resolved into its pixels once per character, and the
+ * features carry it in the transform they already have. That works only because this
+ * glass is round (BOARD_ROUND), so a turn uncovers no corner.
+ *
+ * What it does NOT turn is the text drawn over the face — the clock, the status pill,
+ * the volume panel. LVGL draws any transformed object through an intermediate layer
+ * except lv_image, and a layer is the allocation this firmware cannot make. */
+#define BOARD_FACE_ROT_DEG   30
+
 /* ---- GC9A01 1.28" round TFT, SPI (FPC DS501/DS502) ------------------------ */
 /* R501 and R502 are drawn as 22 R and fitted as 100 R on rev A (measured 2026-10-28).
  * That cost a bring-up week before the glass turned out to be the fault, and the
@@ -82,6 +99,9 @@
  */
 #define PIN_BOOT          0
 
+/* A bare module on the bench with no enclosure to tilt it: the face sits level. */
+#define BOARD_FACE_ROT_DEG    0
+
 /* ---- GC9A01 1.28" round TFT, SPI ------------------------------------------ */
 #define PIN_LCD_SCLK     15    /* SCL on the module */
 #define PIN_LCD_MOSI     16    /* SDA on the module */
@@ -127,6 +147,10 @@
  * says how big to draw. */
 #define BOARD_ROUND       1
 #define BOARD_HAS_TOUCH   1
+/* Mounted square in its own bezel, and it must stay 0 on this board: the P4's body is
+ * blitted by the PPA, which turns in quarter circles only, so a turned face here would
+ * tilt the features off a level head. face_view.c refuses to build otherwise. */
+#define BOARD_FACE_ROT_DEG    0
 #define PIN_BOOT         35    /* BOOT. Not an LP GPIO: it cannot wake the chip, see sleep.c */
 
 /* ---- JD9365 720x720 MIPI-DSI panel ---------------------------------------- */
