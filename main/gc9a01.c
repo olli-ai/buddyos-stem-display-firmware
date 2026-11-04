@@ -5,6 +5,9 @@
 #include "driver/spi_master.h"
 #include "esp_lcd_gc9a01.h"
 #include "esp_log.h"
+#ifdef PIN_LCD_BL
+#include "driver/gpio.h"
+#endif
 
 static const char *TAG = "gc9a01";
 
@@ -17,6 +20,17 @@ static esp_lcd_panel_io_handle_t s_io;
 
 esp_err_t gc9a01_start(esp_lcd_panel_handle_t *out, size_t max_px)
 {
+#ifdef PIN_LCD_BL
+    /* Low before anything else, and left low: the GC9A01's RAM powers up as noise, and
+     * on a board where the backlight is ours to drive that noise would be on the glass
+     * from reset until the first flush. gc9a01_backlight() lights it once there is a
+     * face to light. A board with BLK strapped to 3.3 V has no say in this and shows
+     * the noise; it is the one thing that board does worse. */
+    gpio_config_t bl = { .pin_bit_mask = 1ULL << PIN_LCD_BL, .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&bl);
+    gpio_set_level(PIN_LCD_BL, 0);
+#endif
+
     spi_bus_config_t bus = {
         .sclk_io_num = PIN_LCD_SCLK,
         .mosi_io_num = PIN_LCD_MOSI,
@@ -50,6 +64,16 @@ esp_err_t gc9a01_start(esp_lcd_panel_handle_t *out, size_t max_px)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));   /* GC9A01 wants this */
+#if CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA
+    /* rev A shows the face mirrored left to right without this, and the bench board
+     * does not. Nothing in the driver differs between them, so it is the FPC: the
+     * panel is mounted the other way round on this layout and MADCTL has to undo it.
+     * A mirror, not a rotation — flipping X alone is what matches the glass.
+     *
+     * It is deliberately not a build option. Which way a soldered-down panel faces is
+     * a fact about the board, like its pins, so it belongs beside them. */
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
     ESP_LOGI(TAG, "%dx%d on SPI, %d MHz", GC9A01_W, GC9A01_H, LCD_HZ / 1000000);
     *out = s_panel;
@@ -65,4 +89,19 @@ esp_err_t gc9a01_on_flushed(esp_lcd_panel_io_color_trans_done_cb_t cb, void *arg
 void gc9a01_set_on(bool on)
 {
     if (s_panel) esp_lcd_panel_disp_on_off(s_panel, on);
+#ifdef PIN_LCD_BL
+    /* DISPOFF alone still leaves a lit white panel on a board with its own backlight,
+     * which is not what "display off" is asked for — on the way to sleep it is most of
+     * the power. So the two move together. */
+    gpio_set_level(PIN_LCD_BL, on);
+#endif
+}
+
+void gc9a01_backlight(bool on)
+{
+#ifdef PIN_LCD_BL
+    gpio_set_level(PIN_LCD_BL, on);
+#else
+    (void)on;   /* BLK on 3.3 V: lit whenever the board has power. */
+#endif
 }

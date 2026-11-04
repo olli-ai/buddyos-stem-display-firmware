@@ -5,12 +5,34 @@
 #include "voice.h"
 #include "esp_log.h"
 #include <time.h>
+#include <string.h>
 
 static const char *TAG = "clock";
 
-static lv_obj_t *s_box, *s_time, *s_date;
+static lv_obj_t *s_box;
 static lv_timer_t *s_tick;
 static bool s_on;
+
+#if BOARD_FACE_ROT_DEG != 0
+/*
+ * On a board whose glass is turned, the digits have to turn with it or the clock is the
+ * one screen that gives the enclosure's angle away. LVGL will not transform a label
+ * without drawing it through an intermediate layer, so each line is rasterised into a
+ * canvas and the canvas — an lv_image — is what carries the angle. turned.c has the
+ * whole argument.
+ *
+ * Two blocks rather than one, and that is the point: the seconds change every tick and
+ * the date changes once a day, so splitting them means one small re-rasterisation a
+ * second instead of a large one. The backdrop below stays an ordinary rectangle,
+ * because a black circle looks the same at every angle.
+ */
+#include "turned.h"
+static turned_t s_tt, s_td;
+static int32_t s_uy_time, s_uy_date;   /* from the panel's centre, before the angle */
+static char s_date_shown[48];
+#else
+static lv_obj_t *s_time, *s_date;
+#endif
 
 /* One timer asks both questions once a second: should the clock be up, and what time
  * is it. It runs inside LVGL's own loop, which is the only place LVGL may be touched
@@ -67,8 +89,20 @@ static void draw_now(void)
                 DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12], 1900 + tm.tm_year);
 #endif
 
+#if BOARD_FACE_ROT_DEG != 0
+    const turned_line_t tl = { hhmmss, TIME_FONT, 0xffffff };
+    turned_set(&s_tt, &tl, 1, 0, s_uy_time);
+    /* The date is redrawn when it is a different day, not when it is a different
+     * second: rasterising it is the expensive half and nothing about it has changed. */
+    if (strcmp(date, s_date_shown) != 0) {
+        lv_snprintf(s_date_shown, sizeof(s_date_shown), "%s", date);
+        const turned_line_t dl = { date, DATE_FONT, 0x9e9e9e };
+        turned_set(&s_td, &dl, 1, 0, s_uy_date);
+    }
+#else
     lv_label_set_text(s_time, hhmmss);
     lv_label_set_text(s_date, date);
+#endif
 }
 
 static void on_tick(lv_timer_t *t)
@@ -95,14 +129,33 @@ void clock_ui_create(lv_obj_t *scr)
     lv_obj_set_size(s_box, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(s_box, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_box, LV_OPA_COVER, 0);
+    const int32_t gap = w / 40;
+#if BOARD_FACE_ROT_DEG == 0
     lv_obj_set_flex_flow(s_box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(s_box, w / 40, 0);
+    lv_obj_set_style_pad_row(s_box, gap, 0);
+#endif
     /* Takes no touches: main.c's indev callback owns every press, and the first one
      * puts the face back. An overlay that swallowed it would need two taps. */
     lv_obj_remove_flag(s_box, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
+#if BOARD_FACE_ROT_DEG != 0
+    /* The same column the flex layout above would have produced, resolved by hand
+     * because a turned block is placed, not laid out. Both line heights are fixed by
+     * their fonts, so these two numbers are settled here and never move. */
+    const int32_t ht = lv_font_get_line_height(TIME_FONT);
+    const int32_t hd = lv_font_get_line_height(DATE_FONT);
+    const int32_t total = ht + gap + hd;
+    s_uy_time = -total / 2 + ht / 2;
+    s_uy_date =  total / 2 - hd / 2;
+
+    /* No wider than the glass, which is as wide as either line can usefully be. The
+     * date gets room for a second line because its month names are the one part of
+     * this screen whose width is not a fixed format; the time is "88:88:88" forever. */
+    turned_create(&s_tt, s_box, w, ht, gap);
+    turned_create(&s_td, s_box, w, hd * 2 + gap, gap);
+#else
     s_time = lv_label_create(s_box);
     lv_obj_set_style_text_color(s_time, lv_color_white(), 0);
     lv_obj_set_style_text_font(s_time, TIME_FONT, 0);
@@ -112,6 +165,7 @@ void clock_ui_create(lv_obj_t *scr)
     lv_obj_set_style_text_color(s_date, lv_color_hex(0x9e9e9e), 0);
     lv_obj_set_style_text_font(s_date, DATE_FONT, 0);
     lv_label_set_text(s_date, "");
+#endif
 
     lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN);
     /* Never paused: it is the thing that decides the clock should come back. */

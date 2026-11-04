@@ -1,7 +1,11 @@
 # volume_ui.c is not under CONFIG_BUDDY_SCREEN_FACE on purpose: the gallery build
 # has the same touch panel and the same speaker, and the drag works there too.
+# turned.c compiles to nothing where BOARD_FACE_ROT_DEG is 0, which is every board but
+# BuddyDisplay rev A — it is listed unconditionally because the condition is a pin
+# header's business, not the build system's.
 set(srcs "main.c" "status.c" "voice.c"
-         "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c" "volume_ui.c" "clock_ui.c")
+         "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c" "volume_ui.c" "clock_ui.c"
+         "turned.c")
 
 # The two screens are exclusive (BUDDY_SCREEN in Kconfig), and so are their
 # lip-sync front ends: the face classifier returns a sprite index to draw, the

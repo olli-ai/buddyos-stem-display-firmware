@@ -15,8 +15,14 @@ set: the target decides, and `main/CMakeLists.txt` picks the matching face artwo
 
 | Your board | Target | Screen | Build directory |
 | --- | --- | --- | --- |
-| **ESP32-S3-WROOM-1-N16R8** (16 MB flash, 8 MB PSRAM) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
+| **GC9A01 bench board** (hand-wired, ESP32-S3-WROOM-1) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
+| **BuddyDisplay rev A** (ESP32-S3-WROOM-1-N16R8, laid out) | `esp32s3` | the same panel, on different pins | `build-reva` |
 | **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch | `build-p4` |
+
+The two S3 rows are the same chip, the same panel and **not one GPIO in common**, so the
+board is a build choice (`BUDDY_S3_BOARD`, set by `sdkconfig.defaults.reva`) rather than
+something the firmware can work out. Flashing the wrong one is a dark screen and a silent
+speaker with no complaint in the log.
 
 Both build with **ESP-IDF v5.5.3**. Older IDF does not build this tree (the P4's panel
 driver needs 5.4 or later). No IDF installed? Use Espressif's image,
@@ -29,9 +35,13 @@ cd buddyos-stem-display-firmware
 # LVGL is not committed — clone it once, before the first build
 git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
 
-# ESP32-S3-WROOM-1-N16R8 + GC9A01 — the N16R8 overlay is not applied automatically
+# GC9A01 bench board — the N16R8 overlay is not applied automatically
 idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
        -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+# BuddyDisplay rev A — the same, plus the board's own pins and QIO flash
+idf.py -B build-reva -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-reva/sdkconfig \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
 
 # ESP32-P4 — IDF layers sdkconfig.defaults.esp32p4 on its own
 idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
@@ -128,9 +138,32 @@ Everything here is a common module and a breadboard. No PCB, no reflow, no custo
 | Speaker | 4 Ω, 2–3 W, small | |
 | Power | A **5 V supply for the amplifier**, not the board's 3V3 | Not optional — read the warning below. |
 
-**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) has 2 MB app slots, which
-cannot hold the voice path *and* BLE setup together; the build fails at link time. The
-16 MB table (`partitions-16mb.csv`) gives 4.5 MB slots.
+**Buy the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) keeps `partitions.csv`,
+whose app slots are 2 MB — and the rev A image with voice and the face in it measures
+**2,442,128 B**, which is 116% of one. The link succeeds and the build then stops at the
+partition check. The 16 MB table (`partitions-16mb.csv`) gives 4.5 MB slots.
+
+It is worth being precise about *why*, because "2 MB" is the table and not the chip, and
+the two are easy to confuse:
+
+- **Flash is the real constraint, and it is a table, not a wall.** Two 2.94 MB slots plus
+  `faces` and `model` do fit an 8 MB part (`0x2F0000` each, which leaves the image at 79%
+  of a slot); drop `faces`, which this build bakes into the app and never reads, and the
+  slots reach 3.8 MB. Nobody has cut that table or built against it. What you would be
+  buying is a slot with a fifth of headroom instead of a half, on a device whose artwork
+  rides *inside* the firmware — which is the trade `partitions-16mb.csv` exists to avoid.
+- **PSRAM capacity is not the constraint.** Measured on rev A, the whole firmware's
+  dynamic PSRAM use is about **185 KB** (free goes 6,062,524 → 5,876,928 min-ever). 2 MB
+  is ample. What does not fit is `CONFIG_SPIRAM_XIP_FROM_PSRAM` — the measured 2.22 MB of
+  `.text`/`.rodata` it copies in is more than an N8R2 has in total — but that lives in
+  `sdkconfig.defaults.n16r8` and the N8R2 path never turns it on. It was added for the
+  480×480 RGB panel this kit no longer has.
+- **PSRAM bandwidth is the unmeasured risk.** The R2 part is quad, half the octal R8's,
+  and voice, TLS and LVGL's reads from flash share that bus. This is the one that would
+  need a board rather than arithmetic.
+- **Pins are identical either way.** Octal PSRAM takes GPIO 35–37; on rev A those three
+  are unconnected at the module (confirmed in the schematic netlist), so a quad part
+  simply hands them back.
 
 **Power the amplifier from 5 V.** On the first bench board the 5 V rail read 4 V under load,
 the 3V3 regulator ran out of headroom, and the first thing to fail was the USB-serial bridge:
@@ -142,27 +175,196 @@ your board behaves strangely the moment audio starts, this is why.
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
 the file is right.
 
-| Signal | GPIO | Module pin |
+| Signal | Bench board | BuddyDisplay rev A | Module pin |
+| --- | --- | --- | --- |
+| **GC9A01** SCLK | 15 | 12 | `SCL` |
+| MOSI | 16 | 11 | `SDA` |
+| DC | 17 | 16 | `DC` |
+| CS | 18 | 17 | `CS` |
+| RESET | 8 | 18 | `RST` |
+| Backlight | — (`BLK` to 3V3) | 13 | Q501 gate, high lights it |
+| **I²S** speaker BCLK | 5 | 47 | MAX98357A `BCLK` |
+| speaker WS | 6 | 48 | MAX98357A `LRC` |
+| MAX98357A DIN | 7 | 21 | |
+| MAX98357A SD | — (100 k to VIN) | 14 | `SD_MODE`: high enables, low mutes |
+| **I²S** mic SCK | 5 (shared) | 38 | INMP441 `SCK` |
+| mic WS | 6 (shared) | 39 | INMP441 `WS` |
+| INMP441 SD | 4 | 40 | the mic's data *out*, an input to us |
+
+Hardwired on both, not driven: the amplifier's `GAIN` (floating: 9 dB) and the mic's `L/R`
+(GND: left). The panel's `VCC` is 3V3; the amplifier's VIN is **5 V**.
+
+On the **bench board** the amp and the mic share BCLK and WS, so they are one I²S
+controller in full duplex, not two — **wire them that way**, or the speaker or the
+microphone stays silent. Its backlight is on 3V3 and **cannot be dimmed or switched off**;
+sleep blanks the panel with DISPOFF instead.
+
+On **rev A** each part has its own clock pair, so it is two controllers (I2S0 out, I2S1
+in). `main/audio.c` picks between the two off `PIN_SPK_BCLK`. Its backlight is a
+transistor, held off through panel reset and lit on the first frame, so the controller's
+power-on RAM noise is never seen. rev A also has no speaker connector: `OUTP`/`OUTN` end
+on test points **TP504/TP505** and the speaker solders to those pads — a board with
+nothing on them is silent with every register correct.
+
+rev A also **mounts the panel the other way round**: the same driver, the same init and
+the same `invert_color` give a face mirrored left to right here and a correct one on the
+bench board, so it is the FPC and not the software. `main/gc9a01.c` undoes it with
+`esp_lcd_panel_mirror(true, false)` under `CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA` — a mirror,
+not a rotation. It is not a build option on purpose: which way a soldered-down panel
+faces is a fact about the board, like its pins.
+
+And rev A's enclosure holds that panel at an angle, so the face is turned to match:
+`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, −45° on rev A and 0 everywhere else. It
+sits beside the pins for the same reason the mirror does.
+
+It is **negative** because the number is the turn applied to the face, which has to
+oppose the enclosure's rather than match it. The first build said +30, and on the bench
+that reads as a face leaning about twice as hard as the bare panel did — not as
+something subtly off. A face that comes out worse than no correction at all is this
+sign, every time.
+
+The magnitude came off the glass rather than off a drawing: −30 was still visibly
+short, so it was stepped to −45. Anyone holding the enclosure's real angle should
+replace the number and record where it came from. Nothing else moves when it changes —
+the cost below is the same at any angle, and at 0 the code is the code that was there
+before.
+
+It is **not** a display rotation, and could not have been. The GC9A01's MADCTL has MX,
+MY and MV — eight combinations, which is quarter turns and flips — and LVGL's enum is
+`LV_DISPLAY_ROTATION_0/90/180/270` (`lv_display.h`). Nothing in either path expresses
+an angle off the quarter. Turning the frame buffer in software instead would mean a
+second 240×240 RGB565
+buffer (115,200 B) and 57,600 pixels resampled *per frame*, on a panel whose SPI link
+already costs 240×240×16 bits ÷ 40 MHz ≈ 23 ms a frame. The P4 side of this repo
+reached the same conclusion from the other direction: it pre-renders thirteen fixed
+angles into PSRAM precisely because turning the body per frame is not affordable even
+with a PPA (`main/face_view.c`).
+
+So the face is turned instead of the screen, in the two places that were already
+turning things:
+
+- **The body** is one flattened RGB565 image, rebuilt only when a child changes
+  character. `render_rotated()` — the P4's resampler, now shared — does the turn in the
+  same pass that resamples it, into the same buffer. **No extra memory and no per-frame
+  cost at all.**
+- **The features** (brows, eyes, mouth) are `lv_image`s, and `place()` already composed
+  a head rotation into each one. The glass's angle is applied last, after the head's
+  own move, so a head that nods still nods along the *face's* axis. An `lv_image` is
+  the one thing LVGL transforms without an intermediate layer, which is what keeps this
+  inside the memory rule the rest of the renderer is built around.
+
+- **The voice status pill** turns too, by the same trick one step further. A pill is a
+  container with a label in it, and LVGL would draw that through a layer — so on a
+  turned board `main/status.c` rasterises the pill into an `lv_canvas` instead (the
+  background, the rounded ends and the glyphs), and a canvas *is* an `lv_image`. The
+  caption is redrawn only when the status changes, into one PSRAM buffer sized at
+  startup for the longest of the seven. The coloured dot stays outside it, a leaf of its
+  own placed at the turned position: a filled circle looks the same at every angle, and
+  leaving it out keeps its pulse an opacity write on a leaf rather than a
+  re-rasterisation of the text at animation rate.
+
+The glass is round (`BOARD_ROUND`), so the turn uncovers no corner at any angle;
+`render_rotated` fills what comes in from outside with black, and the bezel covers it.
+
+**The pill's own numbers, rev A, 2026-11-03**, at −48°: the canvas is **186 × 34, 25,296 B
+of PSRAM**, allocated once at startup, out of 5.85 MB free — and the LVGL pool went
+*down*, to **11,732 of 30,616 used, peak 13,912, 7% fragmented**, from 11,848 and a peak
+of 14,088 at −45° with the flex pill. It should: the label object and the text buffer it
+kept in the pool are gone, and what replaced them lives in PSRAM. Frame means were
+**276–2,111 µs**.
+
+> **Proven on the glass on 2026-11-04.** The run that established the figures above was
+> one where the kit never associated (`no access point with that SSID in range`), and
+> `voice_start()` is what first calls `status_set()` — so the pill was allocated and
+> placed but never drew a caption. With the AP back in range it does: `[wifi connected]`
+> at 12,767 ms and `voice: listening for the wake word` at 12,906 ms, which is
+> `status_set()` reached and the caption rasterised. The canvas is the same 186 × 34.
+
+**Measured on rev A, 2026-11-03**, 60 s from reset, over several angles. The cost that
+was worth worrying about did not appear: at rest the five features used to take LVGL's
+plain blit path and now always take the transformed one, which asks `lv_malloc` for up
+to `MAX_BUF_SIZE` per draw — and that is **4 × 240 × 2 = 1,920 B**, sized off the
+*display's* RGB565 rather than off the source, so the ARGB8888 pill asks for no more
+than a face sprite does. The pool barely noticed: **12,004 of 30,572 used, peak 14,184**
+at +30°, **12,016 of 30,564, peak 14,196** at −30°, **11,848 of 30,596, peak 14,088** at
+−45°, against 11,916 and a peak near 14,000 before any turn — noise, in other words, and
+the same noise at every angle. The transformed-draw buffer is transient and the peak
+already carried it, because any design with a rotation track was taking that path
+anyway. Frame time stayed well inside budget too: means of **222–4,053 µs** per 301
+frames against the 16,000 µs that is 60 fps. The worst-case spikes in the same logs
+(10–231 ms) line up with Wi-Fi association retries, not with the face — though that is a
+correlation, not a before-and-after.
+
+**The clock and the setup screen turn too**, since 2026-11-04, by the pill's trick
+factored out of it. `main/turned.c` is a block of centred lines rasterised into one
+PSRAM canvas and rotated as an `lv_image`; `turned_point()` carries a position from the
+upright layout to the turned one, so each block is *placed* rather than laid out, and
+flex is gone from both screens on a turned board. The whole file compiles to nothing
+where `BOARD_FACE_ROT_DEG` is 0, which is every board but rev A — the bench board and
+the P4 keep the flex columns they always had, untouched.
+
+Three things that layout had to resolve:
+
+- **The clock is two blocks, not one.** The seconds change every tick and the date once
+  a day, so splitting them means one small re-rasterisation a second rather than a large
+  one. The full-screen black backdrop stays an ordinary rectangle: a black circle looks
+  the same at every angle.
+- **The QR needs a canvas of its own, for two reasons.** `lv_qrcode`'s buffer is
+  `LV_COLOR_FORMAT_I1`, and the software renderer's transform has no indexed case at all
+  (`lv_draw_sw_transform.c` handles RGB565/RGB888/XRGB8888/ARGB8888/A8) — rotating the
+  widget would draw nothing. And its white quiet zone is an object *border*, drawn square
+  around the widget's box whatever the image inside does, so a rotated code would push
+  its corners out onto black. So the I1 bitmap is drawn untransformed into an ARGB8888
+  canvas that carries the quiet zone as pixels, once, and that canvas is what turns.
+- **That first rasterisation is deferred to the LVGL timer.** `lv_canvas_finish_layer()`
+  dispatches and waits on the draw unit, which is not a thing to do from create-time code
+  before the first `lv_timer_handler()`. `qr_once()` is called from the setup screen's
+  100 ms tick and guarded by a `static bool`.
+
+No PSRAM for a block means the block does not appear — `turned_create()` says so in the
+log and every later call is a no-op. Degraded, never blank and never a hang; and for the
+QR, the printed serial is still the way in.
+
+**What still does not turn** — the volume panel. It stays upright over a tilted face.
+The way to make it follow is `turned.c`'s, not a transform on the container: LVGL draws
+*any* transformed object through an intermediate layer except `lv_image`, and a 240×240
+layer is 115 KB, more than the whole LVGL heap (the rev A bring-up below is what running
+out of that pool looks like).
+
+**Measured on rev A, 2026-11-04**, at −48°, from `run-buddy.log`:
+
+| block | canvas | PSRAM |
 | --- | --- | --- |
-| **GC9A01** SCLK | 15 | `SCL` |
-| MOSI | 16 | `SDA` |
-| DC | 17 | `DC` |
-| CS | 18 | `CS` |
-| RESET | 8 | `RST` |
-| **I²S** BCLK | 5 | MAX98357A `BCLK` **and** INMP441 `SCK` |
-| WS | 6 | MAX98357A `LRC` **and** INMP441 `WS` |
-| MAX98357A DIN | 7 | |
-| INMP441 SD | 4 | the mic's data *out*, an input to us |
+| status pill | 186 × 34 | 25,296 B |
+| clock, time | 240 × 44 | 42,240 B |
+| clock, date | 240 × 50 | 48,000 B |
+| setup, title + serial | 192 × 74 | 56,832 B |
+| setup, step | 192 × 48 | 36,864 B |
+| setup, hint | 192 × 48 | 36,864 B |
+| setup, QR + quiet zone | 102 × 102 | 41,616 B |
 
-Hardwired, not driven: the panel backlight (`BLK` to 3V3 — **it cannot be dimmed or
-switched off**; sleep blanks the panel with DISPOFF instead), the amplifier's `SD` (100 k
-to VIN: on, left channel), its `GAIN` (floating: 9 dB) and the mic's `L/R` (GND: left).
-The panel's `VCC` is 3V3; the amplifier's VIN is **5 V**.
+All of it allocated once at startup, out of ~6.06 MB free at boot: 5,659,004 B free at
+`[gallery up]`, and **5,059,336 B steady while running, unchanged second to second** —
+which is the claim that mattered, because a per-tick allocation is what re-rasterising
+text once a second could have cost and does not. The LVGL pool went *down* again, to
+**10,572 of 30,844 used, peak 12,664, 11% fragmented** at `[gallery up]`, from 11,732 and
+a peak of 13,912 with the flex pill: labels and their text buffers left the pool and
+their pixels live in PSRAM. With the clock up it is **11,280 of 30,724, peak 13,444, 7%**.
 
-The amp and the mic share BCLK and WS, so they are one I²S controller in full duplex
-(`main/audio.c`), not two. **Wire them that way.** The first GC9A01 bench board gave the
-amp its own clock on GPIO 9–13; this build does not drive that layout, and on it the
-speaker or the microphone stays silent.
+Frame time is the one place the clock is visibly more expensive, and only in the worst
+case: with the face showing, means of **594–718 µs** and a worst frame near **13 ms**;
+with the clock up, means of **241–346 µs** — the face stops animating under an opaque
+screen — and worst frames of **22.4–27.3 ms**, 35.3 ms in the first window after it
+appeared. So the worst frame roughly doubles, once a second, while the mean halves. The
+log cannot separate the rasterising from the full-screen flush that follows it.
+
+> **The clock was seen on the glass** in that run (`I (182554) clock: left alone; showing
+> the time`, after the 180 s `CONFIG_BUDDY_CLOCK_IDLE_S`). **The setup screen was not.**
+> Reaching it means holding BOOT for 2 s, which erases the kit's Wi-Fi credentials, and
+> that was not worth doing to look at it. Everything on it is allocated and logged at
+> startup, so what is unproven is the drawing: the three text blocks, and `qr_once()`'s
+> I1-into-ARGB8888 blit in particular. If that blit does not work the QR is a blank white
+> square, not a crash — and the serial is printed above it either way.
 
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
@@ -170,8 +372,8 @@ the octal PSRAM (35–37), native USB (19/20) and flash (26–32) are all left a
 
 ### Flash it
 
-Build first ([Building](#building)) — one build directory per board, `build-s3` or
-`build-p4`. Then, on the machine the board is plugged into:
+Build first ([Building](#building)) — one build directory per board, `build-s3`,
+`build-reva` or `build-p4`. Then, on the machine the board is plugged into:
 
 **1. Install esptool 5.x.** Once, in its own environment:
 
@@ -198,7 +400,7 @@ which board is behind it.
     cd build-s3
     ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
 
-For the P4, the same from `build-p4` with `--chip esp32p4`.
+For rev A, the same from `build-reva`. For the P4, from `build-p4` with `--chip esp32p4`.
 
 - **Use `@flash_args`, not offsets copied from anywhere.** The build writes that file with
   every image, its offset and the flash settings, for exactly what you just built.
@@ -537,10 +739,15 @@ Dependencies are **vendored in `components/`**, so the component manager is swit
 and nothing is fetched from the registry. Clone LVGL first (below), then, from the repo
 root:
 
-    # ESP32-S3-WROOM-1-N16R8
+    # GC9A01 bench board
     docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
         idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
                -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+
+    # BuddyDisplay rev A
+    docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
+        idf.py -B build-reva -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-reva/sdkconfig \
+               -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
 
     # ESP32-P4
     docker run --rm -e IDF_COMPONENT_MANAGER=0 -v "$PWD":/fw -w /fw espressif/idf:v5.5.3 \
@@ -975,6 +1182,38 @@ On the ST7701S board: the **main-task stack overflow** described under [The
 gallery](#the-gallery), and **PSRAM cannot run at 120 MHz** — the board's flash has no
 high-performance mode, so it stays at 80 MHz.
 
+### What BuddyDisplay rev A bring-up found, 2026-11-03
+
+Three things, all of them in `sdkconfig.defaults.reva` or `main/` now, and all three
+invisible to `sim/`:
+
+- **LVGL's 16 KB pool runs out on rev A, and running out is silent.** The build sits at
+  ~11.9 KB of it with the face up and peaked at 14,000 of the 14,352 usable once the
+  radio and voice were running. A sprite drawn with a transform then asks `lv_malloc()`
+  for a temp buffer of up to 1,920 B (`MAX_BUF_SIZE`, 4 × 240 × 2) and does not get it —
+  and `LV_ASSERT_MALLOC` fires into an `LV_ASSERT_HANDLER` that is `while(1);` by
+  default, with `LV_USE_LOG` off. So the main task spins forever inside `img_draw_core`
+  having printed nothing: the face freezes, the task watchdog repeats every 5 s with a
+  byte-identical backtrace, and Wi-Fi, MQTT and SNTP carry on as if nothing happened.
+  **Identical PC and stack pointers 25 s apart is what proves a task is wedged rather
+  than slow.** `CONFIG_LV_MEM_SIZE_KILOBYTES=32` fixes it; 60 s then ran clean, with the
+  pool at 11,916 of 30,580 and the peak still 14,000.
+- **An idle kit's `mic:` counter never prints, and that is correct.** `up_task`'s idle
+  branch ends in a `continue` before the frame counter, so a dead microphone and a quiet
+  room produce byte-identical logs on the plain WakeNet path — an hour went into reading
+  that silence as a fault. `main/voice.c` now meters the real microphone every 10 s
+  whether or not a conversation is open (`mic idle: rms N, peak N`), the counterpart of
+  the AEC build's `afe in:`. First readings on rev A: rms 169–218, peaks to 2,849 of
+  32,767 in a quiet room, with WakeNet costing 3,172 µs per 32 ms chunk beside it.
+- **The 60% default volume was −16 dB thrown away.** The MAX98357A has no volume control,
+  so `BUDDY_SPEAKER_VOLUME` is a multiply on the samples before they reach it
+  (`volume_apply` in `main/audio.c`): percent is linear in dB, 100% is untouched, every
+  10% down is 4 dB. 60% is a Q8 gain of 41 against 256 — a sixth of the amplitude, and
+  the quiet end of every sample given up with it. There is little to give back elsewhere:
+  U601's `GAIN_SLOT` is open, which is the part's 9 dB setting and three steps below the
+  15 dB it offers. rev A now starts at 100%. The volume is still adjustable at runtime
+  and kept in NVS, so a kit already turned down stays turned down.
+
 ### Audio, proven on hardware 2026-09-28
 
 On the N16R8 bench board, with every pin in `main/board_pins.h`: the MAX98357A plays the
@@ -1128,8 +1367,10 @@ really PSRAM's doing.
   nothing attached booted the GC9A01 build cleanly — panel driver up over SPI, the three
   characters mapped, the I2S bus up with voice on, Bluetooth setup advertising, memory
   flat over a minute. What that cannot show: a picture on the screen, the idle clock (it
-  needs the network for the time), and "Jarvis" bringing the face back. The 240 px face,
-  clock and setup screen are sized by arithmetic and have not been seen on glass.
+  needs the network for the time), and "Jarvis" bringing the face back. The 240 px face
+  and the clock have been seen on glass since, on rev A (2026-11-03 and 2026-11-04); the
+  setup screen is still sized by arithmetic only, because reaching it erases the kit's
+  Wi-Fi credentials.
 - **Voice sessions drop on a congested Wi-Fi network.** Seen on the P4: a conversation
   closes a second or two after it opens, and the status cycles *connecting → listening*.
   Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`

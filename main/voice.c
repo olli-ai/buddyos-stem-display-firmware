@@ -829,6 +829,31 @@ static void up_task(void *arg)
 #endif
         if (s_phase == PHASE_IDLE) {
             if (heard) { session_begin(now); continue; }
+            /* What the microphone is actually delivering while nobody is talking to
+             * the kit. The `mic:` line below counts frames sent to the encoder, and
+             * an idle kit sends none — so without this a dead microphone and a quiet
+             * room look identical in a log, which is exactly where a bring-up loses
+             * an afternoon. The AEC build has `afe in:` for this; this is its
+             * counterpart on the plain WakeNet path.
+             *
+             * Read it as: rms ~0 and peak ~0 is a wiring or slot fault, nothing
+             * downstream can hear the wake word. This file reckons arm's length to
+             * be about -25 dBFS. */
+            {
+                static uint32_t idle_n, idle_peak;
+                static uint64_t idle_sq;
+                for (int i = 0; i < IN_SAMPLES; i++) {
+                    int v = in[i];
+                    idle_sq += (uint64_t)v * v;
+                    if ((uint32_t)abs(v) > idle_peak) idle_peak = (uint32_t)abs(v);
+                }
+                if ((idle_n += IN_SAMPLES) >= AUDIO_SAMPLE_RATE * 10) {
+                    ESP_LOGI(TAG, "mic idle: rms %d, peak %lu (of 32767)",
+                             (int)sqrt((double)idle_sq / idle_n), (unsigned long)idle_peak);
+                    idle_n = idle_peak = 0;
+                    idle_sq = 0;
+                }
+            }
 #if CONFIG_BUDDY_SCREEN_FACE && CONFIG_BUDDY_FACE_ASLEEP_S > 0
             /* Let the face rest when the room goes quiet. A kit between conversations
              * holds `idle` indefinitely, so an idle state a child gave a lively loop —
