@@ -41,11 +41,12 @@
  * features carry it in the transform they already have. That works only because this
  * glass is round (BOARD_ROUND), so a turn uncovers no corner.
  *
- * The voice status pill turns with it (status.c), by the same trick and for the same
- * reason: it is drawn into a canvas, and a canvas is an lv_image. What still does NOT
- * turn is the rest of the text over the face — the clock, the volume panel, the setup
- * screen. LVGL draws any transformed object through an intermediate layer except
- * lv_image, and a layer is the allocation this firmware cannot make.
+ * The voice status pill turns with it (status.c), and so do the clock and the setup
+ * screen (turned.c), by the same trick and for the same reason: they are drawn into a
+ * canvas, and a canvas is an lv_image. What still does NOT turn is the volume panel.
+ * LVGL draws any transformed object through an intermediate layer except lv_image, and
+ * a layer is the allocation this firmware cannot make — so nothing over the face may
+ * simply be given a transform; it has to be rasterised first.
  *
  * The sign is the easy half to get wrong, and it is wrong in a way that looks right
  * until you hold the kit up: this is the turn applied to the *face*, so it has to

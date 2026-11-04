@@ -273,11 +273,12 @@ of 14,088 at −45° with the flex pill. It should: the label object and the tex
 kept in the pool are gone, and what replaced them lives in PSRAM. Frame means were
 **276–2,111 µs**.
 
-> **Not yet proven on the glass: the rasterising itself.** In that run the kit never
-> associated (`no access point with that SSID in range`), and `voice_start()` is what
-> first calls `status_set()` — so the pill was allocated and placed but never drew a
-> caption. What the run does establish is that creating it costs what is written above
-> and faults nothing. Exercise it with the AP in range before trusting the layout.
+> **Proven on the glass on 2026-11-04.** The run that established the figures above was
+> one where the kit never associated (`no access point with that SSID in range`), and
+> `voice_start()` is what first calls `status_set()` — so the pill was allocated and
+> placed but never drew a caption. With the AP back in range it does: `[wifi connected]`
+> at 12,767 ms and `voice: listening for the wake word` at 12,906 ms, which is
+> `status_set()` reached and the caption rasterised. The canvas is the same 186 × 34.
 
 **Measured on rev A, 2026-11-03**, 60 s from reset, over several angles. The cost that
 was worth worrying about did not appear: at rest the five features used to take LVGL's
@@ -294,13 +295,76 @@ frames against the 16,000 µs that is 60 fps. The worst-case spikes in the same 
 (10–231 ms) line up with Wi-Fi association retries, not with the face — though that is a
 correlation, not a before-and-after.
 
-**What still does not turn** — the clock, the volume panel, the setup screen. LVGL draws
-*any* transformed object through an intermediate layer except `lv_image`, so turning one
-of those as it stands costs the allocation this firmware exists to avoid (and the rev A
-bring-up below is what running out of that pool looks like). They stay upright over a
-tilted face. The way to make one follow is the pill's: rasterise it into a canvas, or
-re-lay it out at the turned positions with the text left upright — not to put a
-transform on it.
+**The clock and the setup screen turn too**, since 2026-11-04, by the pill's trick
+factored out of it. `main/turned.c` is a block of centred lines rasterised into one
+PSRAM canvas and rotated as an `lv_image`; `turned_point()` carries a position from the
+upright layout to the turned one, so each block is *placed* rather than laid out, and
+flex is gone from both screens on a turned board. The whole file compiles to nothing
+where `BOARD_FACE_ROT_DEG` is 0, which is every board but rev A — the bench board and
+the P4 keep the flex columns they always had, untouched.
+
+Three things that layout had to resolve:
+
+- **The clock is two blocks, not one.** The seconds change every tick and the date once
+  a day, so splitting them means one small re-rasterisation a second rather than a large
+  one. The full-screen black backdrop stays an ordinary rectangle: a black circle looks
+  the same at every angle.
+- **The QR needs a canvas of its own, for two reasons.** `lv_qrcode`'s buffer is
+  `LV_COLOR_FORMAT_I1`, and the software renderer's transform has no indexed case at all
+  (`lv_draw_sw_transform.c` handles RGB565/RGB888/XRGB8888/ARGB8888/A8) — rotating the
+  widget would draw nothing. And its white quiet zone is an object *border*, drawn square
+  around the widget's box whatever the image inside does, so a rotated code would push
+  its corners out onto black. So the I1 bitmap is drawn untransformed into an ARGB8888
+  canvas that carries the quiet zone as pixels, once, and that canvas is what turns.
+- **That first rasterisation is deferred to the LVGL timer.** `lv_canvas_finish_layer()`
+  dispatches and waits on the draw unit, which is not a thing to do from create-time code
+  before the first `lv_timer_handler()`. `qr_once()` is called from the setup screen's
+  100 ms tick and guarded by a `static bool`.
+
+No PSRAM for a block means the block does not appear — `turned_create()` says so in the
+log and every later call is a no-op. Degraded, never blank and never a hang; and for the
+QR, the printed serial is still the way in.
+
+**What still does not turn** — the volume panel. It stays upright over a tilted face.
+The way to make it follow is `turned.c`'s, not a transform on the container: LVGL draws
+*any* transformed object through an intermediate layer except `lv_image`, and a 240×240
+layer is 115 KB, more than the whole LVGL heap (the rev A bring-up below is what running
+out of that pool looks like).
+
+**Measured on rev A, 2026-11-04**, at −48°, from `run-buddy.log`:
+
+| block | canvas | PSRAM |
+| --- | --- | --- |
+| status pill | 186 × 34 | 25,296 B |
+| clock, time | 240 × 44 | 42,240 B |
+| clock, date | 240 × 50 | 48,000 B |
+| setup, title + serial | 192 × 74 | 56,832 B |
+| setup, step | 192 × 48 | 36,864 B |
+| setup, hint | 192 × 48 | 36,864 B |
+| setup, QR + quiet zone | 102 × 102 | 41,616 B |
+
+All of it allocated once at startup, out of ~6.06 MB free at boot: 5,659,004 B free at
+`[gallery up]`, and **5,059,336 B steady while running, unchanged second to second** —
+which is the claim that mattered, because a per-tick allocation is what re-rasterising
+text once a second could have cost and does not. The LVGL pool went *down* again, to
+**10,572 of 30,844 used, peak 12,664, 11% fragmented** at `[gallery up]`, from 11,732 and
+a peak of 13,912 with the flex pill: labels and their text buffers left the pool and
+their pixels live in PSRAM. With the clock up it is **11,280 of 30,724, peak 13,444, 7%**.
+
+Frame time is the one place the clock is visibly more expensive, and only in the worst
+case: with the face showing, means of **594–718 µs** and a worst frame near **13 ms**;
+with the clock up, means of **241–346 µs** — the face stops animating under an opaque
+screen — and worst frames of **22.4–27.3 ms**, 35.3 ms in the first window after it
+appeared. So the worst frame roughly doubles, once a second, while the mean halves. The
+log cannot separate the rasterising from the full-screen flush that follows it.
+
+> **The clock was seen on the glass** in that run (`I (182554) clock: left alone; showing
+> the time`, after the 180 s `CONFIG_BUDDY_CLOCK_IDLE_S`). **The setup screen was not.**
+> Reaching it means holding BOOT for 2 s, which erases the kit's Wi-Fi credentials, and
+> that was not worth doing to look at it. Everything on it is allocated and logged at
+> startup, so what is unproven is the drawing: the three text blocks, and `qr_once()`'s
+> I1-into-ARGB8888 blit in particular. If that blit does not work the QR is a blank white
+> square, not a crash — and the serial is printed above it either way.
 
 GPIO 0 is BOOT and nothing else, so it works as a button at any time: hold it for 2 s
 while the kit runs and let go to set the kit up again. The strapping pins 3, 45 and 46,
@@ -1303,8 +1367,10 @@ really PSRAM's doing.
   nothing attached booted the GC9A01 build cleanly — panel driver up over SPI, the three
   characters mapped, the I2S bus up with voice on, Bluetooth setup advertising, memory
   flat over a minute. What that cannot show: a picture on the screen, the idle clock (it
-  needs the network for the time), and "Jarvis" bringing the face back. The 240 px face,
-  clock and setup screen are sized by arithmetic and have not been seen on glass.
+  needs the network for the time), and "Jarvis" bringing the face back. The 240 px face
+  and the clock have been seen on glass since, on rev A (2026-11-03 and 2026-11-04); the
+  setup screen is still sized by arithmetic only, because reaching it erases the kit's
+  Wi-Fi credentials.
 - **Voice sessions drop on a congested Wi-Fi network.** Seen on the P4: a conversation
   closes a second or two after it opens, and the status cycles *connecting → listening*.
   Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`
