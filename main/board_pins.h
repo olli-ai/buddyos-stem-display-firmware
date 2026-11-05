@@ -16,9 +16,10 @@
  *
  * This is the only S3 board. A hand-wired GC9A01 bench board was supported until
  * 2026-11-04 and shared not one GPIO with it; it is in git history, and nothing here
- * is kept configurable for it. The mirror in gc9a01.c and BOARD_FACE_ROT_DEG below are
- * facts about this board's FPC and enclosure, so a bare module on a desk would come up
- * mirrored and tilted. That is expected: this firmware is for the board we ship.
+ * is kept configurable for it. The mirror in gc9a01.c is a fact about this board's FPC,
+ * so a bare module on a desk would come up mirrored. That is expected: this firmware is
+ * for the board we ship. (BOARD_FACE_ROT_DEG below is the enclosure's counterpart, and
+ * it is 0 -- the face is not turned.)
  */
 
 #define BOARD_LCD_W     240
@@ -30,11 +31,21 @@
 
 /* How far the face is turned on the glass, degrees, positive clockwise.
  *
- * The panel is soldered down and the enclosure holds it at an angle, so the face has
- * to be turned the same amount to come out level. It belongs here for the reason the
- * mirror in gc9a01.c does: which way a fixed panel faces is a fact about the board.
+ * **0 since 2026-11-05: the face is not turned.** It was -48 for two days, to correct
+ * an enclosure that holds the panel at an angle. The kit draws level again now.
  *
- * It is NOT a display rotation, and could not be — the GC9A01's MADCTL and LVGL's
+ * At 0 every turning path compiles out and the screens are the ones that were there
+ * before any of this: the status pill, the clock and the setup screen go back to their
+ * flex columns, turned.c compiles to nothing at all, and face_view.c skips the pass
+ * that resolves an angle into the body's pixels. So this line is the whole switch --
+ * nothing else has to change to turn it off, and nothing else has to change to turn it
+ * back on. That is deliberate, and it is why the machinery is still here rather than
+ * deleted: the enclosure is the thing that decides, and it can decide again.
+ *
+ * What the machinery does when the number is not 0, kept because it is the part that is
+ * expensive to work out twice:
+ *
+ * It is NOT a display rotation, and could not be -- the GC9A01's MADCTL and LVGL's
  * lv_display_set_rotation both only do quarter turns. face_view.c turns the face
  * instead: the body's angle is resolved into its pixels once per character, and the
  * features carry it in the transform they already have. That works only because this
@@ -44,22 +55,22 @@
  * screen (turned.c), by the same trick and for the same reason: they are drawn into a
  * canvas, and a canvas is an lv_image. What still does NOT turn is the volume panel.
  * LVGL draws any transformed object through an intermediate layer except lv_image, and
- * a layer is the allocation this firmware cannot make — so nothing over the face may
+ * a layer is the allocation this firmware cannot make -- so nothing over the face may
  * simply be given a transform; it has to be rasterised first.
  *
  * The sign is the easy half to get wrong, and it is wrong in a way that looks right
  * until you hold the kit up: this is the turn applied to the *face*, so it has to
  * oppose the enclosure's, not match it. +30 on a board whose glass is already turned
- * clockwise does not level anything — it lands at 60 and reads as a much worse tilt
- * than the one being corrected. Seen on the board on 2026-11-03, which is why this is
- * negative. If a face ever comes out leaning harder than the bare panel did, this
- * line is the first thing to look at.
+ * clockwise does not level anything -- it lands at 60 and reads as a much worse tilt
+ * than the one being corrected. Seen on the board on 2026-11-03, which is why the
+ * value was negative. If a face ever comes out leaning harder than the bare panel did,
+ * this line is the first thing to look at.
  *
- * The magnitude was found by eye on the glass, not from a drawing: -30 was short and
- * -45 was close, and it settled at -48 on 2026-11-03. Anyone with the enclosure's real
- * angle should put that number here instead and say where it came from — nothing else
- * in the firmware has to change, because the cost does not depend on the angle. */
-#define BOARD_FACE_ROT_DEG  (-48)
+ * The magnitude was found by eye on the glass rather than from a drawing: -30 was
+ * short, -45 was close, and it settled at -48 on 2026-11-03. Anyone putting a number
+ * back here should say where it came from -- nothing else in the firmware changes,
+ * because the cost does not depend on the angle. */
+#define BOARD_FACE_ROT_DEG    0
 
 /* ---- GC9A01 1.28" round TFT, SPI (FPC DS501/DS502) ------------------------ */
 /* R501 and R502 are drawn as 22 R and fitted as 100 R (measured 2026-10-28).

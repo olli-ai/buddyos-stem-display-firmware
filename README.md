@@ -221,22 +221,29 @@ the FPC and not the software. `main/gc9a01.c` undoes it with
 on purpose: which way a soldered-down panel faces is a fact about the board, like its
 pins.
 
-And the enclosure holds that panel at an angle, so the face is turned to match:
-`BOARD_FACE_ROT_DEG` in `main/board_pins.h`, −48° on the S3 and 0 on the P4. It sits
-beside the pins for the same reason the mirror does.
+The enclosure also holds that panel at an angle, and for two days the face was turned
+to match: `BOARD_FACE_ROT_DEG` in `main/board_pins.h`. **It is 0 since 2026-11-05 — the
+face is not turned**, on either board. Everything below describes what that line does
+when it is not 0, because the machinery is still there and the enclosure is the thing
+that decides.
 
-It is **negative** because the number is the turn applied to the face, which has to
-oppose the enclosure's rather than match it. The first build said +30, and on the glass
-that reads as a face leaning about twice as hard as the bare panel did — not as
-something subtly off. A face that comes out worse than no correction at all is this
-sign, every time.
+At 0 the whole of it compiles out. The status pill, the clock and the setup screen go
+back to their flex columns, `main/turned.c` compiles to nothing, and `face_view.c`
+skips the pass that resolves an angle into the body's pixels — so the screens are the
+ones that were there before any of this, and the measurements further down become the
+cost of a setting nobody is paying for. One line turns it off; the same line turns it
+back on.
+
+The sign is the half that is easy to get wrong, in a way that looks right until you hold
+the kit up: the number is the turn applied to the *face*, so it has to oppose the
+enclosure's rather than match it. The first build said +30, and on the glass that reads
+as a face leaning about twice as hard as the bare panel did — not as something subtly
+off. A face that comes out worse than no correction at all is this sign, every time.
 
 The magnitude came off the glass rather than off a drawing: −30 was still visibly
-short, −45 was close, and it settled at −48 on 2026-11-03. Anyone holding the
-enclosure's real angle should
-replace the number and record where it came from. Nothing else moves when it changes —
-the cost below is the same at any angle, and at 0 the code is the code that was there
-before.
+short, −45 was close, and it settled at −48 on 2026-11-03. Anyone putting a number back
+here should record where it came from. Nothing else moves when it changes — the cost
+below is the same at any angle.
 
 It is **not** a display rotation, and could not have been. The GC9A01's MADCTL has MX,
 MY and MV — eight combinations, which is quarter turns and flips — and LVGL's enum is
@@ -309,8 +316,8 @@ factored out of it. `main/turned.c` is a block of centred lines rasterised into 
 PSRAM canvas and rotated as an `lv_image`; `turned_point()` carries a position from the
 upright layout to the turned one, so each block is *placed* rather than laid out, and
 flex is gone from both screens on a turned board. The whole file compiles to nothing
-where `BOARD_FACE_ROT_DEG` is 0, which is the P4 — it keeps the flex columns it always
-had, untouched.
+where `BOARD_FACE_ROT_DEG` is 0 — which, since 2026-11-05, is both boards. The flex columns
+are back on the S3 too; the turned path is kept for the next enclosure that needs it.
 
 Three things that layout had to resolve:
 
