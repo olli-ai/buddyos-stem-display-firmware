@@ -27,8 +27,11 @@ will not see the board at all.
 > at a bare module and the screen comes up mirrored and tilted with every wire right.
 > The old map is in git history if you want it.
 
-<details>
-<summary><b>What the ESP32-S3 board already has wired</b> — nothing to connect, but useful when you are reading a log, writing a program or probing the board</summary>
+### What the ESP32-S3 board already has wired
+
+Nothing here needs connecting — it is all on the PCB. The map is worth having in front
+of you anyway: when a log names a pin, when a program touches one, or when a meter is on
+the board.
 
 ESP32-S3 GPIO numbers. `main/board_pins.h` is the source of truth; if this table and that
 file ever disagree, the file is right.
@@ -62,8 +65,6 @@ file ever disagree, the file is right.
   register correct.
 - GPIO 35–37 (octal PSRAM), 19/20 (native USB), 26–32 (flash) and the strapping pins
   3/45/46 are left alone.
-
-</details>
 
 ## 2. Let an assistant build and flash it
 
