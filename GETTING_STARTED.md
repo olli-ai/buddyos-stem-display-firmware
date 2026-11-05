@@ -140,6 +140,10 @@ voice, and send it programs.
 ## 4. Talk to it
 
 - **Say "Jarvis"**, wait for the face to react, then talk. It answers out loud.
+- **To cut it off mid-sentence:** on the **ESP32-S3**, say "Jarvis" again — while the
+  Buddy speaks it sends nothing upstream, but the board still hears the wake word. On the
+  **ESP32-P4**, just talk over it: that board cancels its own echo, so it hears you while
+  it speaks and stops on its own.
 - **Leave it alone for three minutes** and the face turns into a clock. Say "Jarvis" to
   bring the face back.
 - **To set it up again** (new Wi-Fi, new owner): hold the **BOOT** button for 2 seconds

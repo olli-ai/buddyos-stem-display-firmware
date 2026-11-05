@@ -511,10 +511,12 @@ Two known rough edges, both on the detector rather than the pipeline:
 
 - **It may wake itself** if the Buddy's own persona is also called Jarvis and the detector
   is in its aggressive mode (`CONFIG_BUDDY_WAKE_THRESHOLD_MODE=1`).
-- **Half-duplex while speaking.** The microphone's uplink is muted while the Buddy talks,
-  so you cannot interrupt it just by speaking. On the P4, which has echo cancellation,
-  saying "Jarvis" over a reply still cuts it off; the S3 has none, so there it waits for
-  the reply to end. See [Open questions](#open-questions).
+- **Half duplex on the S3.** The S3 has one microphone and no echo cancellation, so its
+  uplink is muted while the Buddy talks: there you cannot interrupt it just by speaking.
+  Say "Jarvis" instead — WakeNet listens to the real microphone *ahead* of that mute, so
+  the wake word cuts a reply off mid-sentence. The P4 cancels its own echo and leaves the
+  microphone open, so on that board you simply talk over a reply and it stops. See
+  [Echo cancellation](#echo-cancellation-and-the-microphone-slots).
 
 ### Being left alone: the clock
 
@@ -1408,11 +1410,13 @@ really PSRAM's doing.
   Every WebSocket send in `main/voice.c` waits at most 200 ms, and `esp_websocket_client`
   treats one write that takes longer as a dead connection. Raising the limit is not a
   one-line fix: the 200 ms keeps the microphone task inside its 20 ms budget.
-- **Interrupting the Buddy without the wake word.** The uplink is muted while the Buddy
-  speaks, because every partial setting tried either let the Buddy interrupt itself or
-  stopped a child interrupting it (`sdkconfig.defaults.esp32p4` has the numbers). Real
-  voice barge-in needs the voice server to stop treating audio sent while it is speaking
-  as an interruption; it cannot be fixed in this firmware alone.
+- **Interrupting the Buddy without the wake word, on the S3.** One microphone and no
+  echo cancellation leaves nothing to subtract the speaker from, so the uplink is muted
+  while the Buddy speaks and "Jarvis" is the only way in. Every partial setting tried
+  either let the Buddy interrupt itself or stopped a child interrupting it. The P4
+  answered this with the AFE rather than with settings — echo cancelled, microphone open,
+  talk over it as you would in a browser ([Echo
+  cancellation](#echo-cancellation-and-the-microphone-slots)).
 - **BOOT as a wake pin on the S3** is not confirmed on hardware. GPIO 0 is a strapping pin,
   so a press might land in the bootloader instead of waking the kit. It matters only for
   the explicit `device.sleep` command now that idle shows a clock — see [Deep
