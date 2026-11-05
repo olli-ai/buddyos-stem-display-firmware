@@ -1,35 +1,5 @@
 menu "BuddyOS display firmware"
 
-choice BUDDY_S3_BOARD
-    prompt "ESP32-S3 board"
-    depends on IDF_TARGET_ESP32S3
-    default BUDDY_S3_BENCH
-    help
-        Which S3 board the pins belong to. Both carry the same chip and the same
-        GC9A01 panel and share not one GPIO, so this is a choice rather than a
-        default: a binary built for the wrong one comes up with a dark screen and
-        a silent speaker, and nothing in the log says why.
-
-        The P4 board has no entry here — it is selected by IDF_TARGET, because
-        main/CMakeLists.txt has to pick its sources in the pass before any
-        CONFIG_ symbol exists.
-
-config BUDDY_S3_BENCH
-    bool "GC9A01 bench board (2026-09-28)"
-    help
-        The board this panel first ran on. Panel on 15/16/17/18/8, backlight tied
-        to 3.3 V, and the amplifier and microphone sharing one I2S controller in
-        full duplex.
-
-config BUDDY_S3_BUDDYDISPLAY_REVA
-    bool "BuddyDisplay rev A"
-    help
-        The first laid-out board: panel on 12/11/16/17/18 with a transistor on the
-        backlight, and the amplifier and microphone on their own clocks, so two I2S
-        controllers. Flash it QIO — see sdkconfig.defaults.reva.
-
-endchoice
-
 config BUDDY_NET
     bool "Bring up Wi-Fi and MQTT"
     default y

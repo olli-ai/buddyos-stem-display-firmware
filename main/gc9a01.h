@@ -30,10 +30,10 @@ esp_err_t gc9a01_on_flushed(esp_lcd_panel_io_color_trans_done_cb_t cb, void *arg
 void gc9a01_set_on(bool on);
 
 /**
- * The backlight alone, where the board has a transistor on it (PIN_LCD_BL).
+ * The backlight alone (PIN_LCD_BL, Q501's gate).
  *
  * gc9a01_start() leaves it off, because the controller's RAM powers up as noise and
  * the whole point of owning the backlight is not to show that. Whoever puts the first
- * frame on the panel lights it. A no-op on a board with BLK strapped to 3.3 V.
+ * frame on the panel lights it.
  */
 void gc9a01_backlight(bool on);

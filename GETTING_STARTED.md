@@ -1,56 +1,33 @@
 # Getting started
 
-From a bag of parts to a Buddy that answers "Jarvis", in five steps. You do not need
-to know ESP-IDF: an AI coding assistant can install the tools, build the firmware and
-flash it for you, and this page gives you the exact words to ask it with.
+From a board in your hand to a Buddy that answers "Jarvis", in four steps. You do not
+need to know ESP-IDF: an AI coding assistant can install the tools, build the firmware
+and flash it for you, and this page gives you the exact words to ask it with.
 
 If you want the engineering detail instead, read [`README.md`](README.md).
 
 ---
 
-## 1. Get the parts
+## 1. Get a board
 
-| Part | What to buy |
+There is **no wiring step**. Both boards this firmware builds for come assembled, and
+it knows one pin map per board — there is nothing to choose and nothing to connect.
+
+| Board | What it is |
 | --- | --- |
-| Board | **ESP32-S3-WROOM-1-N16R8** devkit (16 MB flash, 8 MB PSRAM). **Not the N8R2.** |
-| Screen | **GC9A01** 1.28" round TFT module, 240x240, SPI |
-| Microphone | **INMP441** I²S microphone breakout |
-| Amplifier | **MAX98357A** I²S amplifier breakout |
-| Speaker | small 4 Ω speaker, 2–3 W |
-| Cable | a USB cable that carries **data** — many only charge |
+| **BuddyOS STEM display kit** | The ESP32-S3 board we ship: an ESP32-S3-WROOM-1-N16R8, a GC9A01 1.28" round screen, an INMP441 microphone and a MAX98357A amplifier, all on the PCB. |
+| **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C** | An off-the-shelf 4" 720×720 touch board you can buy today. |
 
-Have a **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C** instead? It needs no wiring at all:
-skip to step 3 and tell the assistant your board is the P4.
+You also need a **USB cable that carries data** — many only charge, and the computer
+will not see the board at all.
 
-## 2. Wire it
+> **Wiring the parts up yourself on a breadboard is no longer supported.** The firmware
+> carried a hand-wired pin map until 2026-11-04 and no longer does: it bakes in the
+> shipped board's GPIOs, its panel mirror and the 48° turn its enclosure needs. Point it
+> at a bare module and the screen comes up mirrored and tilted with every wire right.
+> The old map is in git history if you want it.
 
-Breadboard and jumper wires, no soldering beyond the headers. The pin numbers are the
-ESP32-S3's GPIO numbers, printed on most devkits.
-
-| Wire from | To GPIO |
-| --- | --- |
-| Screen `SCL` | 15 |
-| Screen `SDA` | 16 |
-| Screen `DC` | 17 |
-| Screen `CS` | 18 |
-| Screen `RST` | 8 |
-| Screen `VCC`, `BLK` | 3V3 |
-| Mic `SCK` **and** amp `BCLK` (both to the same pin) | 5 |
-| Mic `WS` **and** amp `LRC` (both to the same pin) | 6 |
-| Amp `DIN` | 7 |
-| Mic `SD` | 4 |
-| Mic `L/R` | GND |
-| Mic `VDD` | 3V3 |
-| Amp `VIN` | **5 V** |
-| Every `GND` | GND |
-
-Two things people get wrong:
-
-- **The mic and the amp share two wires** (GPIO 5 and 6). That is on purpose.
-- **The amp runs from 5 V**, not 3V3. On 3V3 the board browns out the moment it speaks
-  and looks broken when it is only starved.
-
-## 3. Let an assistant build and flash it
+## 2. Let an assistant build and flash it
 
 Install one of these on your computer:
 
@@ -63,7 +40,7 @@ changing the two lines in brackets:
 
 ```text
 I want to build and flash the BuddyOS STEM display firmware in this folder.
-My board is: [ESP32-S3-WROOM-1-N16R8 with a GC9A01 screen | Waveshare ESP32-P4]
+My board is: [BuddyOS STEM display kit (ESP32-S3) | Waveshare ESP32-P4]
 My computer runs: [macOS | Windows | Linux]
 
 Please:
@@ -103,7 +80,7 @@ cd build-s3 && ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_ar
 The P4 and Docker commands are in the README under [Building](README.md#building).
 </details>
 
-## 4. Set it up on the website
+## 3. Set it up on the website
 
 You need **Chrome or Edge** on a computer or an Android phone — they are the browsers
 that can talk Bluetooth to the kit. Safari, Firefox and iPhones cannot.
@@ -118,7 +95,7 @@ that can talk Bluetooth to the kit. Safari, Firefox and iPhones cannot.
 Your kit now appears in your device list. From there you can design its face, give it a
 voice, and send it programs.
 
-## 5. Talk to it
+## 4. Talk to it
 
 - **Say "Jarvis"**, wait for the face to react, then talk. It answers out loud.
 - **Leave it alone for three minutes** and the face turns into a clock. Say "Jarvis" to
@@ -145,10 +122,10 @@ Common ones:
 | --- | --- |
 | The computer does not see the board at all | A charge-only USB cable, or a hub or adapter that passes power but not data. Plug straight into the computer with another cable. |
 | esptool cannot connect | Hold **BOOT**, press and release **RESET**, let go of BOOT, and try again. |
-| The screen stays dark | Check the five screen wires and `VCC`/`BLK` against step 2. |
+| The screen stays dark | Ask the assistant for the serial line `gc9a01: 240x240 on SPI`. If it is there the panel is talking, and the backlight is the suspect. |
 | The kit is not in the Bluetooth list | It is already set up. Hold BOOT for 2 s to put it back in setup. Or the browser is not Chrome/Edge. |
 | "Device registration failed" | Ask the assistant to check the log for `mqtt connected` — it shows whether the kit reached the cloud. Make sure the Wi-Fi is 2.4 GHz. |
-| It never hears "Jarvis" | The mic wiring — mic `SCK`/`WS` must share GPIO 5/6 with the amp. |
-| It goes silent or restarts when it speaks | The amp is on 3V3. Move it to 5 V. |
+| It never hears "Jarvis" | Ask the assistant for the `mic idle: rms N, peak N` line the kit prints every 10 s. `rms 0, peak 0` is a dead microphone; a quiet room reads a few hundred. |
+| It goes silent or restarts when it speaks | The 5 V rail is sagging under the amplifier. Try another cable, or a port that supplies more current. |
 
 Still stuck? Open an issue on this repository with the serial log attached.

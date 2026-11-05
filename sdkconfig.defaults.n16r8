@@ -1,5 +1,9 @@
-# The S3 kit: ESP32-S3-WROOM-1-N16R8 (16 MB flash, 8 MB **octal** PSRAM) with a GC9A01
+# The S3 board: ESP32-S3-WROOM-1-N16R8 (16 MB flash, 8 MB **octal** PSRAM) with a GC9A01
 # 1.28" 240x240 round screen and no touch. Pins in main/board_pins.h.
+#
+# This is the whole S3 overlay. It absorbed sdkconfig.defaults.reva on 2026-11-04, when
+# the hand-wired bench board was dropped and the laid-out board became the only S3 the
+# firmware builds for — the three settings at the bottom came from there.
 #
 # Build for it by layering this over the shared defaults:
 #
@@ -45,3 +49,40 @@ CONFIG_BUDDY_VOICE=y
 # The idle clock's time at 40 pt (main/clock_ui.c): 48 runs the full width of a 240 px
 # circle, and the 28 the shared defaults carry reads as a caption.
 CONFIG_LV_FONT_MONTSERRAT_40=y
+
+# QIO. Measured on this board: DIO boot-loops it.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# 16 KB was not enough, and running out is silent. sdkconfig.defaults gives LVGL a
+# 16 KB pool; this build sits at ~11.9 KB of it with the face up and peaked at 14000
+# of 14352 once the radio and voice were running. A sprite drawn with a transform
+# asks lv_malloc() for a temp buffer of up to 4 * 240 * 2 = 1920 B
+# (MAX_BUF_SIZE, components/lvgl/src/draw/sw/lv_draw_sw_img.c), and there was not
+# that much contiguous room left.
+#
+# What that costs is worse than a dropped frame. LV_ASSERT_MALLOC fires,
+# LV_ASSERT_HANDLER is `while(1);` by default and LV_USE_LOG is off, so the main
+# task spins forever inside img_draw_core with nothing printed: the face freezes,
+# the task watchdog repeats every 5 s with an identical backtrace, and the rest of
+# the firmware keeps running as if nothing happened. Measured on 2026-11-03,
+# 25 s apart, same PC and same stack pointers both times.
+#
+# 32 KB leaves ~20 KB of headroom, ten of those buffers, out of the ~96 KB of
+# internal RAM this build has free. The P4 already runs 64 KB for the same reason.
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
+
+# Start at full scale, because on this board quieter is also worse. The MAX98357A
+# has no volume control, so BUDDY_SPEAKER_VOLUME is a multiply on the samples
+# (audio.c, volume_apply): percent is linear in dB, 100% is untouched, and every
+# 10% down is 4 dB. The 60% default is therefore -16 dB of level thrown away
+# before the amplifier sees it, and the bottom bits of every sample thrown away
+# with it.
+#
+# There is not much to give back elsewhere. U601's GAIN_SLOT is open, which is
+# the part's 9 dB setting and three steps below the 15 dB it offers, and the board
+# has no speaker connector — the speaker solders to TP504/TP505, so what is
+# fitted there sets the ceiling more than the amplifier does.
+#
+# Only the starting point: the volume is adjustable at runtime and kept in NVS,
+# and a kit that already has a stored volume ignores this.
+CONFIG_BUDDY_SPEAKER_VOLUME=100

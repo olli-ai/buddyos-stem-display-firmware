@@ -3,11 +3,12 @@
 #include "board_pins.h"
 
 /*
- * Text that carries the glass's angle, on the boards where BOARD_FACE_ROT_DEG is not 0.
+ * Text that carries the glass's angle, on a board where BOARD_FACE_ROT_DEG is not 0 —
+ * which is the S3 and not the P4.
  *
  * LVGL turns exactly one kind of object without an intermediate layer — lv_image — and
- * a layer is the allocation this firmware is built around not making (the rev A
- * bring-up notes in README are what running out of LVGL's pool looks like). A canvas
+ * a layer is the allocation this firmware is built around not making (the bring-up
+ * notes in README are what running out of LVGL's pool looks like). A canvas
  * IS an lv_image, so anything that has to come out level on a tilted panel is
  * rasterised into a canvas in PSRAM, and the canvas is what gets turned.
  *

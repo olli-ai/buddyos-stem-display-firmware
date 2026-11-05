@@ -5,14 +5,20 @@
 /*
  * Every GPIO this firmware drives, in one place.
  *
- * The ESP32-S3 kit: an ESP32-S3-WROOM-1 with a GC9A01 1.28" 240x240 round TFT on SPI,
- * and no touch layer. Octal PSRAM (35-37), native USB (19/20) and flash (26-32) are
- * untouched, and so are the strapping pins 3, 45 and 46. GPIO 0 is BOOT and nothing
+ * The ESP32-S3 board: an ESP32-S3-WROOM-1-N16R8 with a GC9A01 1.28" 240x240 round TFT
+ * on SPI, and no touch layer. Octal PSRAM (35-37), native USB (19/20) and flash (26-32)
+ * are untouched, and so are the strapping pins 3, 45 and 46. GPIO 0 is BOOT and nothing
  * else, so it can be read at any time.
  *
- * Two boards carry that description and share not one GPIO, so which one is a build
- * choice: BUDDY_S3_BOARD. Flashing the wrong one is not a subtle failure, but it is a
- * silent one — a dark screen and a silent speaker, with every register correct.
+ * Read from the KiCad schematic's netlist and cross-checked against the PCB pads. The
+ * schematic's text notes still describe an older allocation (LCD on 9-14, amp on 5/6/7,
+ * BTN2 on 21, a WS2812 on 48); the wiring itself is what is below.
+ *
+ * This is the only S3 board. A hand-wired GC9A01 bench board was supported until
+ * 2026-11-04 and shared not one GPIO with it; it is in git history, and nothing here
+ * is kept configurable for it. The mirror in gc9a01.c and BOARD_FACE_ROT_DEG below are
+ * facts about this board's FPC and enclosure, so a bare module on a desk would come up
+ * mirrored and tilted. That is expected: this firmware is for the board we ship.
  */
 
 #define BOARD_LCD_W     240
@@ -20,13 +26,6 @@
 #define BOARD_ROUND       1
 #define BOARD_HAS_TOUCH   0    /* no touch layer: the wake word is the way back */
 
-#if CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA
-/*
- * BuddyDisplay rev A (KiCad project BuddyDisplay, ESP32-S3-WROOM-1-N16R8), read from
- * the schematic netlist and cross-checked against the PCB pads. The schematic's text
- * notes still describe an older allocation (LCD on 9-14, amp on 5/6/7, BTN2 on 21, a
- * WS2812 on 48); the wiring itself is what is below.
- */
 #define PIN_BOOT          0    /* BTN1. Also the sleep wake button and the boot reset */
 
 /* How far the face is turned on the glass, degrees, positive clockwise.
@@ -52,7 +51,7 @@
  * until you hold the kit up: this is the turn applied to the *face*, so it has to
  * oppose the enclosure's, not match it. +30 on a board whose glass is already turned
  * clockwise does not level anything — it lands at 60 and reads as a much worse tilt
- * than the one being corrected. Seen on rev A on 2026-11-03, which is why this is
+ * than the one being corrected. Seen on the board on 2026-11-03, which is why this is
  * negative. If a face ever comes out leaning harder than the bare panel did, this
  * line is the first thing to look at.
  *
@@ -63,7 +62,7 @@
 #define BOARD_FACE_ROT_DEG  (-48)
 
 /* ---- GC9A01 1.28" round TFT, SPI (FPC DS501/DS502) ------------------------ */
-/* R501 and R502 are drawn as 22 R and fitted as 100 R on rev A (measured 2026-10-28).
+/* R501 and R502 are drawn as 22 R and fitted as 100 R (measured 2026-10-28).
  * That cost a bring-up week before the glass turned out to be the fault, and the
  * replacement panel runs this bus at the full 40 MHz with the 100 R parts still on it.
  * So it is a note, not a limit — but check them before believing a timing figure. */
@@ -77,8 +76,8 @@
                                 * never seen */
 
 /* ---- MAX98357A amplifier (U601) and INMP441 microphone (J602), two I2S buses */
-/* Separate clocks on this board, so two controllers — the opposite of the bench
- * board's one. audio.c picks its topology off PIN_SPK_BCLK being defined. */
+/* Separate clocks for the two parts, so two I2S controllers: I2S0 plays and I2S1
+ * listens, each driving its own BCLK and WS. */
 #define PIN_SPK_SD       14    /* SD_MODE: high enables (left slot), low mutes */
 #define PIN_SPK_DIN      21
 #define PIN_SPK_BCLK     47
@@ -90,54 +89,17 @@
  * the mic's L/R is tied to ground in the cable (J602 pin 6), so it always talks in the
  * left half of the frame.
  *
- * And no speaker connector: rev A has none. OUTP/OUTN leave U601 through FB602/FB603
+ * And no speaker connector: this board has none. OUTP/OUTN leave U601 through FB602/FB603
  * and end on two test points, TP504 (SPK_P) and TP505 (SPK_N) — the speaker solders
  * straight to those pads. A board with the amplifier fitted and nothing on TP504/505
  * is silent with every register and every clock correct, which is an hour nobody
  * should spend twice. */
 
-/* ---- Other rev A parts, not driven by this firmware yet ------------------- */
+/* ---- Other parts on the board, not driven by this firmware yet ----------- */
 #define PIN_BTN2          1    /* active low. Silkscreen says IO21: it is IO1 */
 #define PIN_BAT_ADC       8    /* ADC1_CH7, VBAT through a 100k/100k divider */
-#define PIN_RGB_DATA      2    /* WS2812 footprint, not fitted on rev A */
+#define PIN_RGB_DATA      2    /* WS2812 footprint, not fitted */
 
-#else /* CONFIG_BUDDY_S3_BENCH */
-/*
- * The hand-wired GC9A01 bench board of 2026-09-28, where this panel first ran
- * (ESP32-S3-WROOM-1-N8R2).
- *
- * The audio is NOT that board's as first wired: it drove the amplifier and the
- * microphone from two I2S controllers on separate clocks (amp 9-13, mic 4-7). This is
- * one controller in full duplex, the amp and the mic sharing BCLK and WS — what
- * audio.c drives, and what voice was measured on with the 480x480 ST7701S screen this
- * kit had before (removed 2026-10-29; it is in git history). Wire a board to these
- * pins, or the speaker and the microphone will not both work.
- */
-#define PIN_BOOT          0
-
-/* A bare module on the bench with no enclosure to tilt it: the face sits level. */
-#define BOARD_FACE_ROT_DEG    0
-
-/* ---- GC9A01 1.28" round TFT, SPI ------------------------------------------ */
-#define PIN_LCD_SCLK     15    /* SCL on the module */
-#define PIN_LCD_MOSI     16    /* SDA on the module */
-#define PIN_LCD_DC       17
-#define PIN_LCD_CS       18
-#define PIN_LCD_RST       8
-/* No PIN_LCD_BL: the backlight is the module's own, BLK on 3.3 V, so it is lit
- * whenever the board has power and "display off" is the controller's DISPOFF. */
-
-/* ---- MAX98357A amplifier and INMP441 microphone, one I2S bus -------------- */
-/* Both parts share BCLK and WS, so they run on ONE I2S controller in full duplex: two
- * controllers would each drive their own clock onto the same wire. */
-#define PIN_I2S_BCLK      5    /* amp BCLK, mic SCK */
-#define PIN_I2S_WS        6    /* amp LRC,  mic WS  */
-#define PIN_SPK_DIN       7    /* our data out, the amplifier's in */
-#define PIN_MIC_SD        4    /* the mic's data OUT, an input to us */
-/* Strapped on the board, not driven: amp SD through 100 k to VIN (on, left channel),
- * amp GAIN floating (9 dB), mic L/R to GND (left). */
-
-#endif /* CONFIG_BUDDY_S3_BUDDYDISPLAY_REVA */
 
 #else /* CONFIG_IDF_TARGET_ESP32P4 */
 /*
