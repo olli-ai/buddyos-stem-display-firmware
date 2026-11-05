@@ -1,5 +1,24 @@
 menu "BuddyOS display firmware"
 
+config BUDDY_S3_PANEL_MIRROR_X
+    bool "Mirror the panel left-to-right"
+    depends on IDF_TARGET_ESP32S3
+    default y
+    help
+        On for the board we ship, whose FPC mounts the GC9A01 the other way round:
+        the driver, the init and invert_color are all stock and the face still comes
+        out mirrored, so MADCTL has to undo it.
+
+        **Turn this OFF if you wired a GC9A01 module up yourself.** A breakout is
+        mounted the normal way, so mirroring it is what puts the face backwards. It
+        is the only thing a hand-wired build has to change -- the pins are the same
+        ones, and the face is not turned on either.
+
+        Which way a soldered-down panel faces is a fact about a board, so this is
+        strictly a board description. It is not an option to play with: on a given
+        board exactly one of the two settings is right, and the wrong one is obvious
+        the moment a word appears on the glass.
+
 config BUDDY_NET
     bool "Bring up Wi-Fi and MQTT"
     default y

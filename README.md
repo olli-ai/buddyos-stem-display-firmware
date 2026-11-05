@@ -19,14 +19,25 @@ artwork `main/CMakeLists.txt` compiles.
 | **ESP32-S3 board** (ESP32-S3-WROOM-1-N16R8, laid out) | `esp32s3` | 1.28" 240x240 round GC9A01, SPI, **no touch** | `build-s3` |
 | **ESP32-P4** (32 MB flash), e.g. Waveshare ESP32-P4-WIFI6-Touch-LCD-4C | `esp32p4` | 4" 720x720 JD9365 MIPI-DSI, touch | `build-p4` |
 
-**There is one S3 pin map, and it is the laid-out board's.** A hand-wired GC9A01 bench
-board on entirely different GPIOs was supported until 2026-11-04; it was dropped when
-that board became the only S3 we ship, and with it the `BUDDY_S3_BOARD` choice and
-`sdkconfig.defaults.reva`, whose settings moved into `sdkconfig.defaults.n16r8`. It is
-all in git history. Two consequences for anyone pointing this firmware at a bare module
-on a desk: the panel mirror in `main/gc9a01.c` and `BOARD_FACE_ROT_DEG` are facts about
-*this* board's FPC and enclosure, so a module that has neither comes up mirrored and
-tilted 48°.
+**There is one S3 pin map**, the laid-out board's — and **you can wire it yourself**.
+The parts are all common breakouts, so a GC9A01 module, an INMP441 and a MAX98357A on
+the same GPIOs run the same firmware; see [Wiring](#wiring) for the table. The older
+hand-wired bench board used *entirely different* pins and was dropped on 2026-11-04,
+along with the `BUDDY_S3_BOARD` choice and `sdkconfig.defaults.reva` (whose settings
+moved into `sdkconfig.defaults.n16r8`). What went away was that second pin map, not the
+idea of wiring one up.
+
+**One flag to flip if you do.** `BUDDY_S3_PANEL_MIRROR_X` is on, because the board we
+ship mounts its panel the other way round through its FPC. A breakout is mounted the
+normal way, so leave it on and the face comes out backwards:
+
+```
+CONFIG_BUDDY_S3_PANEL_MIRROR_X=n
+```
+
+That is the whole difference. The face is not turned on either board
+(`BOARD_FACE_ROT_DEG` is 0 since 2026-11-05), so nothing else about a hand-wired build
+differs from the one we ship.
 
 Both build with **ESP-IDF v5.5.3**. Older IDF does not build this tree (the P4's panel
 driver needs 5.4 or later). No IDF installed? Use Espressif's image,
@@ -138,10 +149,12 @@ the PCB itself.
 | Speaker | 4 Ω, 2–3 W, small | **No connector** — solders to TP504/TP505. |
 | Also fitted | BTN1 (GPIO 0, also BOOT), BTN2 (GPIO 1), VBAT sense (GPIO 8) | A WS2812 footprint on GPIO 2 is **not** fitted. |
 
-A hand-wired breadboard version of this is no longer a thing the firmware builds for —
-see [Which board](#which-board). The parts above are all off-the-shelf, so one could be
-wired by hand, but the pin map, the panel mirror and the 48° face turn are this board's
-and nothing is kept configurable for anything else.
+**Wiring your own is supported.** Every part above is an off-the-shelf breakout, so a
+module on a breadboard works on the same pins — the table in [Wiring](#wiring) is for
+both. Two differences to expect, neither of them a problem: set
+`CONFIG_BUDDY_S3_PANEL_MIRROR_X=n`, because a breakout is not mounted reversed the way
+this board's FPC is; and your speaker goes on the amplifier's `+`/`−` terminals rather
+than soldered to TP504/TP505.
 
 **The module is the N16R8.** The older **N8R2** (8 MB flash, 2 MB PSRAM) keeps `partitions.csv`,
 whose app slots are 2 MB — and the image with voice and the face in it measures
@@ -182,6 +195,11 @@ reading any code.
 `main/board_pins.h` is the source of truth — if this table and that file ever disagree,
 the file is right.
 
+**This table is both the board's wiring and the one to follow by hand.** On the board we
+ship it is already routed; on a breadboard it is what to connect. The parts are common
+breakouts either way — a GC9A01 module, an INMP441 and a MAX98357A — and the only build
+change for a hand-wired one is `CONFIG_BUDDY_S3_PANEL_MIRROR_X=n`.
+
 | Signal | GPIO | Part pin |
 | --- | --- | --- |
 | **GC9A01** SCLK | 12 | `SCL`, through R501 |
@@ -216,9 +234,11 @@ them is silent with every register and every clock correct.
 The board also **mounts the panel the other way round**: the driver, the init and
 `invert_color` are stock, and the face still comes out mirrored left to right, so it is
 the FPC and not the software. `main/gc9a01.c` undoes it with
-`esp_lcd_panel_mirror(true, false)` — a mirror, not a rotation. It is not a build option
-on purpose: which way a soldered-down panel faces is a fact about the board, like its
-pins.
+`esp_lcd_panel_mirror(true, false)` — a mirror, not a rotation — under
+`BUDDY_S3_PANEL_MIRROR_X`, which is on by default. **A GC9A01 breakout is mounted the
+normal way and needs it off.** It is a board description rather than a preference: on
+any given board exactly one of the two settings is right, and the wrong one is obvious
+the moment a word appears on the glass.
 
 The enclosure also holds that panel at an angle, and for two days the face was turned
 to match: `BOARD_FACE_ROT_DEG` in `main/board_pins.h`. **It is 0 since 2026-11-05 — the

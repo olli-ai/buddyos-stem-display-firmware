@@ -8,30 +8,30 @@ If you want the engineering detail instead, read [`README.md`](README.md).
 
 ---
 
-## 1. Get a board
+## 1. Get a board — or wire one
 
-There is **no wiring step**. Both boards this firmware builds for come assembled, and
-it knows one pin map per board — there is nothing to choose and nothing to connect.
+Three ways in, and all three run the same firmware:
 
-| Board | What it is |
-| --- | --- |
-| **BuddyOS STEM display kit** | The ESP32-S3 board we ship: an ESP32-S3-WROOM-1-N16R8, a GC9A01 1.28" round screen, an INMP441 microphone and a MAX98357A amplifier, all on the PCB. |
-| **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C** | An off-the-shelf 4" 720×720 touch board you can buy today. |
+| Board | What it is | Wiring |
+| --- | --- | --- |
+| **BuddyOS STEM display kit** | The ESP32-S3 board we ship: an ESP32-S3-WROOM-1-N16R8, a GC9A01 1.28" round screen, an INMP441 microphone and a MAX98357A amplifier, all on the PCB. | none |
+| **Your own ESP32-S3 + modules** | An ESP32-S3-WROOM-1-N16R8 devkit, a GC9A01 1.28" round SPI module, an INMP441 breakout, a MAX98357A breakout and a small 4 Ω speaker. | the table below |
+| **Waveshare ESP32-P4-WIFI6-Touch-LCD-4C** | An off-the-shelf 4" 720×720 touch board you can buy today. | none |
 
 You also need a **USB cable that carries data** — many only charge, and the computer
 will not see the board at all.
 
-> **Wiring the parts up yourself on a breadboard is no longer supported.** The firmware
-> carried a hand-wired pin map until 2026-11-04 and no longer does: it bakes in the
-> shipped board's GPIOs, its panel mirror and the 48° turn its enclosure needs. Point it
-> at a bare module and the screen comes up mirrored and tilted with every wire right.
-> The old map is in git history if you want it.
+> **Wiring it yourself:** use the same GPIOs as the table below, and build with one flag
+> changed — `CONFIG_BUDDY_S3_PANEL_MIRROR_X=n`. The board we ship mounts its panel the
+> other way round through its FPC, and a module is mounted the normal way, so leaving the
+> mirror on is what puts the face backwards. That is the only difference; the face is not
+> turned on either.
 
-### What the ESP32-S3 board already has wired
+### The ESP32-S3 pin map
 
-Nothing here needs connecting — it is all on the PCB. The map is worth having in front
-of you anyway: when a log names a pin, when a program touches one, or when a meter is on
-the board.
+On the board we ship this is already routed, and worth having in front of you anyway —
+when a log names a pin, when a program touches one, or when a meter is on the board. If
+you are wiring your own, this is the table to follow.
 
 ESP32-S3 GPIO numbers. `main/board_pins.h` is the source of truth; if this table and that
 file ever disagree, the file is right.
@@ -60,9 +60,12 @@ file ever disagree, the file is right.
   own clocks — not the shared bus most online GC9A01 guides use.
 - The amplifier's `GAIN_SLOT` is open, so the gain is a fixed **9 dB**; the mic's `L/R`
   is tied to GND, so it always talks in the **left** half of the frame.
-- **The speaker has no connector** — it solders to test points **TP504**/**TP505**. A
-  board with the amplifier fitted and nothing on those pads is silent with every
-  register correct.
+- **On the board we ship the speaker has no connector** — it solders to test points
+  **TP504**/**TP505**, and a board with the amplifier fitted and nothing on those pads is
+  silent with every register correct. On a MAX98357A breakout, use its `+`/`−` terminals.
+- **Power the amplifier from 5 V**, not 3V3, if you are wiring your own. On 3V3 the board
+  browns out the moment the Buddy speaks — it goes silent or restarts — and looks broken
+  when it is only starved.
 - GPIO 35–37 (octal PSRAM), 19/20 (native USB), 26–32 (flash) and the strapping pins
   3/45/46 are left alone.
 
