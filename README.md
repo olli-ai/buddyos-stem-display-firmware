@@ -51,20 +51,19 @@ idf.py -B build-p4 -DIDF_TARGET=esp32p4 -DSDKCONFIG=build-p4/sdkconfig build
 gives way to a clock, and on this kit "Jarvis" is what brings it back — there is no screen
 to tap. `sdkconfig.defaults.n16r8` turns voice on for it.
 
-**On the P4 voice is opt-in, and the default build has none.** `BUDDY_AUDIO` is off because
-bringing the audio board up the first time once hung a device past the ROM bootloader
-(`main/Kconfig.projbuild` keeps the note), and `BUDDY_VOICE` hangs off it. A kit that
-should answer to "Jarvis" needs both, which is two lines in `menuconfig` or appended to
-the board's defaults:
+**Both boards build with voice on**, and neither needs a flag for it: the S3's overlay
+sets it, and `sdkconfig.defaults.esp32p4` does the same for the P4.
 
-```
-CONFIG_BUDDY_AUDIO=y
-CONFIG_BUDDY_VOICE=y
-```
+`BUDDY_AUDIO`'s Kconfig default is still `n`, and its help still says why — bringing a
+board's audio up the first time once hung a device past the ROM bootloader. That is a
+one-time gate per board, and both have passed it. It was left shut on the P4 for weeks
+after that stopped being true, which cost a step in the public setup guide, a paragraph
+here, and the odd kit built from plain defaults that could not hear a thing. The default
+is for the next board, not for either of these.
 
-Everything downstream of them already defaults to what the bench measured — echo
-cancellation on for the P4, and 30 dB of uplink gain, without which the cloud's VAD
-never hears a voice and the kit cannot be interrupted.
+Everything downstream already defaults to what the bench measured — echo cancellation on
+for the P4, and 30 dB of uplink gain, without which the cloud's VAD never hears a voice
+and the kit cannot be interrupted.
 
 **Do not build the N16R8 in the same directory as the P4**, or either in the default
 `build/`: a partition table and a face bake are per board, and a stale `sdkconfig` is

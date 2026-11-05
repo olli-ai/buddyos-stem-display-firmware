@@ -108,3 +108,21 @@ CONFIG_SR_WN_WN9_JARVIS_TTS=y
 # and interrupted). Real voice barge-in needs omni to stop treating audio sent
 # during its own state=SPEAKING as an interruption; it cannot be fixed from here.
 CONFIG_BUDDY_AEC_KEEP_HALF_DUPLEX=y
+
+# Voice on, like the S3's overlay does it (sdkconfig.defaults.n16r8).
+#
+# BUDDY_AUDIO's Kconfig default is `n`, and its help says why: "off by default until the
+# audio board has been brought up once by hand", because the first attempt hung a device
+# hard enough that the ROM bootloader stopped answering. That is a ONE-TIME gate, and it
+# was passed -- this board has run voice end to end on hardware (wake word, conversation,
+# spoken reply, with AEC), and the image published for it has carried voice since the
+# first one.
+#
+# It stayed `n` here anyway for weeks, and the cost was paid in instructions rather than
+# in code: the README told every reader to append two lines, the setup guide had a whole
+# step for it, and a build made from these defaults alone produced a display kit that
+# could not hear. A default nobody is meant to use is not a safe default; it is a trap
+# with documentation around it. The Kconfig default stays `n` for any future board whose
+# audio has NOT been brought up -- this line is this board saying it has.
+CONFIG_BUDDY_AUDIO=y
+CONFIG_BUDDY_VOICE=y
