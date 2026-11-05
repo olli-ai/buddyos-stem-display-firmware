@@ -27,6 +27,44 @@ will not see the board at all.
 > at a bare module and the screen comes up mirrored and tilted with every wire right.
 > The old map is in git history if you want it.
 
+<details>
+<summary><b>What the ESP32-S3 board already has wired</b> — nothing to connect, but useful when you are reading a log, writing a program or probing the board</summary>
+
+ESP32-S3 GPIO numbers. `main/board_pins.h` is the source of truth; if this table and that
+file ever disagree, the file is right.
+
+| Part | Signal | GPIO | Notes |
+| --- | --- | --- | --- |
+| **GC9A01** screen (SPI) | `SCL` | 12 | through R501 |
+| | `SDA` | 11 | through R502 |
+| | `DC` | 16 | |
+| | `CS` | 17 | R503 pull-up |
+| | `RST` | 18 | R504 pull-up |
+| | backlight | 13 | Q501's gate — high lights it |
+| **MAX98357A** amp (I2S0, out) | `BCLK` | 47 | |
+| | `LRC` | 48 | |
+| | `DIN` | 21 | ESP32 → amplifier |
+| | `SD_MODE` | 14 | high enables, low mutes |
+| **INMP441** mic (I2S1, in) | `SCK` | 38 | |
+| | `WS` | 39 | |
+| | `SD` | 40 | microphone → ESP32 |
+| Buttons and the rest | BTN1 / BOOT | 0 | hold 2 s to re-run setup |
+| | BTN2 | 1 | unused by the firmware; silkscreen says "IO21", it is IO1 |
+| | battery sense | 8 | ADC1_CH7, 100k/100k divider |
+| | WS2812 | 2 | footprint only, not fitted |
+
+- The speaker and the microphone are on **two separate I²S controllers**, each with its
+  own clocks — not the shared bus most online GC9A01 guides use.
+- The amplifier's `GAIN_SLOT` is open, so the gain is a fixed **9 dB**; the mic's `L/R`
+  is tied to GND, so it always talks in the **left** half of the frame.
+- **The speaker has no connector** — it solders to test points **TP504**/**TP505**. A
+  board with the amplifier fitted and nothing on those pads is silent with every
+  register correct.
+- GPIO 35–37 (octal PSRAM), 19/20 (native USB), 26–32 (flash) and the strapping pins
+  3/45/46 are left alone.
+
+</details>
+
 ## 2. Let an assistant build and flash it
 
 Install one of these on your computer:
