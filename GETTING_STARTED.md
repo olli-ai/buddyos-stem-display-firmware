@@ -27,26 +27,42 @@ skip to step 3 and tell the assistant your board is the P4.
 Breadboard and jumper wires, no soldering beyond the headers. The pin numbers are the
 ESP32-S3's GPIO numbers, printed on most devkits.
 
+These are **BuddyDisplay rev A**'s pins, which is what step 3 builds. There is a second,
+older pin set in this firmware for the 2026-09-28 bench board, and it shares **not one
+GPIO** with these — wiring to one and building the other is a dark screen and a silent
+speaker with every register correct. `main/board_pins.h` is the source of truth for both.
+
 | Wire from | To GPIO |
 | --- | --- |
-| Screen `SCL` | 15 |
-| Screen `SDA` | 16 |
-| Screen `DC` | 17 |
-| Screen `CS` | 18 |
-| Screen `RST` | 8 |
-| Screen `VCC`, `BLK` | 3V3 |
-| Mic `SCK` **and** amp `BCLK` (both to the same pin) | 5 |
-| Mic `WS` **and** amp `LRC` (both to the same pin) | 6 |
-| Amp `DIN` | 7 |
-| Mic `SD` | 4 |
+| Screen `SCL` | 12 |
+| Screen `SDA` | 11 |
+| Screen `DC` | 16 |
+| Screen `CS` | 17 |
+| Screen `RST` | 18 |
+| Screen `BLK` | 13 |
+| Screen `VCC` | 3V3 |
+| Amp `BCLK` | 47 |
+| Amp `LRC` | 48 |
+| Amp `DIN` | 21 |
+| Amp `SD` | 14 |
+| Mic `SCK` | 38 |
+| Mic `WS` | 39 |
+| Mic `SD` | 40 |
 | Mic `L/R` | GND |
 | Mic `VDD` | 3V3 |
 | Amp `VIN` | **5 V** |
 | Every `GND` | GND |
 
-Two things people get wrong:
+Four things people get wrong:
 
-- **The mic and the amp share two wires** (GPIO 5 and 6). That is on purpose.
+- **The mic and the amp do not share a clock here.** They run on two I²S controllers
+  with their own `BCLK`/`WS` pairs — 47 and 48 for the amp, 38 and 39 for the mic. Join
+  them and two controllers drive one wire.
+- **The amp's `SD` is a wire, not a strap** (GPIO 14). The firmware drives it high to
+  unmute and low to silence the kit; leave it unconnected and the speaker stays quiet
+  with every clock correct.
+- **The backlight is switched** (GPIO 13), not tied to 3V3. It is held off through reset
+  on purpose, so a screen that stays dark until the firmware is up is right, not broken.
 - **The amp runs from 5 V**, not 3V3. On 3V3 the board browns out the moment it speaks
   and looks broken when it is only starved.
 
@@ -63,7 +79,8 @@ changing the two lines in brackets:
 
 ```text
 I want to build and flash the BuddyOS STEM display firmware in this folder.
-My board is: [ESP32-S3-WROOM-1-N16R8 with a GC9A01 screen | Waveshare ESP32-P4]
+My board is: [ESP32-S3-WROOM-1-N16R8 with a GC9A01 screen, wired to BuddyDisplay rev A's
+pins (sdkconfig.defaults.reva) | Waveshare ESP32-P4]
 My computer runs: [macOS | Windows | Linux]
 
 Please:
@@ -94,10 +111,10 @@ Install **ESP-IDF v5.5.3** (or Docker), then from this folder:
 
 ```sh
 git clone --depth 1 --branch release/v9.2 https://github.com/lvgl/lvgl.git components/lvgl
-idf.py -B build-s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3/sdkconfig \
-       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8" build
+idf.py -B build-reva -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-reva/sdkconfig \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.n16r8;sdkconfig.defaults.reva" build
 python3 -m venv venv && venv/bin/pip install esptool
-cd build-s3 && ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
+cd build-reva && ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
 ```
 
 The P4 and Docker commands are in the README under [Building](README.md#building).
@@ -145,10 +162,11 @@ Common ones:
 | --- | --- |
 | The computer does not see the board at all | A charge-only USB cable, or a hub or adapter that passes power but not data. Plug straight into the computer with another cable. |
 | esptool cannot connect | Hold **BOOT**, press and release **RESET**, let go of BOOT, and try again. |
-| The screen stays dark | Check the five screen wires and `VCC`/`BLK` against step 2. |
+| The screen stays dark | Check the five screen wires, `VCC`, and `BLK` on GPIO 13 against step 2. If they are right, the build is probably the other board's pin set: it must include `sdkconfig.defaults.reva`. |
 | The kit is not in the Bluetooth list | It is already set up. Hold BOOT for 2 s to put it back in setup. Or the browser is not Chrome/Edge. |
 | "Device registration failed" | Ask the assistant to check the log for `mqtt connected` — it shows whether the kit reached the cloud. Make sure the Wi-Fi is 2.4 GHz. |
-| It never hears "Jarvis" | The mic wiring — mic `SCK`/`WS` must share GPIO 5/6 with the amp. |
+| It never hears "Jarvis" | The mic wiring — `SCK` 38, `WS` 39, `SD` 40, and `L/R` to GND. The mic's clocks are its own; they do not join the amp's. |
+| It says nothing at all | Amp `SD` is not wired to GPIO 14, so the amplifier is never unmuted. |
 | It goes silent or restarts when it speaks | The amp is on 3V3. Move it to 5 V. |
 
 Still stuck? Open an issue on this repository with the serial log attached.
