@@ -828,9 +828,10 @@ typedef struct { int32_t sx, sy, rot, x, y; lv_opa_t opa; bool set; } placed_t;
  * accessory moves with the head exactly as a feature does. */
 #define ACC_SLOT(k) (FACE_LAYER_COUNT + (k))
 static placed_t s_placed[FACE_LAYER_COUNT + ACC_PASSES];
-/* An accessory takes the head's motion and nothing of its own: it is worn, not
- * animated. A blink must not move the glasses it happens under. */
-static const face_values_t ACC_STILL = { 0, 0, 1, 1, 0, 1, -1 };
+/* Perfectly still: no offset, no scale, no rotation. An accessory takes the head's
+ * motion and none of its own (it is worn, not animated — a blink must not move the
+ * glasses it happens under); the body and a character's own face use it for both. */
+static const face_values_t STILL = { 0, 0, 1, 1, 0, 1, -1 };
 
 /* Place one image under the face transform composed with its own.
  * `ox, oy` is the sprite's untransformed top-left; w, h its size *in its own pixels*.
@@ -1081,9 +1082,11 @@ void face_view_tick(uint32_t elapsed_ms)
         }
     }
 #else
-    static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
-    /* srot 0: the glass's angle is already in this image's pixels (flatten). */
-    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h, 0.0f, 1.0f);
+    /* srot 0: the glass's angle is already in this image's pixels (flatten).
+     * REST on both sides: this board's body does not move. The head's motion is
+     * carried by the features sliding over it, which is far cheaper than
+     * re-transforming 240x240 every frame. */
+    place(0, s_bg, &STILL, &STILL, 0, 0, face_bg.header.w, face_bg.header.h, 0.0f, 1.0f);
 #endif
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
@@ -1126,10 +1129,34 @@ void face_view_tick(uint32_t elapsed_ms)
          * carries the same factor its offsets did. Firmware sprites are already in
          * the panel's space and get nothing. */
         face_values_t own = v[i];
-        if (s_shown[i] == FACE_PART_ARTWORK) own.scale *= s_cat_scale;
+        const face_values_t *head = &v[0];
+        if (s_shown[i] == FACE_PART_ARTWORK) {
+            /* A character's own eyes and mouth are painted on its body, so they go
+             * where the body goes. The firmware's own character makes the point:
+             * its face lives *inside* face_bg and has never moved independently of
+             * it. A catalogue character's face is the same face, drawn by a
+             * different artist and kept in a different file.
+             *
+             * On this board that means they hold still, because the body does. It
+             * is also what makes them free. A layer whose placement is identical to
+             * last frame's is never invalidated, and these are the most expensive
+             * layers on the panel: Pip's eye is 105x108 in ARGB8888 against a drawn
+             * eye's 38x16. Animating them took the render from 105 us a frame to
+             * 1150, with worst-case frames of 23 ms against a 16 ms budget — and
+             * the flash reads that fed them starved WakeNet, so the Buddy could no
+             * longer be interrupted by name while it talked.
+             *
+             * The P4 is the other way round: there the PPA really does move the
+             * body, so a face painted on it has to move too. */
+#if !CONFIG_IDF_TARGET_ESP32P4
+            own = STILL;
+            head = &STILL;
+#endif
+            own.scale *= s_cat_scale;
+        }
         /* The features take the glass's angle here, in the transform they already
          * have — the one thing LVGL turns without an intermediate layer. */
-        place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i],
+        place(i, s_layer[i], head, &own, s_ix[i], s_iy[i],
               s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG,
               s_shown[i] == FACE_PART_ARTWORK ? s_cat_scale : 1.0f);
     }
@@ -1141,7 +1168,7 @@ void face_view_tick(uint32_t elapsed_ms)
         if (!im) continue;
         int16_t x = (k ? s_acc_part->detail_x : s_acc_part->accent_x) + s_acc_dx;
         int16_t y = (k ? s_acc_part->detail_y : s_acc_part->accent_y) + s_acc_dy;
-        place(ACC_SLOT(k), s_acc[k], &v[0], &ACC_STILL, x, y,
+        place(ACC_SLOT(k), s_acc[k], &v[0], &STILL, x, y,
               im->header.w, im->header.h, (float)BOARD_FACE_ROT_DEG, 1.0f);
     }
 }

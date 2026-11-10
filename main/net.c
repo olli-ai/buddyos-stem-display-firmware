@@ -174,6 +174,11 @@ static bool handle_sleep_directive(const char *data, int len)
  * working. That trade belongs to whoever asked, so this obeys rather than second-
  * guesses -- but it says so in the log, because the next person to wonder why a kit
  * cannot be interrupted should find it here. */
+/* Above this, the kit's own voice arrives at the microphone as loudly as a child's
+ * and the wake word stops cutting through a reply. Reported to the website in
+ * device.status so the slider there can mark the line instead of hard-coding it. */
+#define BARGE_IN_VOLUME_MAX 60
+
 static bool handle_volume_directive(const char *data, int len)
 {
     cJSON *j = cJSON_ParseWithLength(data, len);
@@ -194,8 +199,61 @@ static bool handle_volume_directive(const char *data, int len)
         audio_set_volume(want);          /* clamps to 0-100 */
         audio_volume_persist();          /* one-shot: set and remember together */
         ESP_LOGI(TAG, "  volume %d%% -> %d%%%s", was, audio_get_volume(),
-                 audio_get_volume() > 60 ? " (loud enough to cost barge-in)" : "");
+                 audio_get_volume() > BARGE_IN_VOLUME_MAX ? " (loud enough to cost barge-in)" : "");
     }
+    return true;
+}
+
+/* device.status: what this kit is running, asked from the website.
+ *
+ * The gateway already relays this type to the studio unchanged (`device.status` in
+ * app/services/mqtt.py passes `data` straight through), so answering it needs no
+ * gateway release — which is the whole reason this is `device.status` and not a new
+ * verb of its own.
+ *
+ * `volume` and `aec` are here together on purpose. A kit with echo cancellation can
+ * be interrupted at any volume; this one cannot, so the website has to be able to
+ * tell the difference and say so, rather than every kit carrying the S3's caveat.
+ * Both are facts about the device, so the device is what reports them.
+ */
+static bool handle_status_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "device.status");
+    cJSON_Delete(j);
+    if (!mine) return false;
+    if (!s_client || !s_topic_evt[0]) return true;
+
+    int vol = -1;
+#if CONFIG_BUDDY_AUDIO
+    vol = audio_get_volume();
+#endif
+    cJSON *d = cJSON_CreateObject();
+    if (!d) return true;
+    cJSON_AddStringToObject(d, "state", "ready");
+    cJSON_AddStringToObject(d, "fw_version", esp_app_get_description()->version);
+    cJSON_AddBoolToObject(d, "speaker", vol >= 0);
+    if (vol >= 0) cJSON_AddNumberToObject(d, "volume", vol);
+#if CONFIG_BUDDY_WAKE_WORD
+    cJSON_AddBoolToObject(d, "wake_word", true);
+    /* Whether the wake word can cut into a reply at any volume, or only a quiet one. */
+#if CONFIG_BUDDY_AEC
+    cJSON_AddBoolToObject(d, "aec", true);
+#else
+    cJSON_AddBoolToObject(d, "aec", false);
+    /* Only a kit without echo cancellation has a volume above which it stops
+     * hearing its own name, so only such a kit reports the line. */
+    cJSON_AddNumberToObject(d, "barge_in_volume_max", BARGE_IN_VOLUME_MAX);
+#endif
+#else
+    cJSON_AddBoolToObject(d, "wake_word", false);
+#endif
+    char *json = envelope("device.status", d);
+    if (!json) return true;
+    esp_mqtt_client_publish(s_client, s_topic_evt, json, 0, 1, 0);
+    free(json);
+    ESP_LOGI(TAG, "  device.status answered (volume %d%%)", vol);
     return true;
 }
 
@@ -390,6 +448,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
             && !handle_reset_directive(e->data, e->data_len)
             && !handle_sleep_directive(e->data, e->data_len)
             && !handle_volume_directive(e->data, e->data_len)
+            && !handle_status_directive(e->data, e->data_len)
 #if CONFIG_BUDDY_SCREEN_FACE
             /* face.update and face.state: the design a child saved on the website,
              * and the expression a conversation asks for. Only this build has
