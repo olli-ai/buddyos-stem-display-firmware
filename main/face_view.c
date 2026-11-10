@@ -52,6 +52,26 @@ static const lv_image_dsc_t *s_img[FACE_LAYER_COUNT];
 static int16_t s_ix[FACE_LAYER_COUNT], s_iy[FACE_LAYER_COUNT];
 /* The character whose body is showing, or NULL for the one baked into the firmware. */
 static const face_character_t *s_char;
+
+/* ---- what the Buddy wears -------------------------------------------------
+ *
+ * Two images above the features, because an accessory is baked as two alpha masks:
+ * the accent, painted in the colour the child chose, and the white detail — a stem,
+ * a seam, a button, an earcup gloss — drawn over it (see face_accessory_t).
+ *
+ * They are the LAST children of s_root, so a cap sits over the eyes and a pair of
+ * glasses over the eyes it is drawn around, which is the order the website draws
+ * them in too. */
+#define ACC_PASSES 2
+static lv_obj_t *s_acc[ACC_PASSES];
+static const face_accessory_t *s_acc_part;          /* NULL: wearing nothing */
+static uint32_t s_acc_rgb;
+static const face_accessory_t * volatile s_want_acc;
+static volatile uint32_t s_want_acc_rgb;
+static volatile bool s_acc_pending;
+/* The same shift the drawn eyes get, so what is worn follows the head it is worn on.
+ * See measure_features(). */
+static int16_t s_acc_dx, s_acc_dy;
 /* Requested from the MQTT task, applied on the render tick. LVGL is not thread safe
  * and this is the third thing to learn it the same way: the first version swapped the
  * background image here and the apply loop died mid-design, silently. */
@@ -271,6 +291,16 @@ static void measure_features(void)
         ESP_LOGI(TAG, "'%s' wants its parts moved: eyeL %+d,%+d  eyeR %+d,%+d  mouth %+d,%+d",
                  s_char->id, s_feat_dx[0], s_feat_dy[0], s_feat_dx[1], s_feat_dy[1],
                  s_feat_dx[2], s_feat_dy[2]);
+    /* What is worn goes with the eyes — the mean of the two, because an accessory
+     * belongs to the head rather than to one side of it.
+     *
+     * Shifted, never scaled, and that is the whole reason this is one number: a pair
+     * of glasses is drawn around the eyes, and the eyes themselves are shifted onto
+     * this character at the size they were baked. Scale the glasses and they stop
+     * fitting the eyes they are for. A cap follows the same rule so that everything
+     * worn moves by the same amount as the face under it. */
+    s_acc_dx = (int16_t)((s_feat_dx[0] + s_feat_dx[1]) / 2);
+    s_acc_dy = (int16_t)((s_feat_dy[0] + s_feat_dy[1]) / 2);
 }
 
 /* The panel over the catalogue's own size: see where it is set. */
@@ -314,6 +344,20 @@ void face_view_set_character(const face_character_t *c)
 {
     s_want_char = c;
     s_char_pending = true;
+}
+
+void face_view_set_accessory(const char *id, uint32_t rgb)
+{
+    const face_accessory_t *a = NULL;
+    if (id)
+        for (int i = 0; i < face_accessory_count; i++)
+            if (!strcmp(face_accessories[i].id, id)) { a = &face_accessories[i]; break; }
+    /* An id this catalogue does not know wears nothing, which is ADR 0009's rule: a
+     * design from a newer website must not leave a child looking at a broken Buddy.
+     * "none" resolves to a row with no masks and lands in the same place. */
+    s_want_acc = (a && (a->accent || a->detail)) ? a : NULL;
+    s_want_acc_rgb = rgb;
+    s_acc_pending = true;
 }
 
 /** On the render task: actually wear it. */
@@ -693,6 +737,11 @@ void face_view_create(lv_obj_t *parent)
         s_shown[i] = -1000;
         lv_obj_add_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN);
     }
+    /* Last, and therefore on top: a cap goes over the head, glasses over the eyes. */
+    for (int k = 0; k < ACC_PASSES; k++) {
+        s_acc[k] = lv_image_create(s_root);
+        lv_obj_add_flag(s_acc[k], LV_OBJ_FLAG_HIDDEN);
+    }
     for (int st = 0; st < face_state_count && st < 8; st++)
         for (int i = 0; i < 5; i++) s_parts[st][i] = face_design[st][i].sprite;
     face_view_set_state(0);
@@ -734,6 +783,9 @@ void face_view_reset_parts(void)
     for (int st = 0; st < face_state_count && st < 8; st++)
         for (int i = 0; i < 5; i++) s_parts[st][i] = face_design[st][i].sprite;
     s_parts_dirty = true;
+    /* The kit was not born wearing a cap. A deleted design means the face it came
+     * with, and leaving the accessory on would make the delete look half-applied. */
+    face_view_set_accessory(NULL, s_acc_rgb);
 }
 
 void face_view_set_state_parts(int state, const int16_t parts[5])
@@ -772,7 +824,13 @@ void face_view_set_state(int state)
  * times a second, not sixty: the body still breathes, and the expensive transform
  * runs only on the frames where the result would actually differ. */
 typedef struct { int32_t sx, sy, rot, x, y; lv_opa_t opa; bool set; } placed_t;
-static placed_t s_placed[FACE_LAYER_COUNT];
+/* The six layers, then the accessory's two passes: place() caches by slot, and the
+ * accessory moves with the head exactly as a feature does. */
+#define ACC_SLOT(k) (FACE_LAYER_COUNT + (k))
+static placed_t s_placed[FACE_LAYER_COUNT + ACC_PASSES];
+/* An accessory takes the head's motion and nothing of its own: it is worn, not
+ * animated. A blink must not move the glasses it happens under. */
+static const face_values_t ACC_STILL = { 0, 0, 1, 1, 0, 1, -1 };
 
 /* Place one image under the face transform composed with its own.
  * `ox, oy` is the sprite's untransformed top-left; w, h its size.
@@ -846,6 +904,27 @@ void face_view_tick(uint32_t elapsed_ms)
     if (s_color_pending) {
         s_color_pending = false;
         paint_body(s_want_rgb, s_want_original);
+    }
+    if (s_acc_pending) {
+        s_acc_pending = false;
+        s_acc_part = (const face_accessory_t *)s_want_acc;
+        s_acc_rgb = s_want_acc_rgb;
+        for (int k = 0; k < ACC_PASSES; k++) {
+            const lv_image_dsc_t *im = !s_acc_part ? NULL
+                                     : (k ? s_acc_part->detail : s_acc_part->accent);
+            if (!im) { lv_obj_add_flag(s_acc[k], LV_OBJ_FLAG_HIDDEN); continue; }
+            lv_image_set_src(s_acc[k], im);
+            /* The masks carry coverage and nothing else, so the colour is a style:
+             * the accent takes the child's colour, the detail is the white the
+             * drawing has in it. LVGL draws an A8 image in exactly this colour. */
+            lv_obj_set_style_image_recolor(s_acc[k],
+                k ? lv_color_white() : lv_color_hex(s_acc_rgb), 0);
+            lv_obj_set_style_image_recolor_opa(s_acc[k], LV_OPA_COVER, 0);
+            lv_obj_remove_flag(s_acc[k], LV_OBJ_FLAG_HIDDEN);
+            s_placed[ACC_SLOT(k)].set = false;     /* it has to be positioned again */
+        }
+        if (s_acc_part) ESP_LOGI(TAG, "wearing '%s' in #%06X", s_acc_part->id, (unsigned)s_acc_rgb);
+        else            ESP_LOGI(TAG, "wearing nothing");
     }
     int want = s_want_state;
     if (want >= 0) {
@@ -1033,5 +1112,16 @@ void face_view_tick(uint32_t elapsed_ms)
          * have — the one thing LVGL turns without an intermediate layer. */
         place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i],
               s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG);
+    }
+
+    /* ...and what the Buddy wears, over all of it, carried by the same head values
+     * so it breathes and nods with the face rather than hovering beside it. */
+    for (int k = 0; s_acc_part && k < ACC_PASSES; k++) {
+        const lv_image_dsc_t *im = k ? s_acc_part->detail : s_acc_part->accent;
+        if (!im) continue;
+        int16_t x = (k ? s_acc_part->detail_x : s_acc_part->accent_x) + s_acc_dx;
+        int16_t y = (k ? s_acc_part->detail_y : s_acc_part->accent_y) + s_acc_dy;
+        place(ACC_SLOT(k), s_acc[k], &v[0], &ACC_STILL, x, y,
+              im->header.w, im->header.h, (float)BOARD_FACE_ROT_DEG);
     }
 }

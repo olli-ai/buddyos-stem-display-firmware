@@ -88,6 +88,35 @@ typedef struct { const char *id; uint32_t rgb; } face_body_color_t;
 extern const face_body_color_t face_body_colors[];
 extern const int face_body_color_count;
 
+/**
+ * What the Buddy wears, as two alpha masks rather than a picture.
+ *
+ * A child picks the accessory and its colour as two separate choices on the Design
+ * page, so artwork with the colour already in it would mean one bake per colour —
+ * thirty images for five drawings, which no app slot here has room for. Every shape
+ * in an accessory is flat, so the device stores coverage (LV_COLOR_FORMAT_A8, one
+ * byte a pixel) and LVGL paints it in the style's recolour when it draws it.
+ *
+ * `accent` is the part the colour rail colours; `detail` is the white seam, stem,
+ * button or gloss that is drawn over it. Either may be NULL — "none" is both.
+ * x/y are the trimmed mask's top-left in the baked face's own space, exactly as a
+ * sprite's are, and get the same per-character shift.
+ */
+typedef struct {
+    const char *id;
+    const lv_image_dsc_t *accent;
+    int16_t accent_x, accent_y;
+    const lv_image_dsc_t *detail;
+    int16_t detail_x, detail_y;
+} face_accessory_t;
+extern const face_accessory_t face_accessories[];
+extern const int face_accessory_count;
+
+/** The accessory colours the website offers, so a design naming one can be honoured
+ *  without the firmware keeping a second copy of the rail. */
+extern const face_body_color_t face_accessory_colors[];
+extern const int face_accessory_color_count;
+
 extern const char face_look_base[];
 extern const char face_look_color[];
 

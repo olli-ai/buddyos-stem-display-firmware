@@ -25,6 +25,18 @@ void face_view_set_character(const face_character_t *c);
  *  fills its silhouette flat, as the website does. */
 void face_view_set_body_color(uint32_t rgb, bool original);
 
+/**
+ * Wear what the child chose: an accessory by the website's id ("leaf", "cap",
+ * "glasses", "bow", "headphones"), painted in `rgb`.
+ *
+ * NULL, "none", or an id this catalogue does not carry all mean wearing nothing —
+ * ADR 0009's rule, so a design from a newer website loses the hat rather than the
+ * Buddy. The artwork is two alpha masks baked from the same drawing the website
+ * renders (face_accessory_t), which is why the colour is a parameter and not part
+ * of the picture.
+ */
+void face_view_set_accessory(const char *id, uint32_t rgb);
+
 /** Show a state, asked for from another task — a directive during a conversation,
  *  and later the voice pipeline itself. Applied on the next render tick. */
 void face_view_request_state(int state);

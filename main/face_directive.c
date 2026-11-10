@@ -446,9 +446,10 @@ bool face_directive_apply(const char *json, size_t len)
     }
 
     /* The look is the child's other half of the design — base, body colour, hair,
-     * ears, accessories — and this firmware has artwork for exactly one of them. Say
-     * so by name. A change that cannot be drawn and is not mentioned is the same
-     * experience as a change that never arrived, which is the bug this replaces. */
+     * ears, accessories. Three of those are drawn now (base, body colour, accessory)
+     * and the rest are named out loud below: a change that cannot be drawn and is not
+     * mentioned is the same experience as a change that never arrived, which is the
+     * bug that warning replaced. */
     const cJSON *look = cJSON_GetObjectItem(extra, "look");
     if (cJSON_IsObject(look)) {
         const char *base = cJSON_GetStringValue(cJSON_GetObjectItem(look, "base"));
@@ -481,7 +482,25 @@ bool face_directive_apply(const char *json, size_t len)
                 }
             if (!found) ESP_LOGW(TAG, "no body colour '%s' in this catalogue", color);
         }
-        static const char *EXTRAS[] = { "hair", "ears", "accessory", "cheeks" };
+        /* What it wears, and in what colour — two choices on the website and two
+         * here, because the artwork is a mask and the colour is painted through it.
+         * An unknown colour keeps the one already on rather than falling to black. */
+        const cJSON *acc = cJSON_GetObjectItem(look, "accessory");
+        if (cJSON_IsString(acc)) {
+            const char *acc_color = cJSON_GetStringValue(cJSON_GetObjectItem(look, "accessory_color"));
+            uint32_t rgb = face_accessory_colors[0].rgb;
+            bool known = acc_color == NULL;
+            for (int i = 0; acc_color && i < face_accessory_color_count; i++)
+                if (!strcmp(face_accessory_colors[i].id, acc_color)) {
+                    rgb = face_accessory_colors[i].rgb; known = true; break;
+                }
+            if (!known)
+                ESP_LOGW(TAG, "no accessory colour '%s' in this catalogue; using '%s'",
+                         acc_color, face_accessory_colors[0].id);
+            face_view_set_accessory(acc->valuestring, rgb);
+        }
+
+        static const char *EXTRAS[] = { "hair", "ears", "cheeks" };
         for (unsigned i = 0; i < sizeof(EXTRAS) / sizeof(EXTRAS[0]); i++) {
             const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(look, EXTRAS[i]));
             if (v && strcmp(v, "none") && strcmp(v, "own"))

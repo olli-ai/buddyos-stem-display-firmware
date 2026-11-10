@@ -174,6 +174,20 @@ int main(int argc, char **argv)
                 printf("body colour  : %s\n", body);
             }
 
+    /* FACE_ACCESSORY=cap [FACE_ACCENT=pink] puts on what a child picked. Where the
+     * body colour is a question about pixels, this one is about *placement* — does
+     * the cap sit on the head, do the glasses land on the eyes — and placement is
+     * precisely what this simulator is trusted for. */
+    const char *acc = getenv("FACE_ACCESSORY");
+    if (acc) {
+        const char *tint = getenv("FACE_ACCENT");
+        uint32_t rgb = face_accessory_colors[0].rgb;
+        for (int i = 0; tint && i < face_accessory_color_count; i++)
+            if (!strcmp(face_accessory_colors[i].id, tint)) rgb = face_accessory_colors[i].rgb;
+        face_view_set_accessory(acc, rgb);
+        printf("accessory    : %s in #%06X\n", acc, (unsigned)rgb);
+    }
+
     /* What this would cost the device. Container limits cannot model an MCU — a
      * Linux process is megabytes before it does anything — so the budget worth
      * watching is LVGL's own, which is capped at the same LV_MEM_SIZE the firmware
@@ -183,11 +197,20 @@ int main(int argc, char **argv)
     size_t sprite_bytes = face_bg.data_size;
     for (int i = 0; i < face_sprite_count; i++)
         if (face_sprites[i].img) sprite_bytes += face_sprites[i].img->data_size;
+    /* The accessory masks are part of the artwork bill: alpha only, which is the
+     * point of baking them that way. */
+    size_t acc_bytes = 0;
+    for (int i = 0; i < face_accessory_count; i++) {
+        if (face_accessories[i].accent) acc_bytes += face_accessories[i].accent->data_size;
+        if (face_accessories[i].detail) acc_bytes += face_accessories[i].detail->data_size;
+    }
+    sprite_bytes += acc_bytes;
     printf("draw buffers : 2 x %d px RGB565 = %zu B (RAM, as main.c configures)\n",
            BUF_PX, sizeof(buf1) + sizeof(buf2));
     printf("lvgl heap    : %u B total, %u B used after setup\n",
            (unsigned)m.total_size, (unsigned)(m.total_size - m.free_size));
     printf("sprites      : %zu B (flash/.rodata, not RAM)\n", sprite_bytes);
+    printf("accessories  : %zu B of that, %d of them\n", acc_bytes, face_accessory_count - 1);
     fflush(stdout);
 
     if (serve) {

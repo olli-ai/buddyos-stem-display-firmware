@@ -32,6 +32,7 @@ typedef struct { lv_image_header_t header; uint32_t data_size; const uint8_t *da
 #define LV_COLOR_FORMAT_RGB565 0x12
 #define LV_COLOR_FORMAT_ARGB8888 0x10
 #define LV_COLOR_FORMAT_RGB565A8 0x14
+#define LV_COLOR_FORMAT_A8 0x0E          /* the accessory masks */
 STUB
 # ...and of esp_log.h, which face_motion.c gained when a design's own motion could
 # arrive at runtime and be worth reporting. The check wants the arithmetic, not the
