@@ -1111,7 +1111,16 @@ void face_view_tick(uint32_t elapsed_ms)
             int16_t home = face_design[s_state][slot].sprite;
             show_sprite(i, v[i].sprite == home ? part_of(s_state, slot) : v[i].sprite);
         }
-        if (s_shown[i] < 0 || lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
+        /* Nothing to place only when there is no image or the layer is off. The
+         * test used to be `s_shown[i] < 0`, which reads as "no part chosen" and is
+         * true of FACE_PART_ARTWORK too, because that sentinel is -2. So a layer
+         * wearing a character's own eye or mouth was never positioned: it kept the
+         * position and the scale of whatever drawn sprite it last held, which is a
+         * part authored for the built-in face at the panel's own size. Sprout's
+         * mouth is 80 px in a catalogue baked at 384 and belongs on screen at 50;
+         * it was drawn at 80, where the firmware's little mouth had been, and ran
+         * into the right eye. The image changed and nothing moved. */
+        if (lv_obj_has_flag(s_layer[i], LV_OBJ_FLAG_HIDDEN)) continue;
         if (!s_img[i]) continue;
         /* A catalogue part is drawn for a smaller face than this panel, so it
          * carries the same factor its offsets did. Firmware sprites are already in

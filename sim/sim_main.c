@@ -14,6 +14,7 @@
 #include "face_view.h"
 #include "face_motion.h"
 #include "face_lipsync.h"
+#include "face_catalogue.h"
 #include "sim_server.h"
 #include <stdio.h>
 #include <string.h>
@@ -141,6 +142,75 @@ static void render_at(uint32_t ms)
     lv_refr_now(s_disp);
 }
 
+/* ---- wearing a catalogue character, on the host -----------------------------
+ *
+ * The device reads `faces/face_catalogue.bin` out of a memory-mapped partition.
+ * There is no partition here, but the file is the same bytes, so reading it into
+ * a buffer and pointing the same descriptors at it exercises the same code.
+ *
+ * This is not a nicety. Everything about a *catalogue* character — its own eyes
+ * and mouth, and the factor between the size it was baked at and the panel — was
+ * invisible to this simulator, which rendered only the built-in face where that
+ * factor is exactly 1. A placement error that is identically zero on the built-in
+ * character and 15 px on Sprout could not be seen here at all, and was not. */
+#define CAT_HDR 16
+#define CAT_REC 96
+
+static face_character_t s_sim_char;
+
+static uint16_t cat_rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t cat_rd32(const uint8_t *p)
+{ return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+
+static void cat_describe(lv_image_dsc_t *d, const uint8_t *base, lv_color_format_t cf,
+                         uint16_t w, uint16_t h, uint32_t off, uint32_t size)
+{
+    d->header.magic = LV_IMAGE_HEADER_MAGIC;
+    d->header.cf = cf;
+    d->header.w = w;
+    d->header.h = h;
+    d->header.stride = (uint32_t)w * (cf == LV_COLOR_FORMAT_ARGB8888 ? 4 : 2);
+    d->data_size = size;
+    d->data = base + off;
+}
+
+/** Load one character out of a catalogue image on disk. NULL if it is not in it. */
+static const face_character_t *sim_load_character(const char *path, const char *id)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("character    : no catalogue at %s\n", path); return NULL; }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *map = malloc((size_t)n);               /* freed by exiting */
+    if (!map || fread(map, 1, (size_t)n, f) != (size_t)n) { fclose(f); return NULL; }
+    fclose(f);
+    if (n < CAT_HDR || memcmp(map, "BUDDYCAT", 8)) { printf("character    : not a catalogue\n"); return NULL; }
+
+    int count = cat_rd16(map + 10);
+    for (int i = 0; i < count; i++) {
+        const uint8_t *r = map + CAT_HDR + (size_t)i * CAT_REC;
+        if (strncmp((const char *)r, id, 15)) continue;
+        face_character_t *c = &s_sim_char;
+        memset(c, 0, sizeof(*c));
+        memcpy(c->id, r, 15);
+        cat_describe(&c->bg, map, LV_COLOR_FORMAT_RGB565A8,
+                     cat_rd16(r + 16), cat_rd16(r + 18), cat_rd32(r + 20), cat_rd32(r + 24));
+        for (int k = 0; k < 3; k++) {
+            const uint8_t *a = r + 28 + k * 20;
+            uint16_t w = cat_rd16(a), h = cat_rd16(a + 2);
+            if (!w || !h) continue;
+            c->art_x[k] = (int16_t)cat_rd16(a + 4);
+            c->art_y[k] = (int16_t)cat_rd16(a + 6);
+            cat_describe(&c->art[k], map, LV_COLOR_FORMAT_ARGB8888, w, h,
+                         cat_rd32(a + 8), cat_rd32(a + 12));
+        }
+        return c;
+    }
+    printf("character    : '%s' is not in the catalogue\n", id);
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     /*  facesim --serve [port]   watch it animate in a browser
@@ -173,6 +243,26 @@ int main(int argc, char **argv)
                 face_view_set_body_color(face_body_colors[i].rgb, !strcmp(body, "original"));
                 printf("body colour  : %s\n", body);
             }
+
+    /* FACE_CHARACTER=sprout wears one of the catalogue's characters, body and the
+     * face its artist drew, exactly as a design naming it would. */
+    const char *who = getenv("FACE_CHARACTER");
+    if (who) {
+        const char *cat = getenv("FACE_CATALOGUE");
+        const face_character_t *c = sim_load_character(cat ? cat : "faces/face_catalogue.bin", who);
+        if (c) {
+            face_view_set_character(c);
+            /* ...wearing its own face, which is what a design naming a character
+             * asks for and what the kit on the bench actually shows: the eyes and
+             * the mouth its artist drew, not the firmware's drawn parts. */
+            const int16_t own_face[5] = { -1, FACE_PART_ARTWORK, -1,
+                                          FACE_PART_ARTWORK, FACE_PART_ARTWORK };
+            for (int st = 0; st < face_state_count && st < 8; st++)
+                face_view_set_state_parts(st, own_face);
+            printf("character    : %s, baked at %dx%d for a %d panel\n",
+                   c->id, (int)c->bg.header.w, (int)c->bg.header.h, W);
+        }
+    }
 
     /* FACE_ACCESSORY=cap [FACE_ACCENT=pink] puts on what a child picked. Where the
      * body colour is a question about pixels, this one is about *placement* — does
