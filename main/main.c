@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
@@ -244,6 +245,28 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "BuddyOS STEM display — " PANEL_NAME " %dx%d", LCD_W, LCD_H);
     mem_report("boot");
+
+    /* NVS first, before anything reads a setting out of it.
+     *
+     * It used to be mounted inside net_start(), which runs after the panel, the face,
+     * the status pill, the clock and the setup screen are all built -- and after
+     * audio_start(). Every one of those reads something it is supposed to remember:
+     * the speaker volume, and the angle the glass is turned in its case. nvs_open()
+     * on an unmounted partition simply fails, so each of them silently took its
+     * compiled-in default and the stored value was never seen. A kit told to turn its
+     * screen 90 degrees wrote the 90, restarted, and came up at 0.
+     *
+     * net_start() still calls this; a second init is a no-op, and it is the one that
+     * handles a full or out-of-version partition by erasing it. */
+    {
+        esp_err_t err = nvs_flash_init();
+        if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            err = nvs_flash_init();
+        }
+        if (err != ESP_OK) ESP_LOGW(TAG, "NVS would not mount (%s); settings fall back "
+                                         "to their defaults", esp_err_to_name(err));
+    }
 
 #if CONFIG_BUDDY_BOOT_RESET
     /* Before the panel, so a held button is seen before anything else starts. BOOT is
