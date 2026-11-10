@@ -1082,9 +1082,20 @@ static void down_task(void *arg)
         if (sp) mouth_feed(pcm, ns);
         was_speaking = sp;
         audio_write(pcm, ns);
-        /* Handed to the speaker, not yet heard: this frame is still in the I2S
-         * descriptors for SPEAKER_DRAIN_MS, and the microphone stays shut for it. */
-        s_speaker_until_ms = now_ms() + (uint32_t)(ns / (AUDIO_SAMPLE_RATE / 1000)) + SPEAKER_DRAIN_MS;
+        /* Hold the microphone shut while this frame is still coming out of the I2S
+         * descriptors -- but only for a frame that carries the Buddy's VOICE.
+         *
+         * omni streams the whole session, and between turns what it streams is
+         * silence (see the shed-silence rule on the receive side). Extending the
+         * mute for those frames keeps it shut forever: the kit then hears nothing,
+         * answers nothing, and sits in `listening` for good. Silence is what the
+         * socket sends when the child's turn is the live one, so it is exactly the
+         * frame that must NOT hold the microphone closed.
+         *
+         * The packet's own length is the test the receive side already uses. */
+        if (p.len > SILENCE_MAX)
+            s_speaker_until_ms = now_ms() + (uint32_t)(ns / (AUDIO_SAMPLE_RATE / 1000))
+                               + SPEAKER_DRAIN_MS;
 #if CONFIG_BUDDY_SCREEN_FACE
         /* This frame is now the speaker's problem, so it counts as heard. Then wear
          * anything the child has reached — more than one, if a short tag ran past. */
