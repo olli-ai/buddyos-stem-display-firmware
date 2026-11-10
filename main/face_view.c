@@ -833,7 +833,16 @@ static placed_t s_placed[FACE_LAYER_COUNT + ACC_PASSES];
 static const face_values_t ACC_STILL = { 0, 0, 1, 1, 0, 1, -1 };
 
 /* Place one image under the face transform composed with its own.
- * `ox, oy` is the sprite's untransformed top-left; w, h its size.
+ * `ox, oy` is the sprite's untransformed top-left; w, h its size *in its own pixels*.
+ *
+ * `space` is how far those pixels have been resampled to reach the panel: 1 for
+ * anything already in the panel's space, and s_cat_scale for a catalogue character's
+ * artwork, whose offsets were scaled on the way in but whose image is still the size
+ * the catalogue baked it. Both have to be scaled or neither: scaling only the offset
+ * put every artwork feature half its own unscaled size down and to the right — about
+ * 15 px for Sprout's mouth on a 240 panel, which is what fused the mouth into the
+ * right eye. It also disagreed with measure_features(), which scales the whole centre
+ * and is right, so a drawn eye and an `artwork` eye landed in different places.
  *
  * `srot` is the glass's own angle (BOARD_FACE_ROT_DEG), applied last, to the finished
  * composition rather than to the head. That ordering is the whole of it: a head track
@@ -844,14 +853,15 @@ static const face_values_t ACC_STILL = { 0, 0, 1, 1, 0, 1, -1 };
  * The body passes 0. Its angle is already in its pixels — flatten() put it there once
  * when the character was worn — and asking LVGL for it again would turn it twice. */
 static void place(int slot, lv_obj_t *obj, const face_values_t *head, const face_values_t *own,
-                  int32_t ox, int32_t oy, int32_t w, int32_t h, float srot)
+                  int32_t ox, int32_t oy, int32_t w, int32_t h, float srot, float space)
 {
     const float FCX = face_bg.header.w / 2.0f, FCY = face_bg.header.h / 2.0f;
     const float UNIT = face_bg.header.w / 100.0f;   /* face units -> pixels */
 
-    /* Where this sprite's centre sits before the head moves. */
-    float cx = ox + w / 2.0f + own->x * UNIT;
-    float cy = oy + h / 2.0f + own->y * UNIT;
+    /* Where this sprite's centre sits before the head moves. The half-extent is the
+     * drawn one, so it matches the offset it is added to. */
+    float cx = ox + w * space / 2.0f + own->x * UNIT;
+    float cy = oy + h * space / 2.0f + own->y * UNIT;
 
     /* Then the head: rotate and scale that centre about the face's middle. */
     float a = head->rotation * (float)M_PI / 180.0f;
@@ -1073,7 +1083,7 @@ void face_view_tick(uint32_t elapsed_ms)
 #else
     static const face_values_t REST = { 0, 0, 1, 1, 0, 1, -1 };
     /* srot 0: the glass's angle is already in this image's pixels (flatten). */
-    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h, 0.0f);
+    place(0, s_bg, &REST, &REST, 0, 0, face_bg.header.w, face_bg.header.h, 0.0f, 1.0f);
 #endif
 
     for (int i = 1; i < FACE_LAYER_COUNT; i++) {
@@ -1111,7 +1121,8 @@ void face_view_tick(uint32_t elapsed_ms)
         /* The features take the glass's angle here, in the transform they already
          * have — the one thing LVGL turns without an intermediate layer. */
         place(i, s_layer[i], &v[0], &own, s_ix[i], s_iy[i],
-              s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG);
+              s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG,
+              s_shown[i] == FACE_PART_ARTWORK ? s_cat_scale : 1.0f);
     }
 
     /* ...and what the Buddy wears, over all of it, carried by the same head values
@@ -1122,6 +1133,6 @@ void face_view_tick(uint32_t elapsed_ms)
         int16_t x = (k ? s_acc_part->detail_x : s_acc_part->accent_x) + s_acc_dx;
         int16_t y = (k ? s_acc_part->detail_y : s_acc_part->accent_y) + s_acc_dy;
         place(ACC_SLOT(k), s_acc[k], &v[0], &ACC_STILL, x, y,
-              im->header.w, im->header.h, (float)BOARD_FACE_ROT_DEG);
+              im->header.w, im->header.h, (float)BOARD_FACE_ROT_DEG, 1.0f);
     }
 }
