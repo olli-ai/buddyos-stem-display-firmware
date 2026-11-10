@@ -1,13 +1,14 @@
 /* The voice status pill. See status.h. */
 #include "status.h"
 #include "board_pins.h"
+#include "face_rot.h"
 
 static volatile status_t s_want = STATUS_NONE;
 static status_t s_shown = (status_t)-1;
 static lv_obj_t *s_pill, *s_dot;
-#if BOARD_FACE_ROT_DEG == 0
-static lv_obj_t *s_text;    /* a turned pill bakes its caption into the canvas instead */
-#endif
+/* A level pill carries a label; a turned one bakes its caption into the canvas.
+ * Both are compiled now, and face_rot_deg() picks between them at startup. */
+static lv_obj_t *s_text;
 
 void status_set(status_t s) { s_want = s; }
 
@@ -31,9 +32,8 @@ static const struct { const char *text; uint32_t rgb; bool pulse; } k_look[] = {
  * through a layer. */
 static void pulse_cb(void *obj, int32_t v) { lv_obj_set_style_bg_opa(obj, (lv_opa_t)v, 0); }
 
-#if BOARD_FACE_ROT_DEG != 0
 /*
- * On a board whose glass is turned (board_pins.h), the pill turns with the face, and
+ * On a kit whose case turns the glass (face_rot.h), the pill turns with the face, and
  * that is not something LVGL will do to a label or to the flex container below. Any
  * transformed object is drawn through an intermediate layer EXCEPT lv_image — and a
  * layer for even this small a pill is an ARGB8888 allocation out of LVGL's 32 KB pool,
@@ -111,7 +111,7 @@ static void redraw_pill(status_t s)
     lv_canvas_finish_layer(s_pill, &layer);
 
     lv_image_set_pivot(s_pill, w / 2, s_ph / 2);
-    lv_image_set_rotation(s_pill, BOARD_FACE_ROT_DEG * 10);
+    lv_image_set_rotation(s_pill, face_rot_deg() * 10);
 
     /* The pill's centre, unturned, is on the vertical through the panel's centre. */
     int32_t px, py;
@@ -123,18 +123,13 @@ static void redraw_pill(status_t s)
     turn((float)(PILL_PAD_H + s_dotsz / 2) - (float)w / 2.0f, 0.0f, &dx, &dy);
     lv_obj_align(s_dot, LV_ALIGN_CENTER, px + dx, py + dy);
 }
-#endif /* BOARD_FACE_ROT_DEG != 0 */
 
 static void show(bool on)
 {
     if (on) {
         /* With no canvas there is nothing in the pill to show, and unhiding an
          * lv_image with no source would leave an empty box over the face. */
-#if BOARD_FACE_ROT_DEG != 0
-        if (s_px) lv_obj_remove_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
-#else
-        lv_obj_remove_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
-#endif
+        if (!face_rot_deg() || s_px) lv_obj_remove_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(s_dot, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_pill, LV_OBJ_FLAG_HIDDEN);
@@ -161,11 +156,8 @@ static void on_tick(lv_timer_t *t)
      * An instruction is the one thing a face cannot give. That is what is left. */
     if (s != STATUS_IDLE) { show(false); return; }
     show(true);
-#if BOARD_FACE_ROT_DEG != 0
-    if (s_px) redraw_pill(s);
-#else
-    lv_label_set_text(s_text, k_look[s].text);
-#endif
+    if (face_rot_deg()) { if (s_px) redraw_pill(s); }
+    else                 lv_label_set_text(s_text, k_look[s].text);
     lv_obj_set_style_bg_color(s_dot, lv_color_hex(k_look[s].rgb), 0);
     lv_anim_delete(s_dot, pulse_cb);
     lv_obj_set_style_bg_opa(s_dot, LV_OPA_COVER, 0);
@@ -192,12 +184,12 @@ void status_create(lv_obj_t *scr)
     const int32_t dot = 10;
 #endif
 
-#if BOARD_FACE_ROT_DEG != 0
+    if (face_rot_deg()) {
     s_font = font;
     s_dotsz = dot;
     s_ph = LV_MAX(dot, (int32_t)lv_font_get_line_height(font)) + PILL_PAD_V * 2;
 
-    const float rad = (float)BOARD_FACE_ROT_DEG * (float)M_PI / 180.0f;
+    const float rad = (float)face_rot_deg() * (float)M_PI / 180.0f;
     s_sin = sinf(rad);
     s_cos = cosf(rad);
 
@@ -220,7 +212,7 @@ void status_create(lv_obj_t *scr)
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_px) {
         ESP_LOGI(TAG, "pill canvas %dx%d, %u B of PSRAM, turned %d deg",
-                 (int)w, (int)s_ph, (unsigned)need, BOARD_FACE_ROT_DEG);
+                 (int)w, (int)s_ph, (unsigned)need, face_rot_deg());
     } else {
         /* Degraded, not blank: without the buffer there is nothing to rasterise into,
          * so the kit runs with no caption rather than with an unturned one over a
@@ -233,7 +225,7 @@ void status_create(lv_obj_t *scr)
         s_dot_fallback_x = px;
         s_dot_fallback_y = py;
     }
-#else
+    } else {
     s_pill = lv_obj_create(scr);
     lv_obj_remove_style_all(s_pill);
     lv_obj_set_size(s_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -247,33 +239,29 @@ void status_create(lv_obj_t *scr)
     lv_obj_set_flex_align(s_pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(s_pill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(s_pill, LV_ALIGN_TOP_MID, 0, PILL_TOP);
-#endif
+    }
     /* Taps and swipes go through to the gallery underneath. */
     lv_obj_remove_flag(s_pill, LV_OBJ_FLAG_CLICKABLE);
 
     /* The dot is a child of the pill where the pill lays itself out, and a sibling on
      * top of it where the pill is a turned image: redraw_pill() places it. */
-#if BOARD_FACE_ROT_DEG != 0
-    s_dot = lv_obj_create(scr);
-#else
-    s_dot = lv_obj_create(s_pill);
-#endif
+    s_dot = lv_obj_create(face_rot_deg() ? scr : s_pill);
     lv_obj_remove_style_all(s_dot);
     lv_obj_set_size(s_dot, dot, dot);
     lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_dot, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-#if BOARD_FACE_ROT_DEG == 0
-    s_text = lv_label_create(s_pill);
-    lv_obj_set_style_text_color(s_text, lv_color_white(), 0);
-    lv_obj_set_style_text_font(s_text, font, 0);
-#else
-    /* redraw_pill() places the dot on every status change, because where it sits
-     * depends on how wide that caption made the pill. This is the one case it never
-     * runs in. */
-    if (!s_px) lv_obj_align(s_dot, LV_ALIGN_CENTER, s_dot_fallback_x, s_dot_fallback_y);
-#endif
+    if (!face_rot_deg()) {
+        s_text = lv_label_create(s_pill);
+        lv_obj_set_style_text_color(s_text, lv_color_white(), 0);
+        lv_obj_set_style_text_font(s_text, font, 0);
+    } else if (!s_px) {
+        /* redraw_pill() places the dot on every status change, because where it sits
+         * depends on how wide that caption made the pill. This is the one case it
+         * never runs in. */
+        lv_obj_align(s_dot, LV_ALIGN_CENTER, s_dot_fallback_x, s_dot_fallback_y);
+    }
 
     show(false);
     lv_timer_create(on_tick, 50, NULL);

@@ -83,9 +83,8 @@ static lv_obj_t *s_box;
 static lv_obj_t *s_qr;
 #endif
 
-#if BOARD_FACE_ROT_DEG != 0
 /*
- * On a board whose glass is turned, this screen turns with it. It is the one a parent
+ * On a kit whose case turns the glass, this screen turns with it. It is the one a parent
  * reads word by word off a phone, so a tilted serial is worse here than anywhere else
  * on the kit.
  *
@@ -104,15 +103,16 @@ static lv_obj_t *s_qr;
  * middle of it, then turning the canvas, keeps the margin where a scanner needs it.
  */
 #include "turned.h"
+#include "face_rot.h"
 #include "esp_heap_caps.h"
 
 static turned_t s_ttop, s_tstep, s_thint;
 static uint8_t *s_qrpx;                /* the QR and its quiet zone: PSRAM, ARGB8888 */
 static lv_obj_t *s_qrc;
 #define QR_BOX  (QR_SIZE + 2 * QR_QUIET)
-#else
+/* ...and the level screen's four labels. Both sets exist; face_rot_deg() decides
+ * which is built in setup_ui_create(). */
 static lv_obj_t *s_title, *s_serial, *s_step, *s_hint;
-#endif
 
 void setup_ui_set(setup_ui_state_t s)
 {
@@ -137,7 +137,6 @@ static const struct { const char *step; uint32_t rgb; bool fmt; } k_look[] = {
     [SETUP_UI_DONE]        = { "Ready",                        0x43a047, false },
 };
 
-#if BOARD_FACE_ROT_DEG != 0
 #if LV_USE_QRCODE
 /* Draw the QR into its canvas once, the first time the screen is shown. Not in
  * setup_ui_create(): lv_canvas_finish_layer() dispatches the draw task and waits for
@@ -162,7 +161,7 @@ static void qr_once(void)
     lv_canvas_finish_layer(s_qrc, &layer);
 
     lv_image_set_pivot(s_qrc, QR_BOX / 2, QR_BOX / 2);
-    lv_image_set_rotation(s_qrc, BOARD_FACE_ROT_DEG * 10);
+    lv_image_set_rotation(s_qrc, face_rot_deg() * 10);
     lv_obj_remove_flag(s_qrc, LV_OBJ_FLAG_HIDDEN);
 }
 #endif
@@ -222,7 +221,6 @@ static void relayout(setup_ui_state_t s)
      * phone is giving the instructions and two sets of them disagree sooner or later. */
     turned_show(&s_thint, hint_on);
 }
-#endif /* BOARD_FACE_ROT_DEG != 0 */
 
 static void on_tick(lv_timer_t *t)
 {
@@ -246,9 +244,7 @@ static void on_tick(lv_timer_t *t)
     if (s == SETUP_UI_HIDDEN) { lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN); return; }
     lv_obj_remove_flag(s_box, LV_OBJ_FLAG_HIDDEN);
 
-#if BOARD_FACE_ROT_DEG != 0
-    relayout(s);
-#else
+    if (face_rot_deg()) { relayout(s); } else {
     if (k_look[s].fmt) lv_label_set_text_fmt(s_step, k_look[s].step, s_detail);
     else lv_label_set_text(s_step, k_look[s].step);
     lv_obj_set_style_text_color(s_step, lv_color_hex(k_look[s].rgb), 0);
@@ -257,10 +253,9 @@ static void on_tick(lv_timer_t *t)
      * phone is giving the instructions and two sets of them disagree sooner or later. */
     if (s == SETUP_UI_WAITING) lv_obj_remove_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(s_hint, LV_OBJ_FLAG_HIDDEN);
-#endif
+    }
 }
 
-#if BOARD_FACE_ROT_DEG == 0
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t rgb)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -271,7 +266,6 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t rgb)
     lv_obj_set_style_text_color(l, lv_color_hex(rgb), 0);
     return l;
 }
-#endif /* BOARD_FACE_ROT_DEG == 0 */
 
 #if LV_USE_QRCODE
 /* The serial, for the camera. Typing `ESP32-e8f60ae99b71` off a screen into a phone is
@@ -304,17 +298,17 @@ static void make_qr(lv_obj_t *parent)
     lv_result_t qr = lv_qrcode_update(s_qr, prov_serial(), strlen(prov_serial()));
     ESP_LOGI(TAG, "setup QR for '%s': %s", prov_serial(),
              qr == LV_RESULT_OK ? "ready" : "REFUSED by the encoder");
-#if BOARD_FACE_ROT_DEG == 0
+    if (!face_rot_deg()) {
     lv_obj_set_style_border_color(s_qr, lv_color_white(), 0);
     lv_obj_set_style_border_width(s_qr, QR_QUIET, 0);
-#else
+    } else {
     /* Never shown: on a turned screen this object exists only to hold the encoder's
      * bitmap, which qr_once() copies into the canvas that does get shown. It is kept
      * rather than deleted — its I1 buffer is about a kilobyte of LVGL's pool, and
      * destroying an object whose draw buffer the image cache may still be holding is
      * not worth saving that. */
     lv_obj_add_flag(s_qr, LV_OBJ_FLAG_HIDDEN);
-#endif
+    }
 }
 #endif /* LV_USE_QRCODE */
 
@@ -330,7 +324,7 @@ void setup_ui_create(lv_obj_t *scr)
     lv_obj_add_flag(s_box, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(s_box, LV_OBJ_FLAG_SCROLLABLE);
 
-#if BOARD_FACE_ROT_DEG == 0
+    if (!face_rot_deg()) {
     lv_obj_set_flex_flow(s_box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(s_box, PAD_ROW, 0);
@@ -363,7 +357,7 @@ void setup_ui_create(lv_obj_t *scr)
 
     s_hint = label(col, HINT_FONT, 0x616161);
     lv_label_set_text(s_hint, HINT_TEXT);
-#else
+    } else {
     /* The same column, as blocks that will be placed rather than laid out. Each gets
      * room for its text to wrap once more than it does today: the title and the hint
      * are fixed strings, but the serial comes from the chip and the step from the
@@ -396,7 +390,7 @@ void setup_ui_create(lv_obj_t *scr)
                  (unsigned)need);
     }
 #endif
-#endif /* BOARD_FACE_ROT_DEG == 0 */
+    }
 
     lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN);
     lv_timer_create(on_tick, 100, NULL);

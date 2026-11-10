@@ -28,6 +28,7 @@
 #include "esp_timer.h"
 #include "face_ppa.h"          /* macros and prototypes; face_ppa.c is P4-only */
 #include "face_demo_motion.h"
+#include "face_rot.h"
 #include "esp_log.h"
 
 static const char *TAG = "face";
@@ -428,7 +429,8 @@ static int64_t s_render_t0;
 static uint32_t s_flat_rgb;
 static bool s_flat_original, s_flat_valid;
 
-#if CONFIG_IDF_TARGET_ESP32P4 || BOARD_FACE_ROT_DEG != 0
+/* Always built. The glass's angle is a runtime setting now (face_rot.h), so there is
+ * no build-time answer to whether a board needs this. */
 /* The body composited over black exactly as flatten() does, turned by `deg` about its
  * centre and resampled to the panel in the same pass. Inverse-mapped with bilinear
  * sampling: for each destination pixel, where in the source did it come from.
@@ -480,7 +482,6 @@ static void render_rotated(const lv_image_dsc_t *src, uint16_t *out, float deg,
         }
     }
 }
-#endif
 
 static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
 {
@@ -493,25 +494,24 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
         s_flat_px = heap_caps_aligned_alloc(FACE_PPA_ALIGN, FACE_PPA_ROUND(dn * 2),
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_flat_px) {
-#if BOARD_FACE_ROT_DEG != 0
             /* Worse on a tilted board than on a level one: the features still carry
              * the glass's angle (place()), so losing this buffer means a turned face
              * on a level head. Degraded rather than blank, which is the rule — but it
              * is the first thing to look at if a board ever shows that. */
-            ESP_LOGW(TAG, "no PSRAM to flatten the body; it cannot carry the %d deg tilt",
-                     BOARD_FACE_ROT_DEG);
-#else
-            ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended");
-#endif
+            if (face_rot_deg())
+                ESP_LOGW(TAG, "no PSRAM to flatten the body; it cannot carry the %d deg tilt",
+                         face_rot_deg());
+            else
+                ESP_LOGW(TAG, "no PSRAM to flatten the body; drawing it blended");
             return;
         }
     }
-#if BOARD_FACE_ROT_DEG != 0
     /* The glass's angle, resolved into the body's pixels. Same pass, same cost, same
      * buffer as the un-turned flatten below — a tilted kit pays for its tilt once per
      * character, not once per frame. */
-    render_rotated(src, s_flat_px, (float)BOARD_FACE_ROT_DEG, rgb, original);
-#else
+    if (face_rot_deg()) {
+        render_rotated(src, s_flat_px, (float)face_rot_deg(), rgb, original);
+    } else {
     /* RGB565A8 is planar: the whole colour plane, then the whole alpha plane. */
     const uint32_t sn = sw * sh;
     const uint8_t *col = src->data, *alpha = src->data + sn * 2;
@@ -542,7 +542,7 @@ static void flatten(const lv_image_dsc_t *src, uint32_t rgb, bool original)
             s_flat_px[dy * dw + dx] = (uint16_t)(((r >> 16) << 11) | ((g >> 16) << 5) | (b >> 16));
         }
     }
-#endif
+    }
     s_flat.header.magic = LV_IMAGE_HEADER_MAGIC;
     s_flat.header.cf = LV_COLOR_FORMAT_RGB565;
     s_flat.header.w = dw;
@@ -1157,7 +1157,7 @@ void face_view_tick(uint32_t elapsed_ms)
         /* The features take the glass's angle here, in the transform they already
          * have — the one thing LVGL turns without an intermediate layer. */
         place(i, s_layer[i], head, &own, s_ix[i], s_iy[i],
-              s_img[i]->header.w, s_img[i]->header.h, (float)BOARD_FACE_ROT_DEG,
+              s_img[i]->header.w, s_img[i]->header.h, (float)face_rot_deg(),
               s_shown[i] == FACE_PART_ARTWORK ? s_cat_scale : 1.0f);
     }
 
@@ -1169,6 +1169,6 @@ void face_view_tick(uint32_t elapsed_ms)
         int16_t x = (k ? s_acc_part->detail_x : s_acc_part->accent_x) + s_acc_dx;
         int16_t y = (k ? s_acc_part->detail_y : s_acc_part->accent_y) + s_acc_dy;
         place(ACC_SLOT(k), s_acc[k], &v[0], &STILL, x, y,
-              im->header.w, im->header.h, (float)BOARD_FACE_ROT_DEG, 1.0f);
+              im->header.w, im->header.h, (float)face_rot_deg(), 1.0f);
     }
 }

@@ -1,11 +1,10 @@
 # volume_ui.c is not under CONFIG_BUDDY_SCREEN_FACE on purpose: the gallery build
 # has the same touch panel and the same speaker, and the drag works there too.
-# turned.c compiles to nothing where BOARD_FACE_ROT_DEG is 0, which is the P4 — it is
-# listed unconditionally because the condition is a pin header's business, not the
-# build system's.
+# turned.c is always compiled: the glass's angle is a runtime setting (face_rot.c),
+# so there is no longer a build-time answer to whether a kit needs it.
 set(srcs "main.c" "status.c" "voice.c"
          "mem_report.c" "net.c" "prov.c" "sleep.c" "setup_ui.c" "volume_ui.c" "clock_ui.c"
-         "turned.c")
+         "turned.c" "face_rot.c")
 
 # The two screens are exclusive (BUDDY_SCREEN in Kconfig), and so are their
 # lip-sync front ends: the face classifier returns a sprite index to draw, the

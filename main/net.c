@@ -21,6 +21,7 @@
 #include "setup_ui.h"
 #if CONFIG_BUDDY_SCREEN_FACE
 #include "audio.h"
+#include "face_rot.h"
 #include "esp_netif_sntp.h"
 #include <time.h>
 #include "face_directive.h"
@@ -204,6 +205,49 @@ static bool handle_volume_directive(const char *data, int len)
     return true;
 }
 
+/* display.rotation: how far the glass is turned inside its case.
+ *
+ * The kits are 3D printed and the angle belongs to the case, not to the board, so it
+ * cannot be a build-time constant and cannot be guessed here. Whoever assembled the
+ * kit is the only one who can see it, and this is how they say so.
+ *
+ * Takes effect on the next boot and restarts to get there. The angle is baked into
+ * the flattened body, the pre-rendered head turns, and whether the clock, the setup
+ * screen and the status pill were built as plain widgets or as canvases that can be
+ * turned -- all of it decided once, at startup. Rebuilding that live would be a
+ * second way to do the same thing, with its own bugs, for something set when a kit is
+ * screwed into a case. See face_rot.h. */
+static bool handle_rotation_directive(const char *data, int len)
+{
+    cJSON *j = cJSON_ParseWithLength(data, len);
+    const cJSON *type = j ? cJSON_GetObjectItem(j, "type") : NULL;
+    bool mine = cJSON_IsString(type) && !strcmp(type->valuestring, "display.rotation");
+    if (!mine) { cJSON_Delete(j); return false; }
+
+    const cJSON *d = cJSON_GetObjectItem(j, "data");
+    const cJSON *deg = d ? cJSON_GetObjectItem(d, "deg") : NULL;
+    if (!cJSON_IsNumber(deg)) {
+        ESP_LOGW(TAG, "  display.rotation with no `deg`; ignored");
+        cJSON_Delete(j);
+        return true;
+    }
+    int want = (int)deg->valuedouble;
+    cJSON_Delete(j);
+
+    if (want == face_rot_deg()) {
+        ESP_LOGI(TAG, "  display.rotation %d deg: already there, not restarting", want);
+        return true;
+    }
+    if (!face_rot_store(want)) {
+        ESP_LOGW(TAG, "  display.rotation %d deg: this board cannot, or NVS would not", want);
+        return true;
+    }
+    ESP_LOGW(TAG, "  display.rotation %d deg: restarting to wear it", want);
+    vTaskDelay(pdMS_TO_TICKS(300));      /* let the line leave the UART */
+    esp_restart();
+    return true;                         /* not reached */
+}
+
 /* device.status: what this kit is running, asked from the website.
  *
  * The gateway already relays this type to the studio unchanged (`device.status` in
@@ -235,6 +279,14 @@ static bool handle_status_directive(const char *data, int len)
     cJSON_AddStringToObject(d, "fw_version", esp_app_get_description()->version);
     cJSON_AddBoolToObject(d, "speaker", vol >= 0);
     if (vol >= 0) cJSON_AddNumberToObject(d, "volume", vol);
+    /* The glass's angle, and whether this board can be told a different one. The P4
+     * turns its body with the PPA, which cannot, so it reports 0 and refuses. */
+    cJSON_AddNumberToObject(d, "rotation", face_rot_deg());
+#if CONFIG_IDF_TARGET_ESP32P4
+    cJSON_AddBoolToObject(d, "rotation_settable", false);
+#else
+    cJSON_AddBoolToObject(d, "rotation_settable", true);
+#endif
 #if CONFIG_BUDDY_WAKE_WORD
     cJSON_AddBoolToObject(d, "wake_word", true);
     /* Whether the wake word can cut into a reply at any volume, or only a quiet one. */
@@ -449,6 +501,7 @@ static void on_mqtt(void *arg, esp_event_base_t base, int32_t id, void *data)
             && !handle_sleep_directive(e->data, e->data_len)
             && !handle_volume_directive(e->data, e->data_len)
             && !handle_status_directive(e->data, e->data_len)
+            && !handle_rotation_directive(e->data, e->data_len)
 #if CONFIG_BUDDY_SCREEN_FACE
             /* face.update and face.state: the design a child saved on the website,
              * and the expression a conversation asks for. Only this build has

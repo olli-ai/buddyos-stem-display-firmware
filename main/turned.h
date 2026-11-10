@@ -1,9 +1,10 @@
 #pragma once
 #include "lvgl.h"
 #include "board_pins.h"
+#include "face_rot.h"
 
 /*
- * Text that carries the glass's angle, on a board where BOARD_FACE_ROT_DEG is not 0 —
+ * Text that carries the glass's angle, on a kit whose case turns it (face_rot.h) —
  * which is the S3 and not the P4.
  *
  * LVGL turns exactly one kind of object without an intermediate layer — lv_image — and
@@ -20,7 +21,6 @@
  * this far enough to cover that would make it harder to read than two call sites are
  * worth.
  */
-#if BOARD_FACE_ROT_DEG != 0
 
 typedef struct {
     const char *text;          /* NULL or "" is skipped, and takes no height */
@@ -63,4 +63,3 @@ void turned_show(turned_t *t, bool on);
  *  own lv_image — the QR on the setup screen — on the same axes. */
 void turned_point(int32_t ux, int32_t uy, int32_t *x, int32_t *y);
 
-#endif /* BOARD_FACE_ROT_DEG != 0 */

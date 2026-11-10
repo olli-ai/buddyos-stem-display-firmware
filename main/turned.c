@@ -1,7 +1,6 @@
 /* Text that carries the glass's angle. See turned.h. */
 #include "turned.h"
 
-#if BOARD_FACE_ROT_DEG != 0
 #include <math.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -15,7 +14,7 @@ static bool s_trig;
 static void trig_once(void)
 {
     if (s_trig) return;
-    const float rad = (float)BOARD_FACE_ROT_DEG * (float)M_PI / 180.0f;
+    const float rad = (float)face_rot_deg() * (float)M_PI / 180.0f;
     s_sin = sinf(rad);
     s_cos = cosf(rad);
     s_trig = true;
@@ -67,7 +66,7 @@ bool turned_create(turned_t *t, lv_obj_t *parent, int32_t maxw, int32_t maxh, in
         return false;
     }
     ESP_LOGI(TAG, "%dx%d block, %u B of PSRAM, turned %d deg",
-             (int)maxw, (int)maxh, (unsigned)need, BOARD_FACE_ROT_DEG);
+             (int)maxw, (int)maxh, (unsigned)need, face_rot_deg());
 
     t->canvas = lv_canvas_create(parent);
     lv_obj_remove_flag(t->canvas, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
@@ -128,7 +127,7 @@ void turned_set(turned_t *t, const turned_line_t *lines, int n, int32_t ux, int3
     lv_canvas_finish_layer(t->canvas, &layer);
 
     lv_image_set_pivot(t->canvas, w / 2, h / 2);
-    lv_image_set_rotation(t->canvas, BOARD_FACE_ROT_DEG * 10);
+    lv_image_set_rotation(t->canvas, face_rot_deg() * 10);
 
     lv_obj_remove_flag(t->canvas, LV_OBJ_FLAG_HIDDEN);
     turned_move(t, ux, uy);
@@ -149,4 +148,3 @@ void turned_show(turned_t *t, bool on)
     else    lv_obj_add_flag(t->canvas, LV_OBJ_FLAG_HIDDEN);
 }
 
-#endif /* BOARD_FACE_ROT_DEG != 0 */
