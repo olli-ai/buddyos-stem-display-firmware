@@ -235,6 +235,29 @@ static int s_enc_out_len;
 static volatile bool s_connected;
 /* While the Buddy is talking. Written by the WebSocket task, read by the audio tasks. */
 static volatile bool s_speaking;
+/* When the speaker will actually have fallen silent.
+ *
+ * s_speaking follows omni's status, which says when omni stopped *sending* — not
+ * when this kit stops *playing*. Between the two sit the jitter buffer (JB_DEPTH,
+ * 640 ms) and the I2S descriptors (6 x 20 ms), so at "speaking_ended" the Buddy can
+ * still have the better part of a second of its own voice to get out.
+ *
+ * Un-muting the microphone then is not a small error on a board with no echo
+ * canceller. The duck comes off in the same instant, so the tail goes up the wire at
+ * the full +30 dB instead of +18, and omni's voice detector hears the Buddy as the
+ * child: listening, then processing, then speaking again, once per turn for the whole
+ * session. The microphone has to follow the speaker, not the server. */
+#define SPEAKER_DRAIN_MS  140            /* the 120 ms of I2S descriptors, with margin */
+static volatile uint32_t s_speaker_until_ms;
+
+/** True while the speaker is still producing sound, including what is queued. */
+static inline bool speaker_busy(void)
+{
+    if (s_speaking) return true;
+    uint32_t until = s_speaker_until_ms;
+    return until && (int32_t)(now_ms() - until) < 0;
+}
+
 static volatile uint32_t s_shed_silence, s_shed_old, s_underruns, s_late;
 
 #if CONFIG_BUDDY_SCREEN_FACE
@@ -462,7 +485,7 @@ static inline void uplink_gain(int16_t *pcm, int n)
      * omni at about -25 dBFS — as loud as a person — so its VAD interrupted the
      * Buddy on the Buddy's own voice. Ducking moves both down by the same amount;
      * only the echo was near the threshold, so only the echo drops under it. */
-    int32_t g = s_speaking ? s_up_gain_ducked : s_up_gain;
+    int32_t g = speaker_busy() ? s_up_gain_ducked : s_up_gain;
     for (int i = 0; i < n; i++)
         pcm[i] = clamp16((int32_t)pcm[i] * g >> UP_GAIN_Q);
 }
@@ -906,7 +929,7 @@ static void up_task(void *arg)
          * so the child is heard while the Buddy talks — unless
          * BUDDY_AEC_KEEP_HALF_DUPLEX asks for the old behaviour. */
 #if !CONFIG_BUDDY_AEC || CONFIG_BUDDY_AEC_KEEP_HALF_DUPLEX
-        if (s_speaking) memset(in, 0, IN_SAMPLES * sizeof(int16_t));
+        if (speaker_busy()) memset(in, 0, IN_SAMPLES * sizeof(int16_t));
 #endif
 
         f.frame = ++frames;
@@ -1059,6 +1082,9 @@ static void down_task(void *arg)
         if (sp) mouth_feed(pcm, ns);
         was_speaking = sp;
         audio_write(pcm, ns);
+        /* Handed to the speaker, not yet heard: this frame is still in the I2S
+         * descriptors for SPEAKER_DRAIN_MS, and the microphone stays shut for it. */
+        s_speaker_until_ms = now_ms() + (uint32_t)(ns / (AUDIO_SAMPLE_RATE / 1000)) + SPEAKER_DRAIN_MS;
 #if CONFIG_BUDDY_SCREEN_FACE
         /* This frame is now the speaker's problem, so it counts as heard. Then wear
          * anything the child has reached — more than one, if a short tag ran past. */
