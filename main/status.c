@@ -148,7 +148,18 @@ static void on_tick(lv_timer_t *t)
     status_t s = s_want;
     if (s == s_shown || (unsigned)s >= sizeof(k_look) / sizeof(k_look[0])) return;
     s_shown = s;
-    if (s == STATUS_NONE) { show(false); return; }
+    /* Only the wake-word hint is ever drawn; every other state is left to the face.
+     *
+     * Two reasons, and the second is the one that was reported. It said what the
+     * face already says: there is a designed expression for listening, thinking,
+     * speaking and error, and the Buddy is already wearing it, so the word was a
+     * caption on a picture of itself. And the pill sits at the top of the glass,
+     * which is exactly where a cap, a leaf or a pair of headphones goes — so
+     * "Listening" was printed across the accessory the child had chosen to put on
+     * their Buddy.
+     *
+     * An instruction is the one thing a face cannot give. That is what is left. */
+    if (s != STATUS_IDLE) { show(false); return; }
     show(true);
 #if BOARD_FACE_ROT_DEG != 0
     if (s_px) redraw_pill(s);
@@ -190,12 +201,13 @@ void status_create(lv_obj_t *scr)
     s_sin = sinf(rad);
     s_cos = cosf(rad);
 
-    /* One buffer, sized for the widest caption, so a status change never allocates. */
+    /* One buffer, sized for the only caption that is drawn (see on_tick), so a
+     * status change never allocates. */
     int32_t wmax = 0;
-    for (unsigned i = 0; i < sizeof(k_look) / sizeof(k_look[0]); i++) {
+    {
         lv_point_t t;
-        lv_text_get_size(&t, k_look[i].text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        if (t.x > wmax) wmax = t.x;
+        lv_text_get_size(&t, k_look[STATUS_IDLE].text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        wmax = t.x;
     }
     const int32_t w = PILL_PAD_H * 2 + dot + PILL_GAP + wmax;
     /* Ask LVGL for the stride rather than computing one: lv_canvas_set_buffer will use
