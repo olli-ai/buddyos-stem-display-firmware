@@ -237,18 +237,28 @@ static volatile bool s_connected;
 static volatile bool s_speaking;
 /* When the speaker will actually have fallen silent.
  *
- * s_speaking follows omni's status, which says when omni stopped *sending* — not
- * when this kit stops *playing*. Between the two sit the jitter buffer (JB_DEPTH,
- * 640 ms) and the I2S descriptors (6 x 20 ms), so at "speaking_ended" the Buddy can
- * still have the better part of a second of its own voice to get out.
+ * s_speaking follows omni's status, which says when omni stopped *sending*, not when
+ * this kit stops *playing*. Between the two sit the jitter buffer and the I2S
+ * descriptors, so at "speaking_ended" the Buddy still has what is queued to get out.
+ * Un-muting into that, on a board with no echo canceller and with the duck coming off
+ * in the same instant, is how omni's voice detector came to hear the Buddy as the
+ * child and answer its own tail.
  *
- * Un-muting the microphone then is not a small error on a board with no echo
- * canceller. The duck comes off in the same instant, so the tail goes up the wire at
- * the full +30 dB instead of +18, and omni's voice detector hears the Buddy as the
- * child: listening, then processing, then speaking again, once per turn for the whole
- * session. The microphone has to follow the speaker, not the server. */
+ * Set ONCE, when the Buddy stops speaking, from what is actually still in hand. The
+ * first attempt at this pushed the deadline forward on every frame the playback task
+ * wrote, which omni keeps supplying all session long -- so the microphone never
+ * reopened and the kit sat in `listening` for good. A deadline that is computed from
+ * a queue depth cannot do that: JB_DEPTH bounds it at 780 ms, and nothing extends it. */
 #define SPEAKER_DRAIN_MS  140            /* the 120 ms of I2S descriptors, with margin */
+#define PKT_MS             20            /* one Opus packet, as JB_DEPTH's 640 ms says */
 static volatile uint32_t s_speaker_until_ms;
+
+/** The Buddy has stopped speaking: hold the microphone for what is still queued. */
+static void speaker_tail_begin(void)
+{
+    uint32_t held = (uint32_t)uxQueueMessagesWaiting(s_down);
+    s_speaker_until_ms = now_ms() + held * PKT_MS + SPEAKER_DRAIN_MS;
+}
 
 /** True while the speaker is still producing sound, including what is queued. */
 static inline bool speaker_busy(void)
@@ -321,6 +331,7 @@ static void on_status(const char *st)
         s_flushes++;
         s_speaking = false;
         xQueueReset(s_down);
+        speaker_tail_begin();            /* nothing queued now: the descriptors only */
         mouth_stop();                    /* the mouth shuts with the speaker */
 #if CONFIG_BUDDY_SCREEN_FACE
         /* Barge-in: the rest of that reply is never spoken, so the faces chosen for
@@ -340,7 +351,10 @@ static void on_status(const char *st)
 
     if (!strcmp(st, "speaking_started")) s_speaking = true;
     else if (!strcmp(st, "listening") || !strcmp(st, "speaking_ended") ||
-             !strcmp(st, "interrupted") || !strcmp(st, "error")) s_speaking = false;
+             !strcmp(st, "interrupted") || !strcmp(st, "error")) {
+        /* omni has stopped sending; the speaker has not stopped playing. */
+        if (s_speaking) { s_speaking = false; speaker_tail_begin(); }
+    }
     if (!strcmp(st, "interrupted")) mouth_stop();
     if (!strcmp(st, "speaking_started")) { status_set(STATUS_SPEAKING); show_state("speaking"); }
     else if (!strcmp(st, "processing") || !strcmp(st, "thinking")) { status_set(STATUS_THINKING); show_state("thinking"); }
@@ -549,6 +563,7 @@ static void barge_in(uint32_t now)
     s_barged_ms = now;
     s_speaking = false;
     xQueueReset(s_down);
+    speaker_tail_begin();                /* nothing queued now: the descriptors only */
     mouth_stop();                        /* the mouth shuts with the speaker */
 }
 
@@ -1082,20 +1097,6 @@ static void down_task(void *arg)
         if (sp) mouth_feed(pcm, ns);
         was_speaking = sp;
         audio_write(pcm, ns);
-        /* Hold the microphone shut while this frame is still coming out of the I2S
-         * descriptors -- but only for a frame that carries the Buddy's VOICE.
-         *
-         * omni streams the whole session, and between turns what it streams is
-         * silence (see the shed-silence rule on the receive side). Extending the
-         * mute for those frames keeps it shut forever: the kit then hears nothing,
-         * answers nothing, and sits in `listening` for good. Silence is what the
-         * socket sends when the child's turn is the live one, so it is exactly the
-         * frame that must NOT hold the microphone closed.
-         *
-         * The packet's own length is the test the receive side already uses. */
-        if (p.len > SILENCE_MAX)
-            s_speaker_until_ms = now_ms() + (uint32_t)(ns / (AUDIO_SAMPLE_RATE / 1000))
-                               + SPEAKER_DRAIN_MS;
 #if CONFIG_BUDDY_SCREEN_FACE
         /* This frame is now the speaker's problem, so it counts as heard. Then wear
          * anything the child has reached — more than one, if a short tag ran past. */
