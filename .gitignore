@@ -20,6 +20,7 @@ sim/facesim
 sim/liblvgl.a
 sim/objs/
 sim/frames/
+sim/film/
 sdkconfig
 
 # Internal, not published. These stay on disk for whoever has the sibling repos

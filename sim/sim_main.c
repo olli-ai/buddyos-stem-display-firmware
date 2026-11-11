@@ -77,6 +77,30 @@ static void dump(const char *dir, const char *name)
 
 static lv_display_t *s_disp;
 
+/* ---- the glass's angle, on the host ---------------------------------------
+ *
+ * On the device this lives in NVS and is set from the website (main/face_rot.c),
+ * which wants a flash partition the host has not got -- so face_view.c linked
+ * against nothing here and the simulator stopped building when the angle stopped
+ * being a compile-time constant. It is an environment variable instead:
+ *
+ *   FACE_ROT=-48 bash sim/build.sh sim/frames
+ *
+ * Worth having rather than hard-coding 0: the sign of this number is the thing
+ * everyone gets wrong (it turns the FACE, so it opposes the case), and a picture
+ * settles it in a second where reasoning about it has already failed once.
+ */
+int face_rot_deg(void)
+{
+    static int deg = -1000;
+    if (deg == -1000) {
+        const char *e = getenv("FACE_ROT");
+        deg = e ? atoi(e) : 0;
+        if (deg < -180 || deg > 180) deg = 0;
+    }
+    return deg;
+}
+
 /* ---- lip-sync --------------------------------------------------------------
  * The speaking state is the one worth watching, and until this device has audio
  * hardware the only way to watch it is to play the same clip the conformance check
@@ -307,6 +331,51 @@ int main(int argc, char **argv)
         sim_stats_t st = { .draw_buffer_bytes = sizeof(buf1) + sizeof(buf2),
                            .sprite_bytes = sprite_bytes, .buf_px = BUF_PX };
         return sim_serve(port, fb, sizeof(fb), render_at, &st);
+    }
+
+    /* ---- film mode: one continuous take ------------------------------------
+     *
+     * The sampled moments below are for inspection -- one frame at the peak of each
+     * loop, which is what you want when judging a pose and useless when judging
+     * motion. FACE_FILM scripts a run of states instead and dumps every frame of it:
+     *
+     *   FACE_FILM=idle:2000,listening:1500,speaking:3000 FACE_FILM_FPS=20 \
+     *       bash sim/build.sh sim/film
+     *
+     * The clock runs on across the whole take, so each state's loop starts where the
+     * real thing would rather than from zero, and `speaking` lip-syncs to the same
+     * fixture clip the conformance check uses. Frames land as film-0000.ppm upwards,
+     * which is the numbering ffmpeg reads with -i film-%04d.ppm.
+     */
+    const char *film = getenv("FACE_FILM");
+    if (film) {
+        const char *fps_env = getenv("FACE_FILM_FPS");
+        unsigned fps = fps_env ? (unsigned)atoi(fps_env) : 20;
+        if (fps < 1 || fps > 60) fps = 20;
+        const uint32_t step = 1000u / fps;
+        uint32_t now = 0;
+        unsigned n = 0;
+        char script[512];
+        snprintf(script, sizeof(script), "%s", film);
+        for (char *tok = strtok(script, ","); tok; tok = strtok(NULL, ",")) {
+            char *colon = strchr(tok, ':');
+            unsigned hold = colon ? (unsigned)atoi(colon + 1) : 2000;
+            if (colon) *colon = 0;
+            int state = -1;
+            for (int i = 0; i < face_state_count; i++)
+                if (!strcmp(face_states[i].name, tok)) state = i;
+            if (state < 0) { fprintf(stderr, "no such state: %s\n", tok); return 1; }
+            face_view_set_state(state);
+            for (uint32_t t = 0; t < hold; t += step, now += step) {
+                render_at(now);
+                char name[128];
+                snprintf(name, sizeof(name), "film-%04u", n++);
+                dump(out, name);
+            }
+            printf("filmed %s for %u ms\n", tok, hold);
+        }
+        printf("%u frames at %u fps into %s\n", n, fps, out);
+        return 0;
     }
 
     /* Moments chosen to land on the interesting part of each loop: mid-blink, the

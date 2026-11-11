@@ -4,7 +4,8 @@ From a board in your hand to a Buddy that answers "Jarvis", in four steps. You d
 need to know ESP-IDF: an AI coding assistant can install the tools, build the firmware
 and flash it for you, and this page gives you the exact words to ask it with.
 
-If you want the engineering detail instead, read [`README.md`](README.md).
+If you want the engineering detail instead, the documentation index is
+[`docs/README.md`](docs/README.md) — one page per subject, every measurement dated.
 
 ---
 
@@ -52,7 +53,7 @@ file ever disagree, the file is right.
 | | `WS` | 39 | |
 | | `SD` | 40 | microphone → ESP32 |
 | Buttons and the rest | BTN1 / BOOT | 0 | hold 2 s to re-run setup |
-| | BTN2 | 1 | unused by the firmware; silkscreen says "IO21", it is IO1 |
+| | BTN2 | 1 | **the talk button**: press and let go to talk, as if you had said "Jarvis". Silkscreen says "IO21", it is IO1 |
 | | battery sense | 8 | ADC1_CH7, 100k/100k divider |
 | | WS2812 | 2 | footprint only, not fitted |
 
@@ -86,17 +87,20 @@ My board is: [BuddyOS STEM display kit (ESP32-S3) | Waveshare ESP32-P4]
 My computer runs: [macOS | Windows | Linux]
 
 Please:
-1. Read GETTING_STARTED.md, then README.md's "Which board", "Building" and "Flash it".
+1. Read GETTING_STARTED.md, then docs/building.md (the build commands and the flashing
+   rules live there; docs/README.md is the index if you need another subject).
 2. Check what I already have (ESP-IDF v5.5.3, or Docker; Python; git) and install only
    what is missing. Ask me before installing anything large.
-3. Clone LVGL into components/lvgl exactly as the README says.
-4. Build with the README's command for my board, in that board's own build directory.
+3. Clone LVGL into components/lvgl exactly as docs/building.md says.
+4. Build with that page's command for my board, in that board's own build directory.
+   Keep the -B and -DSDKCONFIG pair: a shared build directory produces an image for the
+   panel I do not have.
 5. Find my board's serial port and run `esptool chip-id`. Stop and tell me if the chip
    is not the one I named.
 6. Flash with `esptool write-flash "@flash_args"` from inside the build directory.
    Do not type flash offsets by hand. Do not run erase-flash.
 7. Open the serial log and tell me whether it booted, using the list under
-   "Watch it boot" in the README.
+   "Watch it boot" in docs/building.md.
 Before each step, tell me in one sentence what you are about to do.
 ```
 
@@ -119,7 +123,7 @@ python3 -m venv venv && venv/bin/pip install esptool
 cd build-s3 && ../venv/bin/esptool --chip esp32s3 -p PORT write-flash "@flash_args"
 ```
 
-The P4 and Docker commands are in the README under [Building](README.md#building).
+The P4 and Docker commands are in [docs/building.md](docs/building.md).
 </details>
 
 ## 3. Set it up on the website
@@ -140,12 +144,16 @@ voice, and send it programs.
 ## 4. Talk to it
 
 - **Say "Jarvis"**, wait for the face to react, then talk. It answers out loud.
+- **Or press the button.** On the ESP32-S3 board, press **BTN2** and let go: the moment
+  you release it the Buddy is listening, exactly as if you had called it. Needs firmware
+  `display-1.2.0` or newer.
 - **To cut it off mid-sentence:** on the **ESP32-S3**, say "Jarvis" again — while the
-  Buddy speaks it sends nothing upstream, but the board still hears the wake word. On the
-  **ESP32-P4**, just talk over it: that board cancels its own echo, so it hears you while
-  it speaks and stops on its own.
-- **Leave it alone for three minutes** and the face turns into a clock. Say "Jarvis" to
-  bring the face back.
+  Buddy speaks it sends nothing upstream, but the board still hears the wake word — or
+  press **BTN2**, which works even at volumes where the Buddy drowns out its own name. On
+  the **ESP32-P4**, just talk over it: that board cancels its own echo, so it hears you
+  while it speaks and stops on its own.
+- **Leave it alone for three minutes** and the face turns into a clock. Say "Jarvis" —
+  or press BTN2 — to bring the face back.
 - **To set it up again** (new Wi-Fi, new owner): hold the **BOOT** button for 2 seconds
   and let go. The setup screen comes back. Deleting the kit on the website does the same.
 
@@ -173,5 +181,33 @@ Common ones:
 | "Device registration failed" | Ask the assistant to check the log for `mqtt connected` — it shows whether the kit reached the cloud. Make sure the Wi-Fi is 2.4 GHz. |
 | It never hears "Jarvis" | Ask the assistant for the `mic idle: rms N, peak N` line the kit prints every 10 s. `rms 0, peak 0` is a dead microphone; a quiet room reads a few hundred. |
 | It goes silent or restarts when it speaks | The 5 V rail is sagging under the amplifier. Try another cable, or a port that supplies more current. |
+| Pressing BTN2 does nothing | Firmware older than `display-1.2.0`, or the kit is not on Wi-Fi yet — the button is armed when the voice session starts. |
 
 Still stuck? Open an issue on this repository with the serial log attached.
+
+---
+
+## Where everything is
+
+For you, and for an assistant working in this folder. Read the page whose row matches
+the question and stop there — the whole set is indexed in
+[`docs/README.md`](docs/README.md).
+
+| Looking for | Read |
+| --- | --- |
+| Build and flash commands, what a healthy boot logs | [`docs/building.md`](docs/building.md) |
+| Pin tables, wiring your own, why the amplifier needs 5 V | [`docs/hardware.md`](docs/hardware.md) |
+| Bluetooth provisioning, the setup screen, re-running setup | [`docs/setup.md`](docs/setup.md) |
+| Wake word, the talk button, barge-in, echo cancellation | [`docs/voice.md`](docs/voice.md) |
+| Face bakes, catalogue characters, expressions, motion | [`docs/face.md`](docs/face.md) |
+| The idle clock and deep sleep | [`docs/idle-and-sleep.md`](docs/idle-and-sleep.md) |
+| The photo gallery build | [`docs/gallery.md`](docs/gallery.md) |
+| The Waveshare ESP32-P4 board | [`docs/p4.md`](docs/p4.md) |
+| Memory and timing figures, open questions | [`docs/measurements.md`](docs/measurements.md) |
+
+And the three files that outrank any prose here, including this page:
+
+- **`main/board_pins.h`** — every GPIO. If a table disagrees with it, the header is right.
+- **`main/Kconfig.projbuild`** — every `CONFIG_BUDDY_*` option, each with a `help` that
+  says why its default is what it is. Read the help before changing one.
+- **`main/CMakeLists.txt`** — which sources and components each target actually compiles.
