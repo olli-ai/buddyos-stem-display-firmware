@@ -2,7 +2,7 @@
 
 <img src="docs/media/face.gif" alt="The Buddy face: idle, listening, speaking with lip-sync, thinking" width="320">
 
-# An open-source robot face
+# A customisable animated face for a voice assistant
 
 **ESP-IDF firmware for a round screen that looks back at you.** A 1.28" GC9A01 on an
 ESP32-S3 — or a 4" MIPI-DSI panel on an ESP32-P4 — running an animated LVGL face with
