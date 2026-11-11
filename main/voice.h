@@ -24,6 +24,11 @@
  * WakeNet hears the wake word on the device; the conversation then runs until
  * CONFIG_BUDDY_VOICE_IDLE_S of quiet and the socket closes again. Without it, the
  * session opens at boot and reconnects on its own.
+ *
+ * On the S3 board BTN2 (GPIO 1) is a second way in, and only a second way in: a press
+ * and release raises the same signal WakeNet raises (CONFIG_BUDDY_TALK_BUTTON), so it
+ * opens a conversation when the kit is idle and interrupts the Buddy when it is
+ * speaking, by the same code path and with the same consequences.
  */
 /** `gateway` is the stem-gateway host (no scheme, no path) and `user_token` the
  *  owner's JWT, both from setup (main/prov.h). The URL is the gateway's

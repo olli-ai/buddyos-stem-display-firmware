@@ -24,6 +24,10 @@
 #include "esp_wn_models.h"
 #include "model_path.h"
 #endif
+#if CONFIG_BUDDY_TALK_BUTTON
+#include "board_pins.h"
+#include "driver/gpio.h"
+#endif
 #if CONFIG_BUDDY_AEC
 #include "esp_afe_config.h"
 #include "esp_afe_sr_iface.h"
@@ -547,6 +551,72 @@ static bool wake_feed(const int16_t *x, int n)
 }
 #endif
 
+#if CONFIG_BUDDY_TALK_BUTTON
+/* BTN2 (GPIO 1), the talk button: the wake word for a room too loud to be heard in.
+ *
+ * It feeds the very signal WakeNet feeds -- `heard`, in up_task -- rather than calling
+ * session_begin() itself. So there is one way into a conversation and one way into a
+ * barge-in, and a press cannot come to mean something slightly different from the word:
+ * idle, it opens; speaking, it interrupts; and either way it counts as the child being
+ * there, which is what holds the idle timer off.
+ *
+ * On the RELEASE edge, deliberately. A press edge would start the turn under a thumb
+ * that is still down, and the gesture people reach for first -- hold it while talking --
+ * would then fire a second turn when they let go. Acting on release makes one press one
+ * event, however long it is held.
+ *
+ * An interrupt rather than a polling task because up_task is the one task on this kit
+ * that may never wait: it owes the encoder 20 ms of microphone every 20 ms (see the
+ * core split in voice_start), and a button has no business inside that loop. The
+ * handler only timestamps and raises a flag, and it is not in IRAM -- the ISR service
+ * is installed without ESP_INTR_FLAG_IRAM, so the handler may live in flash.
+ */
+static volatile uint32_t s_btn_down_ms;
+static volatile bool s_btn_down;
+static volatile bool s_btn_wake;         /* a finished press, not yet acted on */
+
+static void btn_isr(void *arg)
+{
+    (void)arg;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (gpio_get_level(PIN_BTN2) == 0) { /* active low, pulled up: pressed */
+        s_btn_down_ms = now;
+        s_btn_down = true;
+        return;
+    }
+    if (!s_btn_down) return;             /* a release with no press behind it: bounce */
+    s_btn_down = false;
+    if ((int32_t)(now - s_btn_down_ms) >= CONFIG_BUDDY_TALK_BUTTON_MS) s_btn_wake = true;
+}
+
+/** True once per press, to whoever reads it first. */
+static bool btn_take(void)
+{
+    if (!s_btn_wake) return false;
+    s_btn_wake = false;
+    return true;
+}
+
+/* Never fatal: a kit whose button would not arm is still a kit you can talk to. */
+static void btn_init(void)
+{
+    gpio_config_t in = { .pin_bit_mask = 1ULL << PIN_BTN2, .mode = GPIO_MODE_INPUT,
+                         .pull_up_en = GPIO_PULLUP_ENABLE,
+                         .intr_type = GPIO_INTR_ANYEDGE };
+    esp_err_t err = gpio_config(&in);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "talk button: gpio_config (%s)", esp_err_to_name(err)); return; }
+    /* Shared with anything else that wants GPIO interrupts; already installed is fine. */
+    err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "talk button: no GPIO ISR service (%s)", esp_err_to_name(err));
+        return;
+    }
+    err = gpio_isr_handler_add(PIN_BTN2, btn_isr, NULL);
+    if (err != ESP_OK) { ESP_LOGE(TAG, "talk button: gpio_isr_handler_add (%s)", esp_err_to_name(err)); return; }
+    ESP_LOGI(TAG, "talk button on GPIO %d: press and let go to talk", PIN_BTN2);
+}
+#endif
+
 static void session_end(const char *why);
 
 /* The wake word, heard mid-conversation. While the Buddy talks it means "stop, I
@@ -865,6 +935,13 @@ static void up_task(void *arg)
         bool heard = wake_feed(in, IN_SAMPLES);
         us_wake += esp_timer_get_time() - t0;
 #endif
+#if CONFIG_BUDDY_TALK_BUTTON
+        if (btn_take()) {
+            ESP_LOGI(TAG, "talk button: %s", s_phase == PHASE_IDLE ? "opening a conversation"
+                                                                  : "cutting in");
+            heard = true;
+        }
+#endif
         if (s_phase == PHASE_IDLE) {
             if (heard) { session_begin(now); continue; }
             /* What the microphone is actually delivering while nobody is talking to
@@ -1142,6 +1219,9 @@ bool voice_start(const char *serial, const char *gateway, const char *user_token
 
 #if CONFIG_BUDDY_WAKE_WORD
     if (!wake_init()) return false;
+#endif
+#if CONFIG_BUDDY_TALK_BUTTON
+    btn_init();
 #endif
 
     esp_opus_enc_config_t ec = ESP_OPUS_ENC_CONFIG_DEFAULT();

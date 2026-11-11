@@ -106,8 +106,14 @@
  * is silent with every register and every clock correct, which is an hour nobody
  * should spend twice. */
 
-/* ---- Other parts on the board, not driven by this firmware yet ----------- */
+/* ---- BTN2, the talk button ------------------------------------------------ */
+/* Press and let go and the kit does what hearing the wake word does: opens a
+ * conversation when it is idle, cuts in while the Buddy is speaking. Interrupt-driven
+ * in voice.c (CONFIG_BUDDY_TALK_BUTTON), on the release edge. Nothing else on this
+ * board touches GPIO 1, so it can be read and hooked at any time. */
 #define PIN_BTN2          1    /* active low. Silkscreen says IO21: it is IO1 */
+
+/* ---- Other parts on the board, not driven by this firmware yet ----------- */
 #define PIN_BAT_ADC       8    /* ADC1_CH7, VBAT through a 100k/100k divider */
 #define PIN_RGB_DATA      2    /* WS2812 footprint, not fitted */
 

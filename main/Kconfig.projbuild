@@ -391,6 +391,30 @@ config BUDDY_WAKE_WORD
         BUDDY_VOICE_IDLE_S of quiet. Off: the session opens at boot and never
         closes, which is how the pipeline was first brought up.
 
+config BUDDY_TALK_BUTTON
+    bool "BTN2 (GPIO 1) starts a conversation, like the wake word"
+    depends on BUDDY_WAKE_WORD && !IDF_TARGET_ESP32P4
+    default y
+    help
+        The S3 board's second button. Press and let go and the kit does exactly what
+        hearing the wake word does: opens a conversation when it is idle, and cuts into
+        the Buddy mid-sentence when it is speaking. For a room too loud for WakeNet, and
+        for a child who would rather press than call.
+
+        It acts on the RELEASE edge, so holding it down does not hold the kit open and
+        letting go is always what starts the turn. BUDDY_TALK_BUTTON_MS is the debounce.
+
+        The P4 board has no second button -- BOOT is its only one, and that is the setup
+        gesture (BUDDY_BOOT_BUTTON_SETUP).
+
+config BUDDY_TALK_BUTTON_MS
+    int "...how long a press must last to count, ms"
+    depends on BUDDY_TALK_BUTTON
+    range 10 1000
+    default 30
+    help
+        Shorter than this and the release is read as contact bounce and ignored.
+
 config BUDDY_UPLINK_GAIN_DB
     int "Digital gain on the audio sent to the cloud, dB"
     depends on BUDDY_VOICE
